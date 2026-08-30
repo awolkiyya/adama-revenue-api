@@ -1,0 +1,209 @@
+services:
+
+  # =========================================================
+  # Laravel Application
+  # =========================================================
+
+  app:
+    build:
+      context: .
+
+    container_name: laravel-app
+
+    restart: unless-stopped
+
+    working_dir: /var/www
+
+    env_file:
+      - .env.production
+
+    volumes:
+      - storage:/var/www/storage
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - backend
+
+
+  # =========================================================
+  # Nginx
+  # =========================================================
+
+  nginx:
+    image: nginx:alpine
+
+    container_name: laravel-nginx
+
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - storage:/var/www/storage
+
+    depends_on:
+      - app
+
+    networks:
+      - backend
+
+
+  # =========================================================
+  # PostgreSQL
+  # =========================================================
+
+  postgres:
+    image: postgres:16-alpine
+
+    container_name: postgres-db
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U appuser -d appdb"
+        ]
+
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - backend
+
+
+  # =========================================================
+  # Laravel Queue Worker
+  # =========================================================
+
+  worker:
+    build:
+      context: .
+
+    container_name: laravel-worker
+
+    restart: unless-stopped
+
+    working_dir: /var/www
+
+    env_file:
+      - .env.production
+
+    volumes:
+      - storage:/var/www/storage
+
+    command:
+      [
+        "php",
+        "artisan",
+        "queue:work",
+        "--sleep=3",
+        "--tries=3",
+        "--timeout=90"
+      ]
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - backend
+
+
+  # =========================================================
+  # Laravel Scheduler
+  # =========================================================
+
+  scheduler:
+    build:
+      context: .
+
+    container_name: laravel-scheduler
+
+    restart: unless-stopped
+
+    working_dir: /var/www
+
+    env_file:
+      - .env.production
+
+    volumes:
+      - storage:/var/www/storage
+
+    command:
+      [
+        "sh",
+        "-c",
+        "while true; do php artisan schedule:run; sleep 60; done"
+      ]
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - backend
+
+
+  # =========================================================
+  # pgAdmin
+  # =========================================================
+
+  pgadmin:
+    image: dpage/pgadmin4
+
+    container_name: pgadmin
+
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8081:80"
+
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+    networks:
+      - backend
+
+
+# =========================================================
+# Persistent Volumes
+# =========================================================
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  storage:
+
+
+# =========================================================
+# Network
+# =========================================================
+
+networks:
+  backend:
+    driver: bridge
