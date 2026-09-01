@@ -2,9 +2,14 @@
 
 namespace App\Providers;
 
+use App\Models\MeasurementUnit;
 use App\Models\Role;
+
 use App\Policies\PermissionPolicy;
 use App\Policies\RolePolicy;
+
+use App\Policies\MeasurementUnitPolicy;
+
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -12,6 +17,7 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
+
 use Spatie\Permission\Models\Permission;
 
 class AppServiceProvider extends ServiceProvider
@@ -47,6 +53,11 @@ class AppServiceProvider extends ServiceProvider
             PermissionPolicy::class
         );
 
+        Gate::policy(
+            MeasurementUnit::class,
+            MeasurementUnitPolicy::class
+        );
+
         /*
         |--------------------------------------------------------------------------
         | Login Rate Limiting
@@ -54,13 +65,17 @@ class AppServiceProvider extends ServiceProvider
         */
 
         RateLimiter::for('login', function (Request $request) {
+
             $email = Str::lower(
-                trim((string) $request->input('email'))
+                trim(
+                    (string) $request->input('email')
+                )
             );
 
             $ip = $request->ip();
 
             return [
+
                 // Maximum 10 login requests per minute from one IP
                 Limit::perMinute(10)
                     ->by("login-ip:{$ip}"),

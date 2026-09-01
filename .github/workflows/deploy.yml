@@ -1,0 +1,369 @@
+name: Deploy Commercial Enforcement API
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+          port: 22
+          timeout: 30s
+          command_timeout: 20m
+          script_stop: true
+
+          script: |
+
+            set -Eeuo pipefail
+
+            echo "======================================"
+            echo "🚀 Commercial Enforcement API Deployment"
+            echo "======================================"
+
+            APP_DIR="/home/tradmin/api/commercial_enforcement_api"
+
+            cd "$APP_DIR"
+
+            echo "📂 Application directory:"
+            pwd
+
+
+            # =====================================================
+            # Pull latest code
+            # =====================================================
+
+            echo "📥 Pulling latest code..."
+
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "🔍 Current commit:"
+            git rev-parse --short HEAD
+
+
+            # =====================================================
+            # Stop old containers
+            #
+            # IMPORTANT:
+            #
+            # No -v here.
+            #
+            # The PostgreSQL Docker volume is preserved.
+            #
+            # We will reset the DATABASE using:
+            #
+            # php artisan migrate:fresh --seed
+            #
+            # instead of deleting the Docker volume.
+            # =====================================================
+
+            echo "🛑 Stopping existing containers..."
+
+            docker compose down --remove-orphans
+
+
+            # =====================================================
+            # Build fresh production images
+            # =====================================================
+
+            echo "🐳 Building fresh production images..."
+
+            docker compose build \
+              --pull \
+              --no-cache \
+              app \
+              worker \
+              scheduler
+
+
+            # =====================================================
+            # Start containers
+            # =====================================================
+
+            echo "🚀 Starting containers..."
+
+            docker compose up -d --remove-orphans
+
+
+            # =====================================================
+            # Wait for PostgreSQL
+            # =====================================================
+
+            echo "⏳ Waiting for PostgreSQL..."
+
+            POSTGRES_READY=false
+
+            for i in $(seq 1 30); do
+
+              if docker compose exec -T postgres \
+                pg_isready \
+                -U appuser \
+                -d appdb \
+                >/dev/null 2>&1; then
+
+                POSTGRES_READY=true
+
+                echo "✅ PostgreSQL is ready."
+
+                break
+
+              fi
+
+              echo "PostgreSQL not ready yet... attempt $i/30"
+
+              sleep 2
+
+            done
+
+
+            if [ "$POSTGRES_READY" != "true" ]; then
+
+              echo "❌ PostgreSQL did not become ready."
+
+              docker compose ps
+
+              docker compose logs postgres --tail=100
+
+              exit 1
+
+            fi
+
+
+            # =====================================================
+            # Container status
+            # =====================================================
+
+            echo "📊 Container status..."
+
+            docker compose ps
+
+
+            # =====================================================
+            # Enable Laravel maintenance mode
+            # =====================================================
+
+            echo "🔒 Enabling maintenance mode..."
+
+            docker compose exec -T app \
+              php artisan down \
+              --retry=10 \
+              --refresh=5 \
+              2>/dev/null \
+              || true
+
+
+            # =====================================================
+            # Clear Laravel caches
+            # =====================================================
+
+            echo "🧹 Clearing Laravel caches..."
+
+            docker compose exec -T app \
+              php artisan optimize:clear
+
+
+            # =====================================================
+            # FRESH DATABASE
+            # =====================================================
+            #
+            # WARNING:
+            #
+            # This completely destroys the current database.
+            #
+            # It:
+            #
+            # 1. Drops all tables
+            # 2. Re-runs every migration
+            # 3. Runs DatabaseSeeder
+            #
+            # PostgreSQL Docker volume itself is NOT deleted.
+            #
+            # =====================================================
+
+            echo "🗄 Resetting database completely..."
+
+            docker compose exec -T app \
+              php artisan migrate:fresh --seed --force
+
+
+            echo "✅ Database migration and seeding completed."
+
+
+            # =====================================================
+            # Laravel runtime directories
+            # =====================================================
+
+            echo "🔐 Fixing Laravel runtime permissions..."
+
+            docker compose exec -T app sh -c '
+
+              mkdir -p \
+                storage/logs \
+                storage/framework/cache \
+                storage/framework/sessions \
+                storage/framework/views \
+                bootstrap/cache \
+                /var/www/.config/psysh
+
+              chown -R www-data:www-data \
+                storage \
+                bootstrap/cache \
+                /var/www/.config
+
+              find storage bootstrap/cache \
+                -type d \
+                -exec chmod 775 {} \;
+
+              find storage bootstrap/cache \
+                -type f \
+                -exec chmod 664 {} \;
+
+              chmod -R 775 /var/www/.config
+            '
+
+
+            # =====================================================
+            # Storage symlink
+            # =====================================================
+
+            echo "🔗 Checking Laravel storage link..."
+
+            docker compose exec -T app sh -c '
+
+              if [ ! -L public/storage ]; then
+
+                php artisan storage:link
+
+              else
+
+                echo "Storage link already exists"
+
+              fi
+            '
+
+
+            # =====================================================
+            # Validate Laravel routes BEFORE caching
+            # =====================================================
+
+            echo "🔍 Validating Laravel routes..."
+
+            docker compose exec -T app \
+              php artisan route:list
+
+
+            # =====================================================
+            # Cache Laravel configuration
+            # =====================================================
+
+            echo "⚡ Caching Laravel configuration..."
+
+            docker compose exec -T app \
+              php artisan config:cache
+
+
+            # =====================================================
+            # Cache Laravel routes
+            # =====================================================
+
+            echo "🔍 Caching Laravel routes..."
+
+            docker compose exec -T app \
+              php artisan route:cache
+
+
+            # =====================================================
+            # Cache Laravel views
+            # =====================================================
+
+            echo "🖼 Caching Laravel views..."
+
+            docker compose exec -T app \
+              php artisan view:cache
+
+
+            # =====================================================
+            # Restart queue workers
+            # =====================================================
+
+            echo "🔄 Restarting Laravel queue workers..."
+
+            docker compose exec -T app \
+              php artisan queue:restart \
+              || true
+
+
+            # =====================================================
+            # Final Laravel validation
+            # =====================================================
+
+            echo "🔍 Final Laravel application check..."
+
+            docker compose exec -T app \
+              php artisan about
+
+
+            # =====================================================
+            # Verify application is not in maintenance mode
+            # =====================================================
+
+            echo "🟢 Disabling maintenance mode..."
+
+            docker compose exec -T app \
+              php artisan up
+
+
+            # =====================================================
+            # API health check
+            # =====================================================
+
+            echo "🏥 Checking API health..."
+
+            sleep 3
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              http://127.0.0.1/health
+
+            echo ""
+
+            echo "✅ API health check passed."
+
+
+            # =====================================================
+            # Final container status
+            # =====================================================
+
+            echo "📊 Final container status..."
+
+            docker compose ps
+
+
+            # =====================================================
+            # Docker cleanup
+            # =====================================================
+
+            echo "🧹 Cleaning unused Docker images..."
+
+            docker image prune -f
+
+
+            echo "======================================"
+            echo "✅ Commercial Enforcement API deployment completed"
+            echo "======================================"

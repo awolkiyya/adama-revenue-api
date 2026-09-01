@@ -301,52 +301,6 @@ class PermissionSeeder extends Seeder
 
             /*
             |--------------------------------------------------------------------------
-            | Taxpayer Management
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'taxpayer.view',
-                'label' => 'View Taxpayers',
-                'module' => 'taxpayer',
-                'description' => 'Allows viewing taxpayer records and taxpayer information.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'taxpayer.create',
-                'label' => 'Create Taxpayer',
-                'module' => 'taxpayer',
-                'description' => 'Allows registering new taxpayers.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'taxpayer.update',
-                'label' => 'Update Taxpayer',
-                'module' => 'taxpayer',
-                'description' => 'Allows updating eligible taxpayer information.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'taxpayer.verify',
-                'label' => 'Verify Taxpayer',
-                'module' => 'taxpayer',
-                'description' => 'Allows verifying taxpayer information.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'taxpayer.view_history',
-                'label' => 'View Taxpayer History',
-                'module' => 'taxpayer',
-                'description' => 'Allows viewing taxpayer registration and account history.',
-                'is_system' => false,
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
             | Citizen Management
             |--------------------------------------------------------------------------
             */
@@ -401,28 +355,6 @@ class PermissionSeeder extends Seeder
 
             /*
             |--------------------------------------------------------------------------
-            | Access Management
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'access_management.view',
-                'label' => 'View Access Management',
-                'module' => 'access_management',
-                'description' => 'Allows viewing role, permission, and access management information.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'access_management.manage',
-                'label' => 'Manage Access',
-                'module' => 'access_management',
-                'description' => 'Allows managing authorized role and permission assignments.',
-                'is_system' => true,
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
             | System Settings
             |--------------------------------------------------------------------------
             */
@@ -450,34 +382,58 @@ class PermissionSeeder extends Seeder
             */
 
             [
-                'name' => 'measurement_unit.view',
+                'name' => 'measurement_units.view',
                 'label' => 'View Measurement Units',
-                'module' => 'measurement_unit',
+                'module' => 'measurement_units',
                 'description' => 'Allows viewing measurement units used by revenue calculations.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'measurement_unit.create',
+                'name' => 'measurement_units.create',
                 'label' => 'Create Measurement Unit',
-                'module' => 'measurement_unit',
+                'module' => 'measurement_units',
                 'description' => 'Allows creating measurement units.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'measurement_unit.update',
+                'name' => 'measurement_units.update',
                 'label' => 'Update Measurement Unit',
-                'module' => 'measurement_unit',
-                'description' => 'Allows updating eligible measurement units.',
+                'module' => 'measurement_units',
+                'description' => 'Allows updating measurement unit information.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'measurement_unit.delete',
+                'name' => 'measurement_units.delete',
                 'label' => 'Delete Measurement Unit',
-                'module' => 'measurement_unit',
-                'description' => 'Allows deleting eligible measurement units.',
+                'module' => 'measurement_units',
+                'description' => 'Allows deleting measurement units.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'measurement_units.restore',
+                'label' => 'Restore Measurement Unit',
+                'module' => 'measurement_units',
+                'description' => 'Allows restoring deleted measurement units.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'measurement_units.activate',
+                'label' => 'Activate Measurement Unit',
+                'module' => 'measurement_units',
+                'description' => 'Allows activating measurement units.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'measurement_units.deactivate',
+                'label' => 'Deactivate Measurement Unit',
+                'module' => 'measurement_units',
+                'description' => 'Allows deactivating measurement units.',
                 'is_system' => false,
             ],
 
@@ -488,33 +444,33 @@ class PermissionSeeder extends Seeder
             */
 
             [
-                'name' => 'base_field.view',
+                'name' => 'base_fields.view',
                 'label' => 'View Base Fields',
-                'module' => 'base_field',
+                'module' => 'base_fields',
                 'description' => 'Allows viewing base fields used by revenue assessment calculations.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'base_field.create',
+                'name' => 'base_fields.create',
                 'label' => 'Create Base Field',
-                'module' => 'base_field',
+                'module' => 'base_fields',
                 'description' => 'Allows creating calculation base fields.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'base_field.update',
+                'name' => 'base_fields.update',
                 'label' => 'Update Base Field',
-                'module' => 'base_field',
+                'module' => 'base_fields',
                 'description' => 'Allows updating eligible calculation base fields.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'base_field.delete',
+                'name' => 'base_fields.delete',
                 'label' => 'Delete Base Field',
-                'module' => 'base_field',
+                'module' => 'base_fields',
                 'description' => 'Allows deleting eligible calculation base fields.',
                 'is_system' => false,
             ],
@@ -526,82 +482,37 @@ class PermissionSeeder extends Seeder
             */
 
             [
-                'name' => 'revenue_category.view',
+                'name' => 'revenue_categorys.view',
                 'label' => 'View Revenue Categories',
-                'module' => 'revenue_category',
+                'module' => 'revenue_categorys',
                 'description' => 'Allows viewing revenue categories.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'revenue_category.create',
+                'name' => 'revenue_categorys.create',
                 'label' => 'Create Revenue Category',
-                'module' => 'revenue_category',
+                'module' => 'revenue_categorys',
                 'description' => 'Allows creating revenue categories.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'revenue_category.update',
+                'name' => 'revenue_categorys.update',
                 'label' => 'Update Revenue Category',
-                'module' => 'revenue_category',
+                'module' => 'revenue_categorys',
                 'description' => 'Allows updating eligible revenue categories.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'revenue_category.delete',
+                'name' => 'revenue_categorys.delete',
                 'label' => 'Delete Revenue Category',
-                'module' => 'revenue_category',
+                'module' => 'revenue_categorys',
                 'description' => 'Allows deleting eligible revenue categories.',
                 'is_system' => false,
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue General
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'revenue.view',
-                'label' => 'View Revenue',
-                'module' => 'revenue',
-                'description' => 'Allows viewing revenue records and revenue information.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'revenue.verify',
-                'label' => 'Verify Revenue',
-                'module' => 'revenue',
-                'description' => 'Allows verifying revenue records and transactions.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'revenue.approve',
-                'label' => 'Approve Revenue',
-                'module' => 'revenue',
-                'description' => 'Allows approving authorized revenue decisions.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'revenue.collect',
-                'label' => 'Collect Revenue',
-                'module' => 'revenue',
-                'description' => 'Allows performing authorized revenue collection activities.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'revenue.view_history',
-                'label' => 'View Revenue History',
-                'module' => 'revenue',
-                'description' => 'Allows viewing historical revenue transactions and actions.',
-                'is_system' => false,
-            ],
 
             /*
             |--------------------------------------------------------------------------
@@ -657,75 +568,6 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Assessment
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'assessment.view',
-                'label' => 'View Assessments',
-                'module' => 'assessment',
-                'description' => 'Allows viewing revenue assessments.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.create',
-                'label' => 'Create Assessment',
-                'module' => 'assessment',
-                'description' => 'Allows creating revenue assessment data.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.update',
-                'label' => 'Update Assessment',
-                'module' => 'assessment',
-                'description' => 'Allows updating assessment data before finalization.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.submit',
-                'label' => 'Submit Assessment',
-                'module' => 'assessment',
-                'description' => 'Allows submitting assessments for review.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.verify',
-                'label' => 'Verify Assessment',
-                'module' => 'assessment',
-                'description' => 'Allows verifying revenue assessments.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.approve',
-                'label' => 'Approve Assessment',
-                'module' => 'assessment',
-                'description' => 'Allows approving revenue assessments.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.reject',
-                'label' => 'Reject Assessment',
-                'module' => 'assessment',
-                'description' => 'Allows rejecting revenue assessments.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'assessment.view_history',
-                'label' => 'View Assessment History',
-                'module' => 'assessment',
-                'description' => 'Allows viewing assessment changes and workflow history.',
-                'is_system' => false,
-            ],
 
             /*
             |--------------------------------------------------------------------------
@@ -851,67 +693,262 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+
+
+                        /*
+            |--------------------------------------------------------------------------
+            | Taxpayer Management
+            |--------------------------------------------------------------------------
+            */
+
+            // [
+            //     'name' => 'taxpayer.view',
+            //     'label' => 'View Taxpayers',
+            //     'module' => 'taxpayer',
+            //     'description' => 'Allows viewing taxpayer records and taxpayer information.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'taxpayer.create',
+            //     'label' => 'Create Taxpayer',
+            //     'module' => 'taxpayer',
+            //     'description' => 'Allows registering new taxpayers.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'taxpayer.update',
+            //     'label' => 'Update Taxpayer',
+            //     'module' => 'taxpayer',
+            //     'description' => 'Allows updating eligible taxpayer information.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'taxpayer.verify',
+            //     'label' => 'Verify Taxpayer',
+            //     'module' => 'taxpayer',
+            //     'description' => 'Allows verifying taxpayer information.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'taxpayer.view_history',
+            //     'label' => 'View Taxpayer History',
+            //     'module' => 'taxpayer',
+            //     'description' => 'Allows viewing taxpayer registration and account history.',
+            //     'is_system' => false,
+            // ],
+
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Access Management
+            |--------------------------------------------------------------------------
+            */
+
+            // [
+            //     'name' => 'access_management.view',
+            //     'label' => 'View Access Management',
+            //     'module' => 'access_management',
+            //     'description' => 'Allows viewing role, permission, and access management information.',
+            //     'is_system' => true,
+            // ],
+
+            // [
+            //     'name' => 'access_management.manage',
+            //     'label' => 'Manage Access',
+            //     'module' => 'access_management',
+            //     'description' => 'Allows managing authorized role and permission assignments.',
+            //     'is_system' => true,
+            // ],
+
+
+
+             /*
+            |--------------------------------------------------------------------------
+            | Revenue General
+            |--------------------------------------------------------------------------
+            */
+
+            // [
+            //     'name' => 'revenue.view',
+            //     'label' => 'View Revenue',
+            //     'module' => 'revenue',
+            //     'description' => 'Allows viewing revenue records and revenue information.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'revenue.verify',
+            //     'label' => 'Verify Revenue',
+            //     'module' => 'revenue',
+            //     'description' => 'Allows verifying revenue records and transactions.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'revenue.approve',
+            //     'label' => 'Approve Revenue',
+            //     'module' => 'revenue',
+            //     'description' => 'Allows approving authorized revenue decisions.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'revenue.collect',
+            //     'label' => 'Collect Revenue',
+            //     'module' => 'revenue',
+            //     'description' => 'Allows performing authorized revenue collection activities.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'revenue.view_history',
+            //     'label' => 'View Revenue History',
+            //     'module' => 'revenue',
+            //     'description' => 'Allows viewing historical revenue transactions and actions.',
+            //     'is_system' => false,
+            // ],
+
+             /*
+            |--------------------------------------------------------------------------
+            | Assessment
+            |--------------------------------------------------------------------------
+            */
+
+            // [
+            //     'name' => 'assessment.view',
+            //     'label' => 'View Assessments',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows viewing revenue assessments.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.create',
+            //     'label' => 'Create Assessment',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows creating revenue assessment data.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.update',
+            //     'label' => 'Update Assessment',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows updating assessment data before finalization.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.submit',
+            //     'label' => 'Submit Assessment',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows submitting assessments for review.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.verify',
+            //     'label' => 'Verify Assessment',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows verifying revenue assessments.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.approve',
+            //     'label' => 'Approve Assessment',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows approving revenue assessments.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.reject',
+            //     'label' => 'Reject Assessment',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows rejecting revenue assessments.',
+            //     'is_system' => false,
+            // ],
+
+            // [
+            //     'name' => 'assessment.view_history',
+            //     'label' => 'View Assessment History',
+            //     'module' => 'assessment',
+            //     'description' => 'Allows viewing assessment changes and workflow history.',
+            //     'is_system' => false,
+            // ],
+
+
+
+
+
+
             /*
             |--------------------------------------------------------------------------
             | Invoice Management
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'invoice.view',
-                'label' => 'View Invoices',
-                'module' => 'invoice',
-                'description' => 'Allows viewing invoices, balances, penalties, discounts, adjustments, and payment status.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.view',
+            //     'label' => 'View Invoices',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows viewing invoices, balances, penalties, discounts, adjustments, and payment status.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'invoice.create',
-                'label' => 'Create Invoice',
-                'module' => 'invoice',
-                'description' => 'Allows creating invoices from approved assessments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.create',
+            //     'label' => 'Create Invoice',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows creating invoices from approved assessments.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'invoice.update',
-                'label' => 'Update Invoice',
-                'module' => 'invoice',
-                'description' => 'Allows updating eligible invoice information before finalization.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.update',
+            //     'label' => 'Update Invoice',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows updating eligible invoice information before finalization.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'invoice.issue',
-                'label' => 'Issue Invoice',
-                'module' => 'invoice',
-                'description' => 'Allows issuing invoices to taxpayers.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.issue',
+            //     'label' => 'Issue Invoice',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows issuing invoices to taxpayers.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'invoice.cancel',
-                'label' => 'Cancel Invoice',
-                'module' => 'invoice',
-                'description' => 'Allows cancelling eligible invoices according to policy.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.cancel',
+            //     'label' => 'Cancel Invoice',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows cancelling eligible invoices according to policy.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'invoice.recalculate',
-                'label' => 'Recalculate Invoice',
-                'module' => 'invoice',
-                'description' => 'Allows requesting or performing authorized invoice recalculation.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.recalculate',
+            //     'label' => 'Recalculate Invoice',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows requesting or performing authorized invoice recalculation.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'invoice.view_history',
-                'label' => 'View Invoice History',
-                'module' => 'invoice',
-                'description' => 'Allows viewing invoice changes, recalculations, and historical versions.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'invoice.view_history',
+            //     'label' => 'View Invoice History',
+            //     'module' => 'invoice',
+            //     'description' => 'Allows viewing invoice changes, recalculations, and historical versions.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -919,53 +956,53 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'penalty.view',
-                'label' => 'View Penalties',
-                'module' => 'penalty',
-                'description' => 'Allows viewing penalties applied to taxpayer obligations and invoices.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'penalty.view',
+            //     'label' => 'View Penalties',
+            //     'module' => 'penalty',
+            //     'description' => 'Allows viewing penalties applied to taxpayer obligations and invoices.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'penalty.calculate',
-                'label' => 'Calculate Penalty',
-                'module' => 'penalty',
-                'description' => 'Allows calculating penalties according to configured penalty rules.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'penalty.calculate',
+            //     'label' => 'Calculate Penalty',
+            //     'module' => 'penalty',
+            //     'description' => 'Allows calculating penalties according to configured penalty rules.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'penalty.apply',
-                'label' => 'Apply Penalty',
-                'module' => 'penalty',
-                'description' => 'Allows applying an authorized penalty to an eligible obligation or invoice.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'penalty.apply',
+            //     'label' => 'Apply Penalty',
+            //     'module' => 'penalty',
+            //     'description' => 'Allows applying an authorized penalty to an eligible obligation or invoice.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'penalty.adjust',
-                'label' => 'Adjust Penalty',
-                'module' => 'penalty',
-                'description' => 'Allows making authorized penalty adjustments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'penalty.adjust',
+            //     'label' => 'Adjust Penalty',
+            //     'module' => 'penalty',
+            //     'description' => 'Allows making authorized penalty adjustments.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'penalty.waive',
-                'label' => 'Waive Penalty',
-                'module' => 'penalty',
-                'description' => 'Allows waiving an eligible penalty according to authorized procedures.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'penalty.waive',
+            //     'label' => 'Waive Penalty',
+            //     'module' => 'penalty',
+            //     'description' => 'Allows waiving an eligible penalty according to authorized procedures.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'penalty.view_history',
-                'label' => 'View Penalty History',
-                'module' => 'penalty',
-                'description' => 'Allows viewing the complete history of penalty calculations and adjustments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'penalty.view_history',
+            //     'label' => 'View Penalty History',
+            //     'module' => 'penalty',
+            //     'description' => 'Allows viewing the complete history of penalty calculations and adjustments.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -973,45 +1010,45 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'discount.view',
-                'label' => 'View Discounts',
-                'module' => 'discount',
-                'description' => 'Allows viewing discounts applicable to taxpayer obligations and invoices.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'discount.view',
+            //     'label' => 'View Discounts',
+            //     'module' => 'discount',
+            //     'description' => 'Allows viewing discounts applicable to taxpayer obligations and invoices.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'discount.calculate',
-                'label' => 'Calculate Discount',
-                'module' => 'discount',
-                'description' => 'Allows calculating discounts according to configured rules.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'discount.calculate',
+            //     'label' => 'Calculate Discount',
+            //     'module' => 'discount',
+            //     'description' => 'Allows calculating discounts according to configured rules.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'discount.apply',
-                'label' => 'Apply Discount',
-                'module' => 'discount',
-                'description' => 'Allows applying an authorized discount to an eligible obligation or invoice.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'discount.apply',
+            //     'label' => 'Apply Discount',
+            //     'module' => 'discount',
+            //     'description' => 'Allows applying an authorized discount to an eligible obligation or invoice.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'discount.remove',
-                'label' => 'Remove Discount',
-                'module' => 'discount',
-                'description' => 'Allows removing an eligible discount according to authorized procedures.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'discount.remove',
+            //     'label' => 'Remove Discount',
+            //     'module' => 'discount',
+            //     'description' => 'Allows removing an eligible discount according to authorized procedures.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'discount.view_history',
-                'label' => 'View Discount History',
-                'module' => 'discount',
-                'description' => 'Allows viewing the complete history of discounts applied to taxpayer obligations.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'discount.view_history',
+            //     'label' => 'View Discount History',
+            //     'module' => 'discount',
+            //     'description' => 'Allows viewing the complete history of discounts applied to taxpayer obligations.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1019,61 +1056,61 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'revenue_adjustments.view',
-                'label' => 'View Revenue Adjustments',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows viewing revenue adjustment requests and adjustment history.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.view',
+            //     'label' => 'View Revenue Adjustments',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows viewing revenue adjustment requests and adjustment history.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_adjustments.create',
-                'label' => 'Create Revenue Adjustment',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows creating authorized revenue adjustment requests.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.create',
+            //     'label' => 'Create Revenue Adjustment',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows creating authorized revenue adjustment requests.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_adjustments.review',
-                'label' => 'Review Revenue Adjustment',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows reviewing adjustment requests, reasons, supporting documents, penalties, discounts, and calculated effects.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.review',
+            //     'label' => 'Review Revenue Adjustment',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows reviewing adjustment requests, reasons, supporting documents, penalties, discounts, and calculated effects.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_adjustments.approve',
-                'label' => 'Approve Revenue Adjustment',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows approving authorized revenue adjustments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.approve',
+            //     'label' => 'Approve Revenue Adjustment',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows approving authorized revenue adjustments.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_adjustments.reject',
-                'label' => 'Reject Revenue Adjustment',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows rejecting revenue adjustment requests.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.reject',
+            //     'label' => 'Reject Revenue Adjustment',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows rejecting revenue adjustment requests.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_adjustments.cancel',
-                'label' => 'Cancel Revenue Adjustment',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows cancelling eligible pending adjustment requests.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.cancel',
+            //     'label' => 'Cancel Revenue Adjustment',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows cancelling eligible pending adjustment requests.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_adjustments.view_history',
-                'label' => 'View Revenue Adjustment History',
-                'module' => 'revenue_adjustments',
-                'description' => 'Allows viewing the complete history of revenue adjustments and decisions.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_adjustments.view_history',
+            //     'label' => 'View Revenue Adjustment History',
+            //     'module' => 'revenue_adjustments',
+            //     'description' => 'Allows viewing the complete history of revenue adjustments and decisions.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1081,85 +1118,85 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'revenue_complaints.view',
-                'label' => 'View Revenue Complaints',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows viewing taxpayer revenue complaints and disputes.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.view',
+            //     'label' => 'View Revenue Complaints',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows viewing taxpayer revenue complaints and disputes.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.create',
-                'label' => 'Create Revenue Complaint',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows registering taxpayer complaints and revenue disputes.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.create',
+            //     'label' => 'Create Revenue Complaint',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows registering taxpayer complaints and revenue disputes.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.update',
-                'label' => 'Update Revenue Complaint',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows updating eligible complaint information before final decision.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.update',
+            //     'label' => 'Update Revenue Complaint',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows updating eligible complaint information before final decision.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.review',
-                'label' => 'Review Revenue Complaint',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows investigating complaints, disputes, invoices, assessments, payments, and supporting evidence.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.review',
+            //     'label' => 'Review Revenue Complaint',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows investigating complaints, disputes, invoices, assessments, payments, and supporting evidence.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.request_information',
-                'label' => 'Request Complaint Information',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows requesting additional information or supporting documents.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.request_information',
+            //     'label' => 'Request Complaint Information',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows requesting additional information or supporting documents.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.recommend',
-                'label' => 'Recommend Complaint Resolution',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows recommending a resolution for a taxpayer complaint.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.recommend',
+            //     'label' => 'Recommend Complaint Resolution',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows recommending a resolution for a taxpayer complaint.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.reject',
-                'label' => 'Reject Revenue Complaint',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows rejecting an unsupported or invalid taxpayer complaint.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.reject',
+            //     'label' => 'Reject Revenue Complaint',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows rejecting an unsupported or invalid taxpayer complaint.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.escalate',
-                'label' => 'Escalate Revenue Complaint',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows escalating a complaint to the appropriate authority.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.escalate',
+            //     'label' => 'Escalate Revenue Complaint',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows escalating a complaint to the appropriate authority.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.close',
-                'label' => 'Close Revenue Complaint',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows closing a resolved taxpayer complaint.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.close',
+            //     'label' => 'Close Revenue Complaint',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows closing a resolved taxpayer complaint.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_complaints.view_history',
-                'label' => 'View Complaint History',
-                'module' => 'revenue_complaints',
-                'description' => 'Allows viewing the complete complaint history and actions.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_complaints.view_history',
+            //     'label' => 'View Complaint History',
+            //     'module' => 'revenue_complaints',
+            //     'description' => 'Allows viewing the complete complaint history and actions.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1167,61 +1204,61 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'payment.view',
-                'label' => 'View Payments',
-                'module' => 'payment',
-                'description' => 'Allows viewing payment records and payment history.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.view',
+            //     'label' => 'View Payments',
+            //     'module' => 'payment',
+            //     'description' => 'Allows viewing payment records and payment history.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'payment.create',
-                'label' => 'Create Payment',
-                'module' => 'payment',
-                'description' => 'Allows recording authorized taxpayer payments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.create',
+            //     'label' => 'Create Payment',
+            //     'module' => 'payment',
+            //     'description' => 'Allows recording authorized taxpayer payments.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'payment.collect',
-                'label' => 'Collect Payment',
-                'module' => 'payment',
-                'description' => 'Allows collecting authorized taxpayer payments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.collect',
+            //     'label' => 'Collect Payment',
+            //     'module' => 'payment',
+            //     'description' => 'Allows collecting authorized taxpayer payments.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'payment.verify',
-                'label' => 'Verify Payment',
-                'module' => 'payment',
-                'description' => 'Allows verifying payment records.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.verify',
+            //     'label' => 'Verify Payment',
+            //     'module' => 'payment',
+            //     'description' => 'Allows verifying payment records.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'payment.approve',
-                'label' => 'Approve Payment',
-                'module' => 'payment',
-                'description' => 'Allows approving eligible payment records.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.approve',
+            //     'label' => 'Approve Payment',
+            //     'module' => 'payment',
+            //     'description' => 'Allows approving eligible payment records.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'payment.reverse',
-                'label' => 'Reverse Payment',
-                'module' => 'payment',
-                'description' => 'Allows reversing eligible payments according to authorized procedures.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.reverse',
+            //     'label' => 'Reverse Payment',
+            //     'module' => 'payment',
+            //     'description' => 'Allows reversing eligible payments according to authorized procedures.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'payment.view_history',
-                'label' => 'View Payment History',
-                'module' => 'payment',
-                'description' => 'Allows viewing complete payment history and payment actions.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'payment.view_history',
+            //     'label' => 'View Payment History',
+            //     'module' => 'payment',
+            //     'description' => 'Allows viewing complete payment history and payment actions.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1229,37 +1266,37 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'receipt.view',
-                'label' => 'View Receipts',
-                'module' => 'receipt',
-                'description' => 'Allows viewing payment receipts.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'receipt.view',
+            //     'label' => 'View Receipts',
+            //     'module' => 'receipt',
+            //     'description' => 'Allows viewing payment receipts.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'receipt.create',
-                'label' => 'Create Receipt',
-                'module' => 'receipt',
-                'description' => 'Allows generating payment receipts for eligible recorded payments.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'receipt.create',
+            //     'label' => 'Create Receipt',
+            //     'module' => 'receipt',
+            //     'description' => 'Allows generating payment receipts for eligible recorded payments.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'receipt.print',
-                'label' => 'Print Receipt',
-                'module' => 'receipt',
-                'description' => 'Allows printing payment receipts.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'receipt.print',
+            //     'label' => 'Print Receipt',
+            //     'module' => 'receipt',
+            //     'description' => 'Allows printing payment receipts.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'receipt.reprint',
-                'label' => 'Reprint Receipt',
-                'module' => 'receipt',
-                'description' => 'Allows reprinting previously issued receipts.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'receipt.reprint',
+            //     'label' => 'Reprint Receipt',
+            //     'module' => 'receipt',
+            //     'description' => 'Allows reprinting previously issued receipts.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1267,29 +1304,29 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'revenue_reports.view',
-                'label' => 'View Revenue Reports',
-                'module' => 'revenue_reports',
-                'description' => 'Allows viewing revenue reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_reports.view',
+            //     'label' => 'View Revenue Reports',
+            //     'module' => 'revenue_reports',
+            //     'description' => 'Allows viewing revenue reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_reports.generate',
-                'label' => 'Generate Revenue Reports',
-                'module' => 'revenue_reports',
-                'description' => 'Allows generating revenue reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_reports.generate',
+            //     'label' => 'Generate Revenue Reports',
+            //     'module' => 'revenue_reports',
+            //     'description' => 'Allows generating revenue reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'revenue_reports.export',
-                'label' => 'Export Revenue Reports',
-                'module' => 'revenue_reports',
-                'description' => 'Allows exporting revenue reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'revenue_reports.export',
+            //     'label' => 'Export Revenue Reports',
+            //     'module' => 'revenue_reports',
+            //     'description' => 'Allows exporting revenue reports.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1297,45 +1334,45 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'collection.view',
-                'label' => 'View Collections',
-                'module' => 'collection',
-                'description' => 'Allows viewing revenue collection records and collection status.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection.view',
+            //     'label' => 'View Collections',
+            //     'module' => 'collection',
+            //     'description' => 'Allows viewing revenue collection records and collection status.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'collection.create',
-                'label' => 'Create Collection',
-                'module' => 'collection',
-                'description' => 'Allows creating authorized collection records.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection.create',
+            //     'label' => 'Create Collection',
+            //     'module' => 'collection',
+            //     'description' => 'Allows creating authorized collection records.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'collection.verify',
-                'label' => 'Verify Collection',
-                'module' => 'collection',
-                'description' => 'Allows verifying collection records.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection.verify',
+            //     'label' => 'Verify Collection',
+            //     'module' => 'collection',
+            //     'description' => 'Allows verifying collection records.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'collection.complete',
-                'label' => 'Complete Collection',
-                'module' => 'collection',
-                'description' => 'Allows completing authorized revenue collection workflows.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection.complete',
+            //     'label' => 'Complete Collection',
+            //     'module' => 'collection',
+            //     'description' => 'Allows completing authorized revenue collection workflows.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'collection.view_history',
-                'label' => 'View Collection History',
-                'module' => 'collection',
-                'description' => 'Allows viewing collection history and collection actions.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection.view_history',
+            //     'label' => 'View Collection History',
+            //     'module' => 'collection',
+            //     'description' => 'Allows viewing collection history and collection actions.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1343,29 +1380,29 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'collection_report.view',
-                'label' => 'View Collection Reports',
-                'module' => 'collection_report',
-                'description' => 'Allows viewing revenue collection reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection_report.view',
+            //     'label' => 'View Collection Reports',
+            //     'module' => 'collection_report',
+            //     'description' => 'Allows viewing revenue collection reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'collection_report.generate',
-                'label' => 'Generate Collection Reports',
-                'module' => 'collection_report',
-                'description' => 'Allows generating revenue collection reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection_report.generate',
+            //     'label' => 'Generate Collection Reports',
+            //     'module' => 'collection_report',
+            //     'description' => 'Allows generating revenue collection reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'collection_report.export',
-                'label' => 'Export Collection Reports',
-                'module' => 'collection_report',
-                'description' => 'Allows exporting revenue collection reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'collection_report.export',
+            //     'label' => 'Export Collection Reports',
+            //     'module' => 'collection_report',
+            //     'description' => 'Allows exporting revenue collection reports.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1373,61 +1410,61 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'plans.view',
-                'label' => 'View Plans',
-                'module' => 'plans',
-                'description' => 'Allows viewing plans.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.view',
+            //     'label' => 'View Plans',
+            //     'module' => 'plans',
+            //     'description' => 'Allows viewing plans.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'plans.create',
-                'label' => 'Create Plan',
-                'module' => 'plans',
-                'description' => 'Allows creating plans.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.create',
+            //     'label' => 'Create Plan',
+            //     'module' => 'plans',
+            //     'description' => 'Allows creating plans.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'plans.update',
-                'label' => 'Update Plan',
-                'module' => 'plans',
-                'description' => 'Allows updating eligible plans.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.update',
+            //     'label' => 'Update Plan',
+            //     'module' => 'plans',
+            //     'description' => 'Allows updating eligible plans.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'plans.submit',
-                'label' => 'Submit Plan',
-                'module' => 'plans',
-                'description' => 'Allows submitting plans for review.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.submit',
+            //     'label' => 'Submit Plan',
+            //     'module' => 'plans',
+            //     'description' => 'Allows submitting plans for review.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'plans.approve',
-                'label' => 'Approve Plan',
-                'module' => 'plans',
-                'description' => 'Allows approving plans.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.approve',
+            //     'label' => 'Approve Plan',
+            //     'module' => 'plans',
+            //     'description' => 'Allows approving plans.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'plans.reject',
-                'label' => 'Reject Plan',
-                'module' => 'plans',
-                'description' => 'Allows rejecting plans.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.reject',
+            //     'label' => 'Reject Plan',
+            //     'module' => 'plans',
+            //     'description' => 'Allows rejecting plans.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'plans.view_history',
-                'label' => 'View Plan History',
-                'module' => 'plans',
-                'description' => 'Allows viewing plan workflow and change history.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'plans.view_history',
+            //     'label' => 'View Plan History',
+            //     'module' => 'plans',
+            //     'description' => 'Allows viewing plan workflow and change history.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1435,61 +1472,61 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'reports.view',
-                'label' => 'View Reports',
-                'module' => 'reports',
-                'description' => 'Allows viewing reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.view',
+            //     'label' => 'View Reports',
+            //     'module' => 'reports',
+            //     'description' => 'Allows viewing reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'reports.create',
-                'label' => 'Create Report',
-                'module' => 'reports',
-                'description' => 'Allows creating reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.create',
+            //     'label' => 'Create Report',
+            //     'module' => 'reports',
+            //     'description' => 'Allows creating reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'reports.update',
-                'label' => 'Update Report',
-                'module' => 'reports',
-                'description' => 'Allows updating eligible reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.update',
+            //     'label' => 'Update Report',
+            //     'module' => 'reports',
+            //     'description' => 'Allows updating eligible reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'reports.submit',
-                'label' => 'Submit Report',
-                'module' => 'reports',
-                'description' => 'Allows submitting reports for review.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.submit',
+            //     'label' => 'Submit Report',
+            //     'module' => 'reports',
+            //     'description' => 'Allows submitting reports for review.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'reports.approve',
-                'label' => 'Approve Report',
-                'module' => 'reports',
-                'description' => 'Allows approving reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.approve',
+            //     'label' => 'Approve Report',
+            //     'module' => 'reports',
+            //     'description' => 'Allows approving reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'reports.reject',
-                'label' => 'Reject Report',
-                'module' => 'reports',
-                'description' => 'Allows rejecting reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.reject',
+            //     'label' => 'Reject Report',
+            //     'module' => 'reports',
+            //     'description' => 'Allows rejecting reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'reports.view_history',
-                'label' => 'View Report History',
-                'module' => 'reports',
-                'description' => 'Allows viewing report workflow and change history.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'reports.view_history',
+            //     'label' => 'View Report History',
+            //     'module' => 'reports',
+            //     'description' => 'Allows viewing report workflow and change history.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1497,29 +1534,29 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'report.view',
-                'label' => 'View Report',
-                'module' => 'report',
-                'description' => 'Allows viewing authorized operational reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'report.view',
+            //     'label' => 'View Report',
+            //     'module' => 'report',
+            //     'description' => 'Allows viewing authorized operational reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'report.generate',
-                'label' => 'Generate Report',
-                'module' => 'report',
-                'description' => 'Allows generating authorized operational reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'report.generate',
+            //     'label' => 'Generate Report',
+            //     'module' => 'report',
+            //     'description' => 'Allows generating authorized operational reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'report.export',
-                'label' => 'Export Report',
-                'module' => 'report',
-                'description' => 'Allows exporting authorized operational reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'report.export',
+            //     'label' => 'Export Report',
+            //     'module' => 'report',
+            //     'description' => 'Allows exporting authorized operational reports.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1527,29 +1564,29 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'performance_report.view',
-                'label' => 'View Performance Reports',
-                'module' => 'performance_report',
-                'description' => 'Allows viewing organizational and revenue performance reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'performance_report.view',
+            //     'label' => 'View Performance Reports',
+            //     'module' => 'performance_report',
+            //     'description' => 'Allows viewing organizational and revenue performance reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'performance_report.generate',
-                'label' => 'Generate Performance Reports',
-                'module' => 'performance_report',
-                'description' => 'Allows generating performance reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'performance_report.generate',
+            //     'label' => 'Generate Performance Reports',
+            //     'module' => 'performance_report',
+            //     'description' => 'Allows generating performance reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'performance_report.export',
-                'label' => 'Export Performance Reports',
-                'module' => 'performance_report',
-                'description' => 'Allows exporting performance reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'performance_report.export',
+            //     'label' => 'Export Performance Reports',
+            //     'module' => 'performance_report',
+            //     'description' => 'Allows exporting performance reports.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1557,29 +1594,29 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'decision_report.view',
-                'label' => 'View Decision Reports',
-                'module' => 'decision_report',
-                'description' => 'Allows viewing assessment and revenue decision reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'decision_report.view',
+            //     'label' => 'View Decision Reports',
+            //     'module' => 'decision_report',
+            //     'description' => 'Allows viewing assessment and revenue decision reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'decision_report.generate',
-                'label' => 'Generate Decision Reports',
-                'module' => 'decision_report',
-                'description' => 'Allows generating assessment and revenue decision reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'decision_report.generate',
+            //     'label' => 'Generate Decision Reports',
+            //     'module' => 'decision_report',
+            //     'description' => 'Allows generating assessment and revenue decision reports.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'decision_report.export',
-                'label' => 'Export Decision Reports',
-                'module' => 'decision_report',
-                'description' => 'Allows exporting assessment and revenue decision reports.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'decision_report.export',
+            //     'label' => 'Export Decision Reports',
+            //     'module' => 'decision_report',
+            //     'description' => 'Allows exporting assessment and revenue decision reports.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1587,29 +1624,29 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'data_validation.view',
-                'label' => 'View Data Validation',
-                'module' => 'data_validation',
-                'description' => 'Allows viewing data validation results and validation status.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'data_validation.view',
+            //     'label' => 'View Data Validation',
+            //     'module' => 'data_validation',
+            //     'description' => 'Allows viewing data validation results and validation status.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'data_validation.run',
-                'label' => 'Run Data Validation',
-                'module' => 'data_validation',
-                'description' => 'Allows running authorized data validation checks.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'data_validation.run',
+            //     'label' => 'Run Data Validation',
+            //     'module' => 'data_validation',
+            //     'description' => 'Allows running authorized data validation checks.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'data_validation.resolve',
-                'label' => 'Resolve Data Validation',
-                'module' => 'data_validation',
-                'description' => 'Allows resolving authorized data validation issues.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'data_validation.resolve',
+            //     'label' => 'Resolve Data Validation',
+            //     'module' => 'data_validation',
+            //     'description' => 'Allows resolving authorized data validation issues.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1617,21 +1654,21 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'kpi.view',
-                'label' => 'View KPI',
-                'module' => 'kpi',
-                'description' => 'Allows viewing KPIs and KPI results.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'kpi.view',
+            //     'label' => 'View KPI',
+            //     'module' => 'kpi',
+            //     'description' => 'Allows viewing KPIs and KPI results.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'kpi.manage',
-                'label' => 'Manage KPI',
-                'module' => 'kpi',
-                'description' => 'Allows creating, updating, configuring, and managing KPIs.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'kpi.manage',
+            //     'label' => 'Manage KPI',
+            //     'module' => 'kpi',
+            //     'description' => 'Allows creating, updating, configuring, and managing KPIs.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------
@@ -1639,21 +1676,21 @@ class PermissionSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
 
-            [
-                'name' => 'evidence.view',
-                'label' => 'View Evidence',
-                'module' => 'evidence',
-                'description' => 'Allows viewing authorized evidence files and metadata.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'evidence.view',
+            //     'label' => 'View Evidence',
+            //     'module' => 'evidence',
+            //     'description' => 'Allows viewing authorized evidence files and metadata.',
+            //     'is_system' => false,
+            // ],
 
-            [
-                'name' => 'evidence.upload',
-                'label' => 'Upload Evidence',
-                'module' => 'evidence',
-                'description' => 'Allows uploading evidence files to authorized records.',
-                'is_system' => false,
-            ],
+            // [
+            //     'name' => 'evidence.upload',
+            //     'label' => 'Upload Evidence',
+            //     'module' => 'evidence',
+            //     'description' => 'Allows uploading evidence files to authorized records.',
+            //     'is_system' => false,
+            // ],
 
             /*
             |--------------------------------------------------------------------------

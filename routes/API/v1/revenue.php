@@ -37,6 +37,7 @@ Route::prefix('revenue')
         RevenueCategoryController::class
     );
 
+
     Route::get(
         'codes',
         [RevenueCodeController::class, 'index']
@@ -63,14 +64,6 @@ Route::prefix('revenue')
     | Revenue Service
     |     └── Access Rules
     |
-    | Example:
-    |
-    | GET    /revenue/services/{service}/access-rules
-    | POST   /revenue/services/{service}/access-rules
-    | GET    /revenue/services/{service}/access-rules/{rule}
-    | PATCH  /revenue/services/{service}/access-rules/{rule}
-    | DELETE /revenue/services/{service}/access-rules/{rule}
-    |
     */
 
     Route::apiResource(
@@ -83,7 +76,7 @@ Route::prefix('revenue')
 
     /*
     |--------------------------------------------------------------------------
-    | Optional Status Toggle
+    | Service Access Rule Status
     |--------------------------------------------------------------------------
     */
 
@@ -92,31 +85,18 @@ Route::prefix('revenue')
         [ServiceAccessRuleController::class, 'changeStatus']
     );
 
-      /*
+
+    /*
     |--------------------------------------------------------------------------
     | Tariff Versions
     |--------------------------------------------------------------------------
     |
-    | Manage yearly tariff pricing versions.
-    |
-    | Examples:
-    |
-    | GET    /revenue/tariff-versions
-    | POST   /revenue/tariff-versions
-    | GET    /revenue/tariff-versions/{id}
-    | PUT    /revenue/tariff-versions/{id}
-    | DELETE /revenue/tariff-versions/{id}
+    | IMPORTANT:
+    | Custom static routes such as /summary must be registered
+    | BEFORE /{tariffVersion}, otherwise Laravel may interpret
+    | "summary" as a tariff version UUID.
     |
     */
-
-
-    Route::apiResource(
-        'tariff-versions',
-        TariffVersionController::class
-    );
-
-
-
 
 
     /*
@@ -124,25 +104,15 @@ Route::prefix('revenue')
     | Tariff Version Dashboard Summary
     |--------------------------------------------------------------------------
     |
-    | Returns:
-    |
-    | {
-    |   current_active_tariff:{
-    |       year:2026,
-    |       message:"2026 is the currently active tariff..."
-    |   }
-    | }
+    | GET /revenue/tariff-versions/summary
     |
     */
 
-
     Route::get(
-        'tariff-versions-summary',
+        'tariff-versions/summary',
         [TariffVersionController::class, 'summary']
-    );
-
-
-
+    )
+        ->name('tariff-versions.summary');
 
 
     /*
@@ -150,28 +120,50 @@ Route::prefix('revenue')
     | Activate Tariff Version
     |--------------------------------------------------------------------------
     |
-    | Only one tariff version can be active.
+    | PATCH /revenue/tariff-versions/{id}/activate
     |
     */
 
     Route::patch(
         'tariff-versions/{id}/activate',
         [TariffVersionController::class, 'activate']
-    );
-
-
-
+    )
+        ->name('tariff-versions.activate');
 
 
     /*
     |--------------------------------------------------------------------------
     | Restore Deleted Tariff Version
     |--------------------------------------------------------------------------
+    |
+    | PATCH /revenue/tariff-versions/{id}/restore
+    |
     */
 
     Route::patch(
         'tariff-versions/{id}/restore',
         [TariffVersionController::class, 'restore']
+    )
+        ->name('tariff-versions.restore');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tariff Version CRUD
+    |--------------------------------------------------------------------------
+    |
+    | GET    /revenue/tariff-versions
+    | POST   /revenue/tariff-versions
+    | GET    /revenue/tariff-versions/{tariff_version}
+    | PUT    /revenue/tariff-versions/{tariff_version}
+    | PATCH  /revenue/tariff-versions/{tariff_version}
+    | DELETE /revenue/tariff-versions/{tariff_version}
+    |
+    */
+
+    Route::apiResource(
+        'tariff-versions',
+        TariffVersionController::class
     );
 
 
@@ -186,10 +178,12 @@ Route::prefix('revenue')
         MeasurementUnitController::class
     );
 
+
     Route::patch(
         'measurement-units/{id}/restore',
         [MeasurementUnitController::class, 'restore']
     );
+
 
     Route::patch(
         'measurement-units/{id}/status',
@@ -208,10 +202,12 @@ Route::prefix('revenue')
         BaseFieldController::class
     );
 
+
     Route::patch(
         'base-fields/{id}/restore',
         [BaseFieldController::class, 'restore']
     );
+
 
     Route::patch(
         'base-fields/{id}/status',
@@ -228,17 +224,7 @@ Route::prefix('revenue')
     |      |
     |      └── Rules
     |
-    | Examples:
-    |
-    | GET    /revenue/tariff-versions/{tariffVersion}/rules
-    | POST   /revenue/tariff-versions/{tariffVersion}/rules
-    |
-    | GET    /revenue/tariff-rules/{rule}
-    | PUT    /revenue/tariff-rules/{rule}
-    | DELETE /revenue/tariff-rules/{rule}
-    |
     */
-
 
     Route::apiResource(
         'tariff-versions.tariff-rules',
@@ -247,17 +233,29 @@ Route::prefix('revenue')
         'tariff-rules' => 'tariffRule',
     ]);
 
-    Route::prefix('tariff-rules/{tariffRule}')
-    ->group(function () {
 
-        Route::apiResource(
-            'formula-variables',
-            TariffFormulaVariableController::class
-        );
-    });
+    /*
+    |--------------------------------------------------------------------------
+    | Tariff Formula Variables
+    |--------------------------------------------------------------------------
+    |
+    | Tariff Rule
+    |      |
+    |      └── Formula Variables
+    |
+    */
+
+    Route::prefix('tariff-rules/{tariffRule}')
+        ->group(function () {
+
+            Route::apiResource(
+                'formula-variables',
+                TariffFormulaVariableController::class
+            );
+
+        });
 
 });
-
 
 
 
