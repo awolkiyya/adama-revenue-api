@@ -3,12 +3,15 @@
 namespace App\Providers;
 
 use App\Models\MeasurementUnit;
+use App\Models\RevenueCategory;
+use App\Models\RevenueService;
 use App\Models\Role;
 
 use App\Policies\PermissionPolicy;
 use App\Policies\RolePolicy;
-
 use App\Policies\MeasurementUnitPolicy;
+use App\Policies\RevenueCategoryPolicy;
+use App\Policies\RevenueServicePolicy;
 
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -56,6 +59,16 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(
             MeasurementUnit::class,
             MeasurementUnitPolicy::class
+        );
+
+        Gate::policy(
+            RevenueCategory::class,
+            RevenueCategoryPolicy::class
+        );
+
+        Gate::policy(
+            RevenueService::class,
+            RevenueServicePolicy::class
         );
 
         /*

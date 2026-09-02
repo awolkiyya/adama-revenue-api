@@ -97,6 +97,9 @@ class StoreBaseFieldRequest extends FormRequest
                     'TEXT',
                     'BOOLEAN',
                     'DATE',
+                    "FILE",
+                    "CHECKBOX",
+                    "RADIO"
                 ]),
             ],
 

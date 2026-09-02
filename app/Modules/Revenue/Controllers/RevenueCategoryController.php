@@ -3,12 +3,13 @@
 namespace App\Modules\Revenue\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Models\RevenueCategory;
 use App\Modules\Revenue\Requests\StoreRevenueCategoryRequest;
 use App\Modules\Revenue\Requests\UpdateRevenueCategoryRequest;
-use App\Models\RevenueCategory;
 use App\Modules\Revenue\Resources\RevenueCategoryResource;
 use App\Modules\Revenue\Services\RevenueCategoryService;
 use App\Services\ApiResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Throwable;
 
@@ -17,53 +18,99 @@ class RevenueCategoryController extends Controller
     public function __construct(
         private readonly RevenueCategoryService $service
     ) {
-    }
-
-   /**
-     * Display a paginated list of revenue categories.
-     */
-    public function index(Request $request)
-    {
-        $filters = $request->only([
-            'revenue_domain',
-            'is_active',
-        ]);
-
-
-        $categories = $this->service->all(
-            $filters
-        );
-
-
-        $summary = $this->service->summary(
-            $filters
-        );
-
-
-        return ApiResponse::success(
-
-            RevenueCategoryResource::collection(
-                $categories
-            ),
-
-            'Revenue categories retrieved successfully.',
-
-            [],
-
-            200,
-
-            $summary
-
+        /**
+         * ========================================================
+         * RESOURCE AUTHORIZATION
+         * ========================================================
+         *
+         * Laravel maps controller actions to:
+         *
+         * index   → viewAny()
+         * store   → create()
+         * show    → view()
+         * update  → update()
+         * destroy → delete()
+         *
+         * Policy:
+         *
+         *     App\Policies\RevenueCategoryPolicy
+         */
+        $this->authorizeResource(
+            RevenueCategory::class,
+            'category'
         );
     }
 
     /**
-     * Store a newly created revenue category with its revenue codes.
+     * ============================================================
+     * INDEX
+     * ============================================================
+     *
+     * Display a paginated list of revenue categories.
+     *
+     * Policy:
+     *
+     *     RevenueCategoryPolicy::viewAny()
+     *
+     * Permission:
+     *
+     *     revenue_categories.view
      */
-    public function store(StoreRevenueCategoryRequest $request)
+    public function index(Request $request): JsonResponse
     {
         try {
+            $filters = $request->only([
+                'revenue_domain',
+                'is_active',
+            ]);
 
+            $categories = $this->service->all(
+                $filters
+            );
+
+            $summary = $this->service->summary(
+                $filters
+            );
+
+            return ApiResponse::success(
+                RevenueCategoryResource::collection(
+                    $categories
+                ),
+                'Revenue categories retrieved successfully.',
+                [],
+                200,
+                $summary
+            );
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return ApiResponse::serverError(
+                exception: $e
+            );
+        }
+    }
+
+    /**
+     * ============================================================
+     * STORE
+     * ============================================================
+     *
+     * Store a newly created revenue category with its
+     * revenue codes.
+     *
+     * Policy:
+     *
+     *     RevenueCategoryPolicy::create()
+     *
+     * Permission:
+     *
+     *     revenue_categories.create
+     */
+    public function store(
+        StoreRevenueCategoryRequest $request
+    ): JsonResponse {
+        try {
             $category = $this->service->create(
                 $request->validated()
             );
@@ -74,22 +121,36 @@ class RevenueCategoryController extends Controller
             );
 
         } catch (Throwable $e) {
-
             report($e);
 
-            return ApiResponse::serverError(exception: $e);
-
+            return ApiResponse::serverError(
+                exception: $e
+            );
         }
     }
 
     /**
+     * ============================================================
+     * SHOW
+     * ============================================================
+     *
      * Display the specified revenue category.
+     *
+     * Policy:
+     *
+     *     RevenueCategoryPolicy::view()
+     *
+     * Permission:
+     *
+     *     revenue_categories.view
      */
-    public function show(RevenueCategory $category)
-    {
+    public function show(
+        RevenueCategory $category
+    ): JsonResponse {
         try {
-
-            $category = $this->service->find($category);
+            $category = $this->service->find(
+                $category
+            );
 
             return ApiResponse::success(
                 new RevenueCategoryResource($category),
@@ -97,23 +158,35 @@ class RevenueCategoryController extends Controller
             );
 
         } catch (Throwable $e) {
-
             report($e);
 
-            return ApiResponse::serverError(exception: $e);
-
+            return ApiResponse::serverError(
+                exception: $e
+            );
         }
     }
 
     /**
-     * Update the specified revenue category and synchronize its codes.
+     * ============================================================
+     * UPDATE
+     * ============================================================
+     *
+     * Update the specified revenue category and synchronize
+     * its revenue codes.
+     *
+     * Policy:
+     *
+     *     RevenueCategoryPolicy::update()
+     *
+     * Permission:
+     *
+     *     revenue_categories.update
      */
     public function update(
         UpdateRevenueCategoryRequest $request,
         RevenueCategory $category
-    ) {
+    ): JsonResponse {
         try {
-
             $category = $this->service->update(
                 $category,
                 $request->validated()
@@ -125,31 +198,48 @@ class RevenueCategoryController extends Controller
             );
 
         } catch (Throwable $e) {
-
             report($e);
 
-            return ApiResponse::serverError(exception: $e);
-
+            return ApiResponse::serverError(
+                exception: $e
+            );
         }
     }
 
     /**
+     * ============================================================
+     * DELETE
+     * ============================================================
+     *
      * Remove the specified revenue category.
+     *
+     * Policy:
+     *
+     *     RevenueCategoryPolicy::delete()
+     *
+     * Permission:
+     *
+     *     revenue_categories.delete
+     *
+     * The service layer remains responsible for determining
+     * whether the category can actually be deleted.
      */
-    public function destroy(RevenueCategory $category)
-    {
+    public function destroy(
+        RevenueCategory $category
+    ): JsonResponse {
         try {
-
-            $this->service->delete($category);
+            $this->service->delete(
+                $category
+            );
 
             return ApiResponse::deleted();
 
         } catch (Throwable $e) {
-
             report($e);
 
-            return ApiResponse::serverError(exception: $e);
-
+            return ApiResponse::serverError(
+                exception: $e
+            );
         }
     }
 }

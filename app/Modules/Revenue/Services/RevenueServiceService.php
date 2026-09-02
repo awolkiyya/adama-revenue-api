@@ -7,42 +7,127 @@ use App\Models\RevenueService;
 use App\Models\RevenueServiceField;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Http\Request;
+use Illuminate\Database\Eloquent\Builder;
+
 
 class RevenueServiceService
-{/**
- * Paginated revenue services.
- */
-public function paginate()
 {
-    return RevenueService::query()
-        ->with([
-            /*
-             * Revenue hierarchy
-             *
-             * RevenueService
-             *      ↓
-             * RevenueCode
-             *      ↓
-             * RevenueCategory
-             */
-            'revenueCode.category',
 
+    /**
+     * Paginated revenue services.
+     *
+     * Supported query params (all optional):
+     * - search:            string   — matches service name or code
+     * - revenue_domain:    string   — RevenueCategory.revenue_domain (via revenueCode.category)
+     * - code:               string   — RevenueCode.code
+     * - collection_mode:   string   — RevenueService.collection_mode
+     * - is_active:          bool     — RevenueService.is_active
+     * - per_page:           int      — page size, defaults to 20
+     */
+    public function paginate(Request $request)
+    {
+        return RevenueService::query()
+            ->with([
+                /*
+                 * Revenue hierarchy
+                 *
+                 * RevenueService
+                 *      ↓
+                 * RevenueCode
+                 *      ↓
+                 * RevenueCategory
+                 */
+                'revenueCode.category',
+    
+                /*
+                 * Service field configuration
+                 *
+                 * RevenueServiceField
+                 *      ↓
+                 * BaseField
+                 *      ├── MeasurementUnit
+                 *      └── Options
+                 */
+                'fields.baseField.measurementUnit',
+                'fields.baseField.options',
+            ])
+            ->withCount('fields')
+    
             /*
-             * Service field configuration
-             *
-             * RevenueServiceField
-             *      ↓
-             * BaseField
-             *      ├── MeasurementUnit
-             *      └── Options
-             */
-            'fields.baseField.measurementUnit',
-            'fields.baseField.options',
-        ])
-        ->withCount('fields')
-        ->latest()
-        ->paginate(20);
-}
+            |--------------------------------------------------------------------------
+            | Search
+            |--------------------------------------------------------------------------
+            |
+            | Matches against the service's own name, plus its parent revenue
+            | code — since officers often search by code number rather than name.
+            |
+            */
+            ->when($request->filled('search'), function (Builder $query) use ($request) {
+                $search = trim($request->string('search'));
+    
+                $query->where(function (Builder $inner) use ($search) {
+                    $inner->where('name', 'like', "%{$search}%")
+                        ->orWhereHas('revenueCode', function (Builder $codeQuery) use ($search) {
+                            $codeQuery->where('code', 'like', "%{$search}%")
+                                ->orWhere('name', 'like', "%{$search}%");
+                        });
+                });
+            })
+    
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Domain
+            |--------------------------------------------------------------------------
+            |
+            | Lives on RevenueCategory, two hops up via revenueCode.category,
+            | so this must be a whereHas across both relations.
+            |
+            */
+            ->when($request->filled('revenue_domain'), function (Builder $query) use ($request) {
+                $query->whereHas('revenueCode.category', function (Builder $categoryQuery) use ($request) {
+                    $categoryQuery->where('revenue_domain', $request->string('revenue_domain'));
+                });
+            })
+    
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Code
+            |--------------------------------------------------------------------------
+            */
+            ->when($request->filled('code'), function (Builder $query) use ($request) {
+                $query->whereHas('revenueCode', function (Builder $codeQuery) use ($request) {
+                    $codeQuery->where('code', $request->string('code'));
+                });
+            })
+    
+            /*
+            |--------------------------------------------------------------------------
+            | Collection Mode
+            |--------------------------------------------------------------------------
+            */
+            ->when($request->filled('collection_mode'), function (Builder $query) use ($request) {
+                $query->where('collection_mode', $request->string('collection_mode'));
+            })
+    
+            /*
+            |--------------------------------------------------------------------------
+            | Active Status
+            |--------------------------------------------------------------------------
+            |
+            | The frontend sends a real boolean (true/false), but query strings
+            | arrive as "1"/"0" or "true"/"false" strings over HTTP, so this
+            | must be normalized rather than compared with ===.
+            |
+            */
+            ->when($request->has('is_active'), function (Builder $query) use ($request) {
+                $query->where('is_active', $request->boolean('is_active'));
+            })
+    
+            ->latest()
+            ->paginate($request->integer('per_page', 20))
+            ->withQueryString();
+    }
 
     /**
      * Summary cards.
