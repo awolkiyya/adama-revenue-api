@@ -694,8 +694,121 @@ class PermissionSeeder extends Seeder
             ],
 
 
+            /*
+            |--------------------------------------------------------------------------
+            | Interest Rate Configuration
+            |--------------------------------------------------------------------------
+            */
 
-                        /*
+            [
+                'name' => 'interest_rates.view',
+                'label' => 'View Interest Rates',
+                'module' => 'interest_rates',
+                'description' => 'Allows viewing configured interest rates and their effective periods.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'interest_rates.create',
+                'label' => 'Create Interest Rate',
+                'module' => 'interest_rates',
+                'description' => 'Allows creating new interest rate configurations with effective dates.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'interest_rates.update',
+                'label' => 'Update Interest Rate',
+                'module' => 'interest_rates',
+                'description' => 'Allows updating eligible interest rate configurations according to system policy.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'interest_rates.activate',
+                'label' => 'Activate Interest Rate',
+                'module' => 'interest_rates',
+                'description' => 'Allows activating an eligible interest rate configuration.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'interest_rates.deactivate',
+                'label' => 'Deactivate Interest Rate',
+                'module' => 'interest_rates',
+                'description' => 'Allows deactivating an eligible interest rate configuration.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'interest_rates.view_history',
+                'label' => 'View Interest Rate History',
+                'module' => 'interest_rates',
+                'description' => 'Allows viewing the history of interest rate configurations and changes.',
+                'is_system' => false,
+            ],
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Penalty Rule Configuration
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'penalty_rules.view',
+                'label' => 'View Penalty Rules',
+                'module' => 'penalty_rules',
+                'description' => 'Allows viewing configured penalty rules, including default rules and service-specific overrides.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_rules.create',
+                'label' => 'Create Penalty Rule',
+                'module' => 'penalty_rules',
+                'description' => 'Allows creating new penalty rule configurations for tariff versions and revenue services.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_rules.update',
+                'label' => 'Update Penalty Rule',
+                'module' => 'penalty_rules',
+                'description' => 'Allows updating eligible penalty rule configurations according to system policy.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_rules.activate',
+                'label' => 'Activate Penalty Rule',
+                'module' => 'penalty_rules',
+                'description' => 'Allows activating an eligible penalty rule configuration.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_rules.deactivate',
+                'label' => 'Deactivate Penalty Rule',
+                'module' => 'penalty_rules',
+                'description' => 'Allows deactivating an eligible penalty rule configuration.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_rules.view_history',
+                'label' => 'View Penalty Rule History',
+                'module' => 'penalty_rules',
+                'description' => 'Allows viewing the history of penalty rule configurations and changes.',
+                'is_system' => false,
+            ],
+
+
+
+
+
+
+            /*
             |--------------------------------------------------------------------------
             | Taxpayer Management
             |--------------------------------------------------------------------------
