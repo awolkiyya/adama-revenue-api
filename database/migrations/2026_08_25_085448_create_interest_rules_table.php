@@ -21,18 +21,26 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Interest Rate
+            | Annual Bank Interest Rate
             |--------------------------------------------------------------------------
             |
-            | Stored as percentage.
+            | Global annual interest rate applicable to all revenue services.
+            |
+            | Stored as a percentage.
             |
             | Example:
             |
-            | 24.7250 = 24.725%
+            | 24.7250 = 24.725% per year
             |
             | The calculation engine converts this to decimal form:
             |
-            | 24.725 / 100 = 0.24725
+            | 24.7250 / 100 = 0.24725
+            |
+            | Monthly rate is derived by the calculation engine:
+            |
+            | 24.7250 / 12 = 2.0604167% per month
+            |
+            | Do NOT store the monthly rate separately.
             |
             */
 
@@ -40,39 +48,10 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Rate Period
-            |--------------------------------------------------------------------------
-            |
-            | Defines the period represented by the configured rate.
-            |
-            | YEAR
-            | MONTH
-            | DAY
-            |
-            */
-
-            $table->string('rate_period', 20)
-                ->default('YEAR');
-
-            /*
-            |--------------------------------------------------------------------------
-            | Calculation Method
-            |--------------------------------------------------------------------------
-            |
-            | SIMPLE
-            | COMPOUND
-            |
-            */
-
-            $table->string('calculation_method', 30)
-                ->default('SIMPLE');
-
-            /*
-            |--------------------------------------------------------------------------
             | Calculation Basis
             |--------------------------------------------------------------------------
             |
-            | Defines the amount against which interest is calculated.
+            | Defines the monetary amount against which interest is calculated.
             |
             | PRINCIPAL
             | OUTSTANDING
@@ -87,15 +66,10 @@ return new class extends Migration
             | Effective Period
             |--------------------------------------------------------------------------
             |
-            | Defines the legal/business period during which this interest
-            | rule applies.
+            | Defines the legal/business period during which this annual
+            | interest rate applies.
             |
             | effective_to = NULL means the rule has no defined end date.
-            |
-            | Example:
-            |
-            | effective_from: 2026-07-08
-            | effective_to:   NULL
             |
             */
 
@@ -127,8 +101,8 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             |
             | Reference to the law, regulation, directive, proclamation,
-            | council decision, or other legal instrument defining the
-            | applicable interest rate.
+            | council decision, bank directive, or other legal instrument
+            | defining the applicable annual interest rate.
             |
             */
 
@@ -170,24 +144,54 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Indexes
+            | Query Index
             |--------------------------------------------------------------------------
+            |
+            | Supports finding active rules within their effective period.
+            |
             */
 
             $table->index(
                 [
+                    'is_active',
                     'effective_from',
                     'effective_to',
                 ],
-                'interest_rules_effective_index'
+                'interest_rules_active_effective_index'
             );
-
-            $table->index('is_active');
-
-            $table->index('effective_from');
-
-            $table->index('effective_to');
         });
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Interest Rate
+        |--------------------------------------------------------------------------
+        |
+        | Negative interest rates are not permitted.
+        |
+        */
+
+        DB::statement(<<<'SQL'
+            ALTER TABLE interest_rules
+            ADD CONSTRAINT interest_rules_rate_non_negative
+            CHECK (rate >= 0)
+        SQL);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Calculation Basis
+        |--------------------------------------------------------------------------
+        |
+        | Only these two monetary bases are supported.
+        |
+        */
+
+        DB::statement(<<<'SQL'
+            ALTER TABLE interest_rules
+            ADD CONSTRAINT interest_rules_calculation_basis_check
+            CHECK (
+                calculation_basis IN ('PRINCIPAL', 'OUTSTANDING')
+            )
+        SQL);
 
         /*
         |--------------------------------------------------------------------------
@@ -212,21 +216,27 @@ return new class extends Migration
         | PostgreSQL Exclusion Constraint
         |--------------------------------------------------------------------------
         |
-        | Prevents overlapping active interest rules.
+        | Prevents overlapping ACTIVE interest rules.
         |
-        | Example:
+        | Because effective_to is business-inclusive, we add one day and
+        | create a PostgreSQL half-open range:
+        |
+        | 2026-07-08 → 2027-07-07
+        |
+        | becomes:
+        |
+        | [2026-07-08, 2027-07-08)
+        |
+        | Therefore:
         |
         | 2026-07-08 → 2027-07-07
         | 2027-07-08 → 2028-07-07
         |
-        | Valid.
+        | are valid.
         |
-        | But:
+        | But overlapping periods are rejected.
         |
-        | 2026-07-08 → 2027-07-07
-        | 2027-01-01 → 2027-12-31
-        |
-        | Invalid because the periods overlap.
+        | NULL effective_to represents an open-ended rule.
         |
         */
 

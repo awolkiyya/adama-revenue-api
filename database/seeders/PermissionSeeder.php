@@ -694,57 +694,57 @@ class PermissionSeeder extends Seeder
             ],
 
 
-            /*
+           /*
             |--------------------------------------------------------------------------
-            | Interest Rate Configuration
+            | Interest Rule Configuration
             |--------------------------------------------------------------------------
             */
 
             [
-                'name' => 'interest_rates.view',
-                'label' => 'View Interest Rates',
-                'module' => 'interest_rates',
-                'description' => 'Allows viewing configured interest rates and their effective periods.',
+                'name' => 'interest_rules.view',
+                'label' => 'View Interest Rules',
+                'module' => 'interest_rules',
+                'description' => 'Allows viewing configured interest rules, including rates, calculation methods, calculation bases, and effective periods.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'interest_rates.create',
-                'label' => 'Create Interest Rate',
-                'module' => 'interest_rates',
-                'description' => 'Allows creating new interest rate configurations with effective dates.',
+                'name' => 'interest_rules.create',
+                'label' => 'Create Interest Rule',
+                'module' => 'interest_rules',
+                'description' => 'Allows creating new interest rule configurations with rates, calculation methods, calculation bases, and effective periods.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'interest_rates.update',
-                'label' => 'Update Interest Rate',
-                'module' => 'interest_rates',
-                'description' => 'Allows updating eligible interest rate configurations according to system policy.',
+                'name' => 'interest_rules.update',
+                'label' => 'Update Interest Rule',
+                'module' => 'interest_rules',
+                'description' => 'Allows updating eligible interest rule configurations according to system policy.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'interest_rates.activate',
-                'label' => 'Activate Interest Rate',
-                'module' => 'interest_rates',
-                'description' => 'Allows activating an eligible interest rate configuration.',
+                'name' => 'interest_rules.activate',
+                'label' => 'Activate Interest Rule',
+                'module' => 'interest_rules',
+                'description' => 'Allows activating an eligible interest rule configuration.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'interest_rates.deactivate',
-                'label' => 'Deactivate Interest Rate',
-                'module' => 'interest_rates',
-                'description' => 'Allows deactivating an eligible interest rate configuration.',
+                'name' => 'interest_rules.deactivate',
+                'label' => 'Deactivate Interest Rule',
+                'module' => 'interest_rules',
+                'description' => 'Allows deactivating an eligible interest rule configuration.',
                 'is_system' => false,
             ],
 
             [
-                'name' => 'interest_rates.view_history',
-                'label' => 'View Interest Rate History',
-                'module' => 'interest_rates',
-                'description' => 'Allows viewing the history of interest rate configurations and changes.',
+                'name' => 'interest_rules.view_history',
+                'label' => 'View Interest Rule History',
+                'module' => 'interest_rules',
+                'description' => 'Allows viewing the history of interest rule configurations and changes.',
                 'is_system' => false,
             ],
 

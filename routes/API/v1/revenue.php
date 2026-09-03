@@ -11,6 +11,7 @@ use App\Modules\Revenue\Controllers\MeasurementUnitController;
 use App\Modules\Revenue\Controllers\BaseFieldController;
 use App\Modules\Revenue\Controllers\TariffRuleController;
 use App\Modules\Revenue\Controllers\TariffFormulaVariableController;
+use App\Modules\Revenue\Controllers\PenaltyRuleController;
 
 
 /*
@@ -92,9 +93,7 @@ Route::prefix('revenue')
     |--------------------------------------------------------------------------
     |
     | IMPORTANT:
-    | Custom static routes such as /summary must be registered
-    | BEFORE /{tariffVersion}, otherwise Laravel may interpret
-    | "summary" as a tariff version UUID.
+    | Static routes must come before /{tariffVersion}.
     |
     */
 
@@ -119,9 +118,6 @@ Route::prefix('revenue')
     |--------------------------------------------------------------------------
     | Activate Tariff Version
     |--------------------------------------------------------------------------
-    |
-    | PATCH /revenue/tariff-versions/{id}/activate
-    |
     */
 
     Route::patch(
@@ -135,9 +131,6 @@ Route::prefix('revenue')
     |--------------------------------------------------------------------------
     | Restore Deleted Tariff Version
     |--------------------------------------------------------------------------
-    |
-    | PATCH /revenue/tariff-versions/{id}/restore
-    |
     */
 
     Route::patch(
@@ -151,14 +144,6 @@ Route::prefix('revenue')
     |--------------------------------------------------------------------------
     | Tariff Version CRUD
     |--------------------------------------------------------------------------
-    |
-    | GET    /revenue/tariff-versions
-    | POST   /revenue/tariff-versions
-    | GET    /revenue/tariff-versions/{tariff_version}
-    | PUT    /revenue/tariff-versions/{tariff_version}
-    | PATCH  /revenue/tariff-versions/{tariff_version}
-    | DELETE /revenue/tariff-versions/{tariff_version}
-    |
     */
 
     Route::apiResource(
@@ -254,6 +239,74 @@ Route::prefix('revenue')
             );
 
         });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Penalty Rules
+    |--------------------------------------------------------------------------
+    |
+    | Penalty Rule
+    |      |
+    |      ├── Global / Default Rule
+    |      |
+    |      └── Revenue Service Specific Rule
+    |
+    | A NULL revenue_service_id represents a global/default
+    | penalty rule.
+    |
+    */
+
+    Route::apiResource(
+        'penalty-rules',
+        PenaltyRuleController::class
+    )
+        ->only([
+            'index',
+            'store',
+            'show',
+            'update',
+        ]);
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Penalty Rule Status
+    |--------------------------------------------------------------------------
+    |
+    | PATCH /revenue/penalty-rules/{penaltyRule}/activate
+    | PATCH /revenue/penalty-rules/{penaltyRule}/deactivate
+    |
+    */
+
+    Route::patch(
+        'penalty-rules/{penaltyRule}/activate',
+        [PenaltyRuleController::class, 'activate']
+    )
+        ->name('penalty-rules.activate');
+
+
+    Route::patch(
+        'penalty-rules/{penaltyRule}/deactivate',
+        [PenaltyRuleController::class, 'deactivate']
+    )
+        ->name('penalty-rules.deactivate');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Penalty Rule History
+    |--------------------------------------------------------------------------
+    |
+    | GET /revenue/penalty-rules/{penaltyRule}/history
+    |
+    */
+
+    Route::get(
+        'penalty-rules/{penaltyRule}/history',
+        [PenaltyRuleController::class, 'history']
+    )
+        ->name('penalty-rules.history');
 
 });
 
