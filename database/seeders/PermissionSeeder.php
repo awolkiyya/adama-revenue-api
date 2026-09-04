@@ -355,7 +355,7 @@ class PermissionSeeder extends Seeder
 
             /*
             |--------------------------------------------------------------------------
-            | System Settings
+            | System Settings this is the general profile settings
             |--------------------------------------------------------------------------
             */
 
@@ -374,6 +374,47 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows updating authorized system configuration and settings.',
                 'is_system' => true,
             ],
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Settings
+            |--------------------------------------------------------------------------
+            |
+            | Global configuration for the Revenue Management module.
+            |
+            | Revenue settings control system-wide revenue behavior such as:
+            |
+            | - Calendar configuration
+            | - Global penalty/interest switches
+            | - Assessment behavior
+            | - Invoice behavior
+            | - Payment configuration
+            | - Receipt configuration
+            | - Currency and calculation precision
+            |
+            | Actual tariff, penalty, and interest rules are managed separately
+            | through their respective modules.
+            |
+            */
+
+            [
+                'name' => 'revenue_settings.view',
+                'label' => 'View Revenue Settings',
+                'module' => 'revenue_settings',
+                'description' => 'Allows viewing global Revenue Management configuration, including calendar, assessment, invoice, payment, receipt, and calculation settings.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'revenue_settings.update',
+                'label' => 'Update Revenue Settings',
+                'module' => 'revenue_settings',
+                'description' => 'Allows updating authorized global Revenue Management configuration and operational settings.',
+                'is_system' => true,
+            ],
+
+
 
             /*
             |--------------------------------------------------------------------------

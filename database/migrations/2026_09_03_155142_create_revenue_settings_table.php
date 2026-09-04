@@ -7,6 +7,9 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     */
     public function up(): void
     {
         /*
@@ -17,10 +20,16 @@ return new class extends Migration
         | Global configuration for the Revenue Management module.
         |
         | IMPORTANT:
+        |
+        | - Tariff rates/rules belong to tariff_rules.
         | - Penalty rates/rules belong to penalty_rules.
         | - Interest rates/rules belong to interest_rules.
         | - Actual invoice due_date belongs to invoices.
-        | - This table contains global revenue behavior and configuration.
+        | - Tariff calculation precision/rounding belongs to tariff_rules.
+        | - Service-specific configuration must not be stored here.
+        |
+        | This table contains only GLOBAL revenue-management behavior and
+        | operational configuration.
         |
         */
 
@@ -37,43 +46,56 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Period
+            | Global Payment Period
             |--------------------------------------------------------------------------
             |
-            | Global revenue payment period.
+            | Optional global/default revenue payment period.
             |
-            | Example:
-            | Adooleessa 1 → Guraandhala 30
+            | NULL means no global payment period is configured.
+            |
+            | Ethiopian Calendar:
+            |
+            | Months 1-12 -> maximum 30 days
+            | Month 13    -> maximum 6 days
+            |
+            | The application/calendar service is responsible for validating
+            | year-specific Pagume day 6 rules.
             |
             */
 
-            $table->unsignedTinyInteger('payment_start_month');
+            $table->unsignedTinyInteger('payment_start_month')
+                ->nullable();
 
-            $table->unsignedTinyInteger('payment_start_day');
+            $table->unsignedTinyInteger('payment_start_day')
+                ->nullable();
 
-            $table->unsignedTinyInteger('payment_end_month');
+            $table->unsignedTinyInteger('payment_end_month')
+                ->nullable();
 
-            $table->unsignedTinyInteger('payment_end_day');
+            $table->unsignedTinyInteger('payment_end_day')
+                ->nullable();
 
 
             /*
             |--------------------------------------------------------------------------
-            | Calendar Configuration
-            |--------------------------------------------------------------------------
-            */
-
-            $table->string('calendar_type', 20)
-                ->default('ETHIOPIAN');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Penalty Configuration
+            | Penalty / Interest Global Switches
             |--------------------------------------------------------------------------
             |
-            | These are global switches/behavior settings only.
+            | These fields only enable/disable the corresponding engines
+            | globally.
             |
-            | Actual penalty policies are stored in penalty_rules.
+            | They do NOT contain:
+            |
+            | - rates
+            | - formulas
+            | - grace periods
+            | - escalation rules
+            | - maximum penalties
+            |
+            | Those belong to:
+            |
+            | - penalty_rules
+            | - interest_rules
             |
             */
 
@@ -93,7 +115,7 @@ return new class extends Migration
             $table->boolean('assessment_auto_calculation')
                 ->default(true);
 
-            $table->boolean('assessment_manual_adjustment')
+            $table->boolean('assessment_allow_manual_adjustment')
                 ->default(false);
 
             $table->boolean('assessment_requires_approval')
@@ -115,8 +137,12 @@ return new class extends Migration
             $table->string('invoice_prefix', 30)
                 ->default('INV');
 
-            $table->boolean('invoice_allow_partial_payment')
-                ->default(true);
+            /*
+            | Partial payment is intentionally NOT stored globally.
+            |
+            | If the municipality later requires partial-payment policy,
+            | it should be modeled at the appropriate invoice/service level.
+            */
 
             $table->boolean('invoice_allow_overpayment')
                 ->default(false);
@@ -137,21 +163,29 @@ return new class extends Migration
             $table->boolean('payment_auto_receipt')
                 ->default(true);
 
-            $table->boolean('payment_allow_partial')
-                ->default(true);
 
             /*
-            | Enabled payment methods.
+            |--------------------------------------------------------------------------
+            | Enabled Payment Methods
+            |--------------------------------------------------------------------------
+            |
+            | Defines which payment methods are globally available.
             |
             | Example:
+            |
             | [
             |     "CASH",
             |     "BANK",
             |     "MOBILE_MONEY"
             | ]
+            |
+            | Individual payment-method configuration should be modeled
+            | separately if a payment method later requires additional
+            | properties such as provider, account, merchant ID, etc.
+            |
             */
 
-            $table->jsonb('payment_methods')
+            $table->jsonb('enabled_payment_methods')
                 ->default(json_encode([
                     'CASH',
                     'BANK',
@@ -177,40 +211,15 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Calculation Settings
-            |--------------------------------------------------------------------------
-            */
-
-            $table->string('currency', 10)
-                ->default('ETB');
-
-            $table->unsignedTinyInteger('decimal_places')
-                ->default(2);
-
-            $table->unsignedTinyInteger('percentage_precision')
-                ->default(4);
-
-            $table->string('rounding_mode', 20)
-                ->default('HALF_UP');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue Calculation Order
-            |--------------------------------------------------------------------------
-            |
-            | Determines the order used by the revenue calculation engine.
-            |
-            */
-
-            $table->string('calculation_order', 30)
-                ->default('PENALTY_THEN_INTEREST');
-
-
-            /*
-            |--------------------------------------------------------------------------
             | Status
             |--------------------------------------------------------------------------
+            |
+            | Revenue settings are modeled as a singleton global configuration.
+            |
+            | PostgreSQL will enforce that only ONE row can have:
+            |
+            |     is_active = true
+            |
             */
 
             $table->boolean('is_active')
@@ -266,108 +275,282 @@ return new class extends Migration
                 'is_active',
                 'revenue_settings_active_index'
             );
-
-            $table->index(
-                'calendar_type',
-                'revenue_settings_calendar_index'
-            );
         });
 
 
         /*
         |--------------------------------------------------------------------------
-        | Payment Period Constraints
+        | Payment Period - Month Constraints
         |--------------------------------------------------------------------------
+        |
+        | Ethiopian calendar has 13 months.
+        |
+        | Months 1-13 are valid.
+        |
         */
 
         DB::statement("
             ALTER TABLE revenue_settings
             ADD CONSTRAINT revenue_settings_payment_start_month_check
-            CHECK (payment_start_month BETWEEN 1 AND 13)
+            CHECK (
+                payment_start_month IS NULL
+                OR payment_start_month BETWEEN 1 AND 13
+            )
         ");
 
         DB::statement("
             ALTER TABLE revenue_settings
             ADD CONSTRAINT revenue_settings_payment_end_month_check
-            CHECK (payment_end_month BETWEEN 1 AND 13)
+            CHECK (
+                payment_end_month IS NULL
+                OR payment_end_month BETWEEN 1 AND 13
+            )
         ");
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Period - Basic Day Constraints
+        |--------------------------------------------------------------------------
+        |
+        | Basic database-level protection.
+        |
+        | Calendar-specific limits are enforced below.
+        |
+        */
 
         DB::statement("
             ALTER TABLE revenue_settings
             ADD CONSTRAINT revenue_settings_payment_start_day_check
-            CHECK (payment_start_day BETWEEN 1 AND 31)
+            CHECK (
+                payment_start_day IS NULL
+                OR payment_start_day BETWEEN 1 AND 31
+            )
         ");
 
         DB::statement("
             ALTER TABLE revenue_settings
             ADD CONSTRAINT revenue_settings_payment_end_day_check
-            CHECK (payment_end_day BETWEEN 1 AND 31)
-        ");
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Calendar Constraint
-        |--------------------------------------------------------------------------
-        */
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_calendar_type_check
             CHECK (
-                calendar_type IN (
-                    'ETHIOPIAN',
-                    'GREGORIAN'
-                )
+                payment_end_day IS NULL
+                OR payment_end_day BETWEEN 1 AND 31
             )
         ");
 
 
         /*
         |--------------------------------------------------------------------------
-        | Calculation Constraints
+        | Payment Period Completeness
+        |--------------------------------------------------------------------------
+        |
+        | Month and day must either BOTH be NULL or BOTH be populated.
+        |
+        | Invalid:
+        |
+        | payment_start_month = 5
+        | payment_start_day   = NULL
+        |
+        | Valid:
+        |
+        | payment_start_month = NULL
+        | payment_start_day   = NULL
+        |
+        | OR
+        |
+        | payment_start_month = 5
+        | payment_start_day   = 1
+        |
+        */
+
+        DB::statement("
+            ALTER TABLE revenue_settings
+            ADD CONSTRAINT revenue_settings_payment_start_complete_check
+            CHECK (
+                (
+                    payment_start_month IS NULL
+                    AND payment_start_day IS NULL
+                )
+                OR
+                (
+                    payment_start_month IS NOT NULL
+                    AND payment_start_day IS NOT NULL
+                )
+            )
+        ");
+
+        DB::statement("
+            ALTER TABLE revenue_settings
+            ADD CONSTRAINT revenue_settings_payment_end_complete_check
+            CHECK (
+                (
+                    payment_end_month IS NULL
+                    AND payment_end_day IS NULL
+                )
+                OR
+                (
+                    payment_end_month IS NOT NULL
+                    AND payment_end_day IS NOT NULL
+                )
+            )
+        ");
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ethiopian Calendar Payment Date Constraints
+        |--------------------------------------------------------------------------
+        |
+        | Months 1-12:
+        |     Days 1-30
+        |
+        | Month 13 (Pagume):
+        |     Days 1-6
+        |
+        | The exact validity of Pagume day 6 depends on the Ethiopian year.
+        | Since this table stores only month/day, year-specific validation
+        | belongs to the application/calendar service.
+        |
+        */
+
+        DB::statement("
+            ALTER TABLE revenue_settings
+            ADD CONSTRAINT revenue_settings_payment_start_ethiopian_date_check
+            CHECK (
+                payment_start_month IS NULL
+                OR
+                (
+                    (
+                        payment_start_month BETWEEN 1 AND 12
+                        AND payment_start_day BETWEEN 1 AND 30
+                    )
+                    OR
+                    (
+                        payment_start_month = 13
+                        AND payment_start_day BETWEEN 1 AND 6
+                    )
+                )
+            )
+        ");
+
+        DB::statement("
+            ALTER TABLE revenue_settings
+            ADD CONSTRAINT revenue_settings_payment_end_ethiopian_date_check
+            CHECK (
+                payment_end_month IS NULL
+                OR
+                (
+                    (
+                        payment_end_month BETWEEN 1 AND 12
+                        AND payment_end_day BETWEEN 1 AND 30
+                    )
+                    OR
+                    (
+                        payment_end_month = 13
+                        AND payment_end_day BETWEEN 1 AND 6
+                    )
+                )
+            )
+        ");
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Invoice Prefix Constraint
+        |--------------------------------------------------------------------------
+        |
+        | Prevent empty or whitespace-only prefixes.
+        |
+        */
+
+        DB::statement("
+            ALTER TABLE revenue_settings
+            ADD CONSTRAINT revenue_settings_invoice_prefix_check
+            CHECK (
+                length(trim(invoice_prefix)) BETWEEN 1 AND 30
+            )
+        ");
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Receipt Prefix Constraint
         |--------------------------------------------------------------------------
         */
 
         DB::statement("
             ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_decimal_places_check
-            CHECK (decimal_places BETWEEN 0 AND 6)
-        ");
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_percentage_precision_check
-            CHECK (percentage_precision BETWEEN 0 AND 8)
-        ");
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_rounding_mode_check
+            ADD CONSTRAINT revenue_settings_receipt_prefix_check
             CHECK (
-                rounding_mode IN (
-                    'HALF_UP',
-                    'HALF_DOWN',
-                    'HALF_EVEN',
-                    'UP',
-                    'DOWN'
-                )
+                length(trim(receipt_prefix)) BETWEEN 1 AND 30
             )
         ");
 
+
+        /*
+        |--------------------------------------------------------------------------
+        | Enabled Payment Methods - JSON Array
+        |--------------------------------------------------------------------------
+        |
+        | The database guarantees that this field is an array.
+        |
+        | The application/service layer should validate individual values
+        | against the supported payment-method enum.
+        |
+        */
+
         DB::statement("
             ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_calculation_order_check
+            ADD CONSTRAINT revenue_settings_payment_methods_array_check
             CHECK (
-                calculation_order IN (
-                    'PENALTY_THEN_INTEREST',
-                    'INTEREST_THEN_PENALTY'
-                )
+                jsonb_typeof(enabled_payment_methods) = 'array'
             )
+        ");
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Enabled Payment Methods - Not Empty
+        |--------------------------------------------------------------------------
+        |
+        | At least one payment method must remain enabled.
+        |
+        */
+
+        DB::statement("
+            ALTER TABLE revenue_settings
+            ADD CONSTRAINT revenue_settings_payment_methods_not_empty_check
+            CHECK (
+                jsonb_array_length(enabled_payment_methods) > 0
+            )
+        ");
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Single Active Global Configuration
+        |--------------------------------------------------------------------------
+        |
+        | PostgreSQL partial unique index.
+        |
+        | Guarantees:
+        |
+        |     Maximum one active configuration.
+        |
+        | Multiple historical/inactive records are technically allowed.
+        |
+        */
+
+        DB::statement("
+            CREATE UNIQUE INDEX revenue_settings_one_active_unique
+            ON revenue_settings (is_active)
+            WHERE is_active = true
         ");
     }
 
 
+    /**
+     * Reverse the migrations.
+     */
     public function down(): void
     {
         Schema::dropIfExists('revenue_settings');

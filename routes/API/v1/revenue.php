@@ -12,6 +12,7 @@ use App\Modules\Revenue\Controllers\BaseFieldController;
 use App\Modules\Revenue\Controllers\TariffRuleController;
 use App\Modules\Revenue\Controllers\TariffFormulaVariableController;
 use App\Modules\Revenue\Controllers\PenaltyRuleController;
+use App\Modules\Revenue\Controllers\RevenueSettingController;
 
 
 /*
@@ -307,6 +308,40 @@ Route::prefix('revenue')
         [PenaltyRuleController::class, 'history']
     )
         ->name('penalty-rules.history');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Global Revenue Settings
+    |--------------------------------------------------------------------------
+    |
+    | Global singleton configuration for Revenue Management.
+    |
+    | GET /revenue/settings
+    |     Retrieve the active revenue settings.
+    |
+    | PUT /revenue/settings/{revenueSetting}
+    |     Update the active revenue settings.
+    |
+    | Revenue settings intentionally do not expose:
+    |
+    | - POST
+    | - DELETE
+    | - activate
+    | - deactivate
+    |
+    */
+    Route::get(
+        'settings',
+        [RevenueSettingController::class, 'show']
+    )
+        ->name('revenue-settings.show');
+
+
+    Route::put(
+        'settings/{revenueSetting}',
+        [RevenueSettingController::class, 'update']
+    )
+        ->name('revenue-settings.update');
 
 });
 
