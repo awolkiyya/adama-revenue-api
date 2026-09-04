@@ -2,7 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
@@ -17,30 +16,52 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
 
+            /*
+            |--------------------------------------------------------------------------
+            | Authorization
+            |--------------------------------------------------------------------------
+            */
+
             PermissionSeeder::class,
-    
             RoleSeeder::class,
-    
             RolePermissionSeeder::class,
 
+            /*
+            |--------------------------------------------------------------------------
+            | Administrative Structure
+            |--------------------------------------------------------------------------
+            */
+
             AdministrativeUnitSeeder::class,
-            
             SystemAdminSeeder::class,
-
             ClusterSeeder::class,
-
             SectorSeeder::class,
 
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Foundation
+            |--------------------------------------------------------------------------
+            */
+
             RevenueCategorySeeder::class,
-
-            CitizenSeeder::class,
-
             MeasurementUnitSeeder::class,
             BaseFieldSeeder::class,
 
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Global Configuration
+            |--------------------------------------------------------------------------
+            */
 
+            RevenueSettingSeeder::class,
 
-    
+            /*
+            |--------------------------------------------------------------------------
+            | Citizens
+            |--------------------------------------------------------------------------
+            */
+
+            CitizenSeeder::class,
         ]);
     }
 }

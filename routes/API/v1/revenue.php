@@ -339,7 +339,7 @@ Route::prefix('revenue')
 
     Route::put(
         'settings/{revenueSetting}',
-        [RevenueSettingController::class, 'update']
+        [RevenueSettingController::class, 'save']
     )
         ->name('revenue-settings.update');
 

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Requests;
+namespace  App\Modules\Revenue\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -12,7 +12,7 @@ class RevenueSettingRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return $this->user()?->can('update', $this->route('revenueSetting')) ?? false;
+        return true;
     }
 
 

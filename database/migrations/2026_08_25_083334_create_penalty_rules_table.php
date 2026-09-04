@@ -14,34 +14,64 @@ return new class extends Migration
         | PostgreSQL GiST Extension
         |--------------------------------------------------------------------------
         |
-        | Required by exclusion constraints used to prevent overlapping
-        | active penalty-rule periods.
+        | Required for the PostgreSQL exclusion constraint used below.
         |
         */
 
-        DB::statement('CREATE EXTENSION IF NOT EXISTS btree_gist');
+        DB::statement(
+            'CREATE EXTENSION IF NOT EXISTS btree_gist'
+        );
 
         /*
         |--------------------------------------------------------------------------
         | Penalty Rules
         |--------------------------------------------------------------------------
         |
-        | A penalty rule defines the percentage-based late-payment penalty
-        | policy applied to overdue revenue assessments.
+        | A penalty rule defines the late-payment penalty policy applied
+        | to overdue revenue assessments.
         |
-        | Scope:
+        |--------------------------------------------------------------------------
+        | Penalty Commencement Types
+        |--------------------------------------------------------------------------
         |
-        | revenue_service_id = NULL
-        |     Default policy for all revenue services.
+        | FIXED_FISCAL_MONTH
+        |     Penalty commencement is determined by a configured
+        |     Ethiopian fiscal month.
         |
-        | revenue_service_id = UUID
-        |     Service-specific override.
+        | AGREEMENT_DATE
+        |     Penalty commencement is determined by the agreement date.
         |
-        | Resolution:
+        |--------------------------------------------------------------------------
+        | Active Rules
+        |--------------------------------------------------------------------------
         |
-        |     1. Active service-specific rule
-        | |   2. Active default rule
-        | |   3. No rule = no penalty
+        | Multiple active penalty rules are allowed.
+        |
+        | However, two ACTIVE rules with the SAME start_type may not have
+        | overlapping effective periods.
+        |
+        | Rules with DIFFERENT start_type values may overlap.
+        |
+        | Example:
+        |
+        |     FIXED_FISCAL_MONTH
+        |     2025-09-11 → NULL
+        |
+        |     AGREEMENT_DATE
+        |     2026-09-04 → NULL
+        |
+        | This is VALID because the commencement mechanisms are different.
+        |
+        | But:
+        |
+        |     AGREEMENT_DATE
+        |     2025-09-11 → NULL
+        |
+        |     AGREEMENT_DATE
+        |     2026-09-04 → NULL
+        |
+        | is NOT VALID because both rules use the same commencement
+        | mechanism and overlap.
         |
         */
 
@@ -57,24 +87,6 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Revenue Service Scope
-            |--------------------------------------------------------------------------
-            |
-            | NULL:
-            |     Default / All Services
-            |
-            | UUID:
-            |     Service-specific override.
-            |
-            */
-
-            $table->foreignUuid('revenue_service_id')
-                ->nullable()
-                ->constrained('revenue_services')
-                ->restrictOnDelete();
-
-            /*
-            |--------------------------------------------------------------------------
             | Rule Identification
             |--------------------------------------------------------------------------
             */
@@ -83,20 +95,24 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Penalty Rates
+            | Progressive Penalty Rates
             |--------------------------------------------------------------------------
             |
             | Rates are stored as percentage points.
             |
             | Example:
             |
-            | initial_rate   = 5.0000
-            | increment_rate = 2.0000
-            | maximum_rate   = 25.0000
+            |     initial_rate   = 5.0000
+            |     increment_rate = 2.0000
+            |     maximum_rate   = 25.0000
             |
             | Result:
             |
-            | 5%, 7%, 9%, 11%, ... 25%
+            |     Month 1 = 5%
+            |     Month 2 = 7%
+            |     Month 3 = 9%
+            |     ...
+            |     Maximum  = 25%
             |
             */
 
@@ -111,17 +127,10 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Penalty Increment Period
+            | Increment Period
             |--------------------------------------------------------------------------
             |
-            | Current legal/business rule:
-            |
-            |     +2% for each late-payment month.
-            |
-            | MONTH is therefore the normal configuration.
-            |
-            | Keeping this configurable allows future policy changes without
-            | changing the schema.
+            | Current business/legal configuration supports MONTH only.
             |
             */
 
@@ -134,11 +143,11 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             |
             | FIXED_FISCAL_MONTH
-            |     Penalty starts from a configured Ethiopian fiscal/calendar
-            |     month, currently month 7.
+            |     Penalty starts according to a configured Ethiopian
+            |     fiscal month.
             |
             | AGREEMENT_DATE
-            |     Penalty commencement is determined from the agreement date.
+            |     Penalty starts according to the agreement date.
             |
             */
 
@@ -150,15 +159,15 @@ return new class extends Migration
             | Fixed Fiscal Month
             |--------------------------------------------------------------------------
             |
-            | Used only when:
+            | Required when:
             |
             |     start_type = FIXED_FISCAL_MONTH
             |
-            | Example:
+            | Valid values:
             |
-            |     7 = penalty starts from Ethiopian fiscal/calendar month 7.
+            |     1 - 13
             |
-            | NULL when:
+            | Must be NULL when:
             |
             |     start_type = AGREEMENT_DATE
             |
@@ -172,11 +181,11 @@ return new class extends Migration
             | Calculation Basis
             |--------------------------------------------------------------------------
             |
-            | PRINCIPAL:
-            |     Calculate the percentage against the original assessed amount.
+            | PRINCIPAL
+            |     Calculate penalty against the original assessed amount.
             |
-            | OUTSTANDING:
-            |     Calculate the percentage against the remaining unpaid amount.
+            | OUTSTANDING
+            |     Calculate penalty against the remaining unpaid amount.
             |
             */
 
@@ -188,11 +197,14 @@ return new class extends Migration
             | Effective Period
             |--------------------------------------------------------------------------
             |
-            | effective_from = first date the policy is applicable.
+            | effective_from:
+            |     First date on which this rule is applicable.
             |
-            | effective_to = last date the policy is applicable.
+            | effective_to:
+            |     Last date on which this rule is applicable.
             |
-            | NULL = no defined end date.
+            | NULL:
+            |     No defined end date.
             |
             */
 
@@ -212,7 +224,7 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Legal / Reference Information
+            | Legal / Description
             |--------------------------------------------------------------------------
             */
 
@@ -253,30 +265,31 @@ return new class extends Migration
             */
 
             $table->index(
-                'revenue_service_id',
-                'penalty_rules_service_index'
+                'start_type',
+                'penalty_rules_start_type_index'
             );
 
             $table->index(
                 [
-                    'revenue_service_id',
+                    'start_type',
                     'effective_from',
                     'effective_to',
                 ],
-                'penalty_rules_service_effective_index'
+                'penalty_rules_effective_index'
             );
 
             $table->index(
                 [
-                    'revenue_service_id',
+                    'start_type',
                     'is_active',
                 ],
-                'penalty_rules_service_active_index'
+                'penalty_rules_active_index'
             );
 
             $table->index(
                 [
                     'is_active',
+                    'start_type',
                     'effective_from',
                     'effective_to',
                 ],
@@ -286,25 +299,24 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Increment Period Validation
+        | Increment Period Constraint
         |--------------------------------------------------------------------------
+        |
+        | Current system contract supports MONTH only.
+        |
         */
 
         DB::statement(<<<'SQL'
             ALTER TABLE penalty_rules
             ADD CONSTRAINT penalty_rules_increment_period_check
             CHECK (
-                increment_period IN (
-                    'DAY',
-                    'MONTH',
-                    'YEAR'
-                )
+                increment_period = 'MONTH'
             )
         SQL);
 
         /*
         |--------------------------------------------------------------------------
-        | Start Type Validation
+        | Start Type Constraint
         |--------------------------------------------------------------------------
         */
 
@@ -321,7 +333,7 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Calculation Basis Validation
+        | Calculation Basis Constraint
         |--------------------------------------------------------------------------
         */
 
@@ -338,29 +350,29 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Rate Validation
+        | Rate Range Constraint
         |--------------------------------------------------------------------------
         |
-        | All rates must be non-negative.
+        | Percentage rates must be between 0% and 100%.
         |
         */
 
         DB::statement(<<<'SQL'
             ALTER TABLE penalty_rules
-            ADD CONSTRAINT penalty_rules_non_negative_rates_check
+            ADD CONSTRAINT penalty_rules_rate_range_check
             CHECK (
-                initial_rate >= 0
-                AND increment_rate >= 0
-                AND maximum_rate >= 0
+                initial_rate BETWEEN 0 AND 100
+                AND increment_rate BETWEEN 0 AND 100
+                AND maximum_rate BETWEEN 0 AND 100
             )
         SQL);
 
         /*
         |--------------------------------------------------------------------------
-        | Maximum Rate Validation
+        | Rate Relationship Constraint
         |--------------------------------------------------------------------------
         |
-        | Maximum penalty cannot be lower than the initial penalty rate.
+        | The maximum penalty rate cannot be lower than the initial rate.
         |
         */
 
@@ -374,17 +386,17 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Fiscal Month Validation
+        | Fiscal Month Constraint
         |--------------------------------------------------------------------------
         |
         | FIXED_FISCAL_MONTH:
-        |     start_fiscal_month is required and must be 1-13.
+        |
+        |     start_fiscal_month is required
+        |     and must be between 1 and 13.
         |
         | AGREEMENT_DATE:
-        |     start_fiscal_month must be NULL.
         |
-        | Ethiopia's traditional calendar has 13 months, so the database
-        | allows 1 through 13.
+        |     start_fiscal_month must be NULL.
         |
         */
 
@@ -406,8 +418,15 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Effective Period Validation
+        | Effective Period Constraint
         |--------------------------------------------------------------------------
+        |
+        | effective_to is optional.
+        |
+        | If provided:
+        |
+        |     effective_to >= effective_from
+        |
         */
 
         DB::statement(<<<'SQL'
@@ -421,56 +440,77 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Prevent Overlapping Global Policies
+        | Prevent Overlapping Rules Of The Same Start Type
         |--------------------------------------------------------------------------
         |
-        | Only one ACTIVE default policy may apply to a particular date.
+        | IMPORTANT:
         |
-        | effective_to is inclusive in business terms, therefore +1 day is
-        | used when constructing PostgreSQL's half-open daterange.
+        | This constraint intentionally includes start_type.
+        |
+        | Therefore:
+        |
+        |     FIXED_FISCAL_MONTH
+        |
+        | and:
+        |
+        |     AGREEMENT_DATE
+        |
+        | are independent rule families and MAY be active at the
+        | same time with overlapping effective periods.
+        |
+        |--------------------------------------------------------------------------
+        | Valid:
+        |--------------------------------------------------------------------------
+        |
+        | FIXED_FISCAL_MONTH
+        | 2025-09-11 → NULL
+        |
+        | AGREEMENT_DATE
+        | 2026-09-04 → NULL
+        |
+        |--------------------------------------------------------------------------
+        | Invalid:
+        |--------------------------------------------------------------------------
+        |
+        | AGREEMENT_DATE
+        | 2025-09-11 → NULL
+        |
+        | AGREEMENT_DATE
+        | 2026-09-04 → NULL
+        |
+        | PostgreSQL daterange uses a half-open interval:
+        |
+        |     [start, end)
+        |
+        | Because effective_to is inclusive from the business perspective,
+        | one day is added to the upper bound.
+        |
+        | Example:
+        |
+        |     2026-01-01 → 2026-12-31
+        |
+        | becomes:
+        |
+        |     [2026-01-01, 2027-01-01)
         |
         */
 
         DB::statement(<<<'SQL'
             ALTER TABLE penalty_rules
-            ADD CONSTRAINT penalty_rules_no_overlapping_default_periods
+            ADD CONSTRAINT penalty_rules_no_overlapping_periods
             EXCLUDE USING gist (
+                start_type WITH =,
                 daterange(
                     effective_from,
-                    COALESCE(effective_to + 1, 'infinity'::date),
+                    COALESCE(
+                        effective_to + 1,
+                        'infinity'::date
+                    ),
                     '[)'
                 ) WITH &&
             )
             WHERE (
                 is_active = true
-                AND revenue_service_id IS NULL
-            )
-        SQL);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Prevent Overlapping Service-Specific Policies
-        |--------------------------------------------------------------------------
-        |
-        | A revenue service cannot have two ACTIVE penalty rules with
-        | overlapping effective periods.
-        |
-        */
-
-        DB::statement(<<<'SQL'
-            ALTER TABLE penalty_rules
-            ADD CONSTRAINT penalty_rules_no_overlapping_service_periods
-            EXCLUDE USING gist (
-                revenue_service_id WITH =,
-                daterange(
-                    effective_from,
-                    COALESCE(effective_to + 1, 'infinity'::date),
-                    '[)'
-                ) WITH &&
-            )
-            WHERE (
-                is_active = true
-                AND revenue_service_id IS NOT NULL
             )
         SQL);
     }
@@ -482,8 +522,8 @@ return new class extends Migration
         | Drop Penalty Rules
         |--------------------------------------------------------------------------
         |
-        | btree_gist is intentionally retained because another table or
-        | constraint may depend on the extension.
+        | The btree_gist extension is intentionally retained because it may
+        | be required by exclusion constraints in other tables.
         |
         */
 

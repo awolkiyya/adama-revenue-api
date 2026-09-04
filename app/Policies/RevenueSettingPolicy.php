@@ -2,7 +2,6 @@
 
 namespace App\Policies;
 
-use App\Models\RevenueSetting;
 use App\Models\User;
 
 /**
@@ -48,44 +47,39 @@ class RevenueSettingPolicy
 
     /*
     |--------------------------------------------------------------------------
-    | View Revenue Setting
+    | View Revenue Settings
     |--------------------------------------------------------------------------
     |
-    | Allows the user to view the global revenue configuration.
+    | This is intentionally class-level authorization because the resource
+    | is a global singleton configuration.
     |
     */
 
-    public function view(
-        User $user,
-        RevenueSetting $revenueSetting
-    ): bool {
+    public function view(User $user): bool
+    {
         return $user->can('revenue_settings.view');
     }
 
 
     /*
     |--------------------------------------------------------------------------
-    | Update Revenue Setting
+    | Update Revenue Settings
     |--------------------------------------------------------------------------
     |
-    | Allows the user to modify the global Revenue Management configuration.
+    | This is intentionally class-level authorization.
     |
-    | IMPORTANT:
+    | The save endpoint can:
     |
-    | This permission does NOT grant permission to modify:
+    | - create the initial configuration
+    | - update the existing configuration
     |
-    | - Tariff Rules
-    | - Penalty Rules
-    | - Interest Rules
-    |
-    | Those modules have their own policies and permissions.
+    | Therefore, an existing RevenueSetting model cannot be required
+    | as a policy argument.
     |
     */
 
-    public function update(
-        User $user,
-        RevenueSetting $revenueSetting
-    ): bool {
+    public function update(User $user): bool
+    {
         return $user->can('revenue_settings.update');
     }
 }

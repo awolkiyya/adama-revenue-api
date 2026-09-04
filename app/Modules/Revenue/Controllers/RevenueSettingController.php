@@ -1,13 +1,13 @@
 <?php
 
-namespace App\Http\Controllers\Api;
+namespace App\Modules\Revenue\Controllers;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\RevenueSettingRequest;
-use App\Http\Resources\RevenueSettingResource;
+use App\Modules\Revenue\Requests\RevenueSettingRequest;
+use App\Modules\Revenue\Resources\RevenueSettingResource;
+use App\Modules\Revenue\Services\RevenueSettingService;
 use App\Models\RevenueSetting;
 use App\Services\ApiResponse;
-use App\Services\RevenueSettingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -21,9 +21,9 @@ class RevenueSettingController extends Controller
      * Supported operations:
      *
      * - show()
-     * - update()
+     * - save()
      *
-     * Intentionally no:
+     * There is intentionally no normal:
      *
      * - create()
      * - store()
@@ -36,7 +36,6 @@ class RevenueSettingController extends Controller
     ) {
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | Show
@@ -44,7 +43,7 @@ class RevenueSettingController extends Controller
     */
 
     /**
-     * Get the active global revenue configuration.
+     * Get the global revenue configuration.
      *
      * GET /api/revenue-settings
      */
@@ -52,40 +51,32 @@ class RevenueSettingController extends Controller
     {
         /*
         |--------------------------------------------------------------------------
-        | Authorization
+        | Class-Level Authorization
         |--------------------------------------------------------------------------
+        |
+        | viewAny() is appropriate because this is a global/singleton
+        | configuration resource.
+        |
         */
 
-        $this->authorize('viewAny', RevenueSetting::class);
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Retrieve Active Configuration
-        |--------------------------------------------------------------------------
-        */
+        $this->authorize(
+            'viewAny',
+            RevenueSetting::class
+        );
 
         $revenueSetting = $this->revenueSettingService->getActive();
 
-
         /*
         |--------------------------------------------------------------------------
-        | Configuration Not Found
+        | Not Yet Configured
         |--------------------------------------------------------------------------
         */
 
         if (!$revenueSetting) {
             return ApiResponse::notFound(
-                'Revenue settings have not been configured.'
+                'Revenue settings have not been configured yet.'
             );
         }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Success Response
-        |--------------------------------------------------------------------------
-        */
 
         return ApiResponse::success(
             data: new RevenueSettingResource($revenueSetting),
@@ -93,58 +84,45 @@ class RevenueSettingController extends Controller
         );
     }
 
-
     /*
     |--------------------------------------------------------------------------
-    | Update
+    | Save
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Update the global revenue configuration.
+     * Create the initial configuration or update the existing configuration.
      *
-     * PUT /api/revenue-settings/{revenueSetting}
+     * PUT /api/revenue-settings
      */
-    public function update(
-        RevenueSettingRequest $request,
-        RevenueSetting $revenueSetting
+    public function save(
+        RevenueSettingRequest $request
     ): JsonResponse {
         /*
         |--------------------------------------------------------------------------
-        | Authorization
+        | Class-Level Authorization
         |--------------------------------------------------------------------------
         |
-        | RevenueSettingRequest::authorize() already checks:
+        | This endpoint can create the initial configuration.
         |
-        |     $user->can('update', $revenueSetting)
-        |
-        | Therefore authorization is not duplicated here.
+        | Therefore an actual RevenueSetting model cannot be required here,
+        | because it may not exist yet.
         |
         */
 
+        $this->authorize(
+            'update',
+            RevenueSetting::class
+        );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Update Configuration
-        |--------------------------------------------------------------------------
-        */
-
-        $revenueSetting = $this->revenueSettingService->update(
-            revenueSetting: $revenueSetting,
+        $revenueSetting = $this->revenueSettingService->save(
             data: $request->validated(),
             user: $request->user()
         );
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Success Response
-        |--------------------------------------------------------------------------
-        */
-
-        return ApiResponse::updated(
+        return ApiResponse::success(
             data: new RevenueSettingResource($revenueSetting),
-            message: 'Revenue settings updated successfully.'
+            message: 'Revenue settings saved successfully.'
         );
     }
 }

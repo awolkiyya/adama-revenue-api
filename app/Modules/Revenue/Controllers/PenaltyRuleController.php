@@ -9,6 +9,7 @@ use App\Modules\Revenue\Requests\UpdatePenaltyRuleRequest;
 use App\Modules\Revenue\Resources\PenaltyRuleResource;
 use App\Modules\Revenue\Services\PenaltyRuleService;
 use App\Services\ApiResponse;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Throwable;
@@ -20,10 +21,16 @@ class PenaltyRuleController extends Controller
     ) {
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | INDEX
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * INDEX
-     * ============================================================
+     * Get a paginated list of penalty rules.
+     *
+     * GET /api/revenue/penalty-rules
      */
     public function index(Request $request): JsonResponse
     {
@@ -33,33 +40,40 @@ class PenaltyRuleController extends Controller
         );
 
         try {
+            /*
+            |--------------------------------------------------------------------------
+            | Pagination
+            |--------------------------------------------------------------------------
+            */
+
             $perPage = min(
                 max(
-                    (int) $request->input(
-                        'per_page',
-                        15
-                    ),
+                    (int) $request->input('per_page', 15),
                     1
                 ),
                 100
             );
 
-            $query = PenaltyRule::query()
-                ->with('revenueService');
+            /*
+            |--------------------------------------------------------------------------
+            | Base Query
+            |--------------------------------------------------------------------------
+            */
+
+            $query = PenaltyRule::query();
 
             /*
-             * ----------------------------------------------------
-             * Search
-             * ----------------------------------------------------
-             */
+            |--------------------------------------------------------------------------
+            | Search
+            |--------------------------------------------------------------------------
+            */
+
             if ($request->filled('search')) {
                 $search = trim(
-                    $request->input('search')
+                    (string) $request->input('search')
                 );
 
-                $query->where(function ($q) use (
-                    $search
-                ) {
+                $query->where(function ($q) use ($search) {
                     $q
                         ->where(
                             'name',
@@ -80,82 +94,71 @@ class PenaltyRuleController extends Controller
             }
 
             /*
-             * ----------------------------------------------------
-             * Service
-             * ----------------------------------------------------
-             */
-            if ($request->filled(
-                'revenue_service_id'
-            )) {
+            |--------------------------------------------------------------------------
+            | Active Status
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->has('is_active')) {
+                $isActive = filter_var(
+                    $request->input('is_active'),
+                    FILTER_VALIDATE_BOOLEAN,
+                    FILTER_NULL_ON_FAILURE
+                );
+
+                if ($isActive !== null) {
+                    $query->where(
+                        'is_active',
+                        $isActive
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Start Type
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->filled('start_type')) {
                 $query->where(
-                    'revenue_service_id',
-                    $request->input(
-                        'revenue_service_id'
-                    )
+                    'start_type',
+                    $request->input('start_type')
                 );
             }
 
             /*
-             * ----------------------------------------------------
-             * Scope
-             * ----------------------------------------------------
-             */
-            if (
-                $request->input('scope')
-                === 'GLOBAL'
-            ) {
-                $query->whereNull(
-                    'revenue_service_id'
-                );
-            }
+            |--------------------------------------------------------------------------
+            | Calculation Basis
+            |--------------------------------------------------------------------------
+            */
 
-            if (
-                $request->input('scope')
-                === 'SERVICE_SPECIFIC'
-            ) {
-                $query->whereNotNull(
-                    'revenue_service_id'
-                );
-            }
-
-            /*
-             * ----------------------------------------------------
-             * Status
-             * ----------------------------------------------------
-             */
-            if (
-                $request->has('is_active')
-            ) {
+            if ($request->filled('calculation_basis')) {
                 $query->where(
-                    'is_active',
-                    filter_var(
-                        $request->input('is_active'),
-                        FILTER_VALIDATE_BOOLEAN
-                    )
+                    'calculation_basis',
+                    $request->input('calculation_basis')
                 );
             }
 
             /*
-             * ----------------------------------------------------
-             * Calculation Type
-             * ----------------------------------------------------
-             */
-            if ($request->filled(
-                'calculation_type'
-            )) {
+            |--------------------------------------------------------------------------
+            | Increment Period
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->filled('increment_period')) {
                 $query->where(
-                    'calculation_type',
-                    $request->input(
-                        'calculation_type'
-                    )
+                    'increment_period',
+                    $request->input('increment_period')
                 );
             }
 
             /*
-             * ----------------------------------------------------
-             * Sorting
-             * ----------------------------------------------------
-             */
+            |--------------------------------------------------------------------------
+            | Sorting
+            |--------------------------------------------------------------------------
+            */
+
             $sortBy = $request->input(
                 'sort_by',
                 'effective_from'
@@ -163,9 +166,15 @@ class PenaltyRuleController extends Controller
 
             $allowedSorts = [
                 'name',
-                'calculation_type',
+                'initial_rate',
+                'increment_rate',
+                'maximum_rate',
+                'start_type',
+                'increment_period',
+                'calculation_basis',
                 'effective_from',
                 'effective_to',
+                'is_active',
                 'created_at',
                 'updated_at',
             ];
@@ -178,15 +187,14 @@ class PenaltyRuleController extends Controller
                 $sortBy = 'effective_from';
             }
 
-            $sortDirection =
-                strtolower(
-                    $request->input(
-                        'sort_direction',
-                        'desc'
-                    )
-                ) === 'asc'
-                    ? 'asc'
-                    : 'desc';
+            $sortDirection = strtolower(
+                (string) $request->input(
+                    'sort_direction',
+                    'desc'
+                )
+            ) === 'asc'
+                ? 'asc'
+                : 'desc';
 
             $query->orderBy(
                 $sortBy,
@@ -194,34 +202,54 @@ class PenaltyRuleController extends Controller
             );
 
             /*
-             * ----------------------------------------------------
-             * Pagination
-             * ----------------------------------------------------
-             */
+            |--------------------------------------------------------------------------
+            | Stable Secondary Sort
+            |--------------------------------------------------------------------------
+            */
+
+            if ($sortBy !== 'id') {
+                $query->orderBy(
+                    'id',
+                    'desc'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Pagination
+            |--------------------------------------------------------------------------
+            */
+
             $rules = $query->paginate(
                 $perPage
             );
 
             return ApiResponse::success(
-                PenaltyRuleResource::collection(
+                data: PenaltyRuleResource::collection(
                     $rules
                 ),
-                'Penalty rules retrieved successfully.'
+                message: 'Penalty rules retrieved successfully.'
             );
         } catch (Throwable $e) {
             report($e);
 
-            return ApiResponse::error(
+            return ApiResponse::serverError(
                 'Failed to retrieve penalty rules.',
-                500
+                $e
             );
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | SHOW
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * SHOW
-     * ============================================================
+     * Get a single penalty rule.
+     *
+     * GET /api/revenue/penalty-rules/{penaltyRule}
      */
     public function show(
         PenaltyRule $penaltyRule
@@ -232,30 +260,32 @@ class PenaltyRuleController extends Controller
         );
 
         try {
-            $penaltyRule->load(
-                'revenueService'
-            );
-
             return ApiResponse::success(
-                new PenaltyRuleResource(
+                data: new PenaltyRuleResource(
                     $penaltyRule
                 ),
-                'Penalty rule retrieved successfully.'
+                message: 'Penalty rule retrieved successfully.'
             );
         } catch (Throwable $e) {
             report($e);
 
-            return ApiResponse::error(
+            return ApiResponse::serverError(
                 'Failed to retrieve penalty rule.',
-                500
+                $e
             );
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | STORE
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * STORE
-     * ============================================================
+     * Create a new penalty rule.
+     *
+     * POST /api/revenue/penalty-rules
      */
     public function store(
         StorePenaltyRuleRequest $request
@@ -263,31 +293,54 @@ class PenaltyRuleController extends Controller
         try {
             $penaltyRule =
                 $this->penaltyRuleService->create(
-                    $request->validated(),
-                    $request->user()->id
+                    data: $request->validated(),
+                    userId: $request->user()->id
                 );
 
-            return ApiResponse::success(
-                new PenaltyRuleResource(
+            return ApiResponse::created(
+                data: new PenaltyRuleResource(
                     $penaltyRule
                 ),
-                'Penalty rule created successfully.',
-                201
+                message: 'Penalty rule created successfully.'
+            );
+        } catch (QueryException $e) {
+            report($e);
+
+            if ($this->isOverlapViolation($e)) {
+                return ApiResponse::conflict(
+                    message: $this->overlapMessage(),
+                    errors: [
+                        'effective_from' => [
+                            'The effective period overlaps another active penalty rule with the same commencement type.'
+                        ],
+                    ]
+                );
+            }
+
+            return ApiResponse::serverError(
+                'Failed to create penalty rule.',
+                $e
             );
         } catch (Throwable $e) {
             report($e);
 
-            return ApiResponse::error(
+            return ApiResponse::serverError(
                 'Failed to create penalty rule.',
-                500
+                $e
             );
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * UPDATE
-     * ============================================================
+     * Update an existing penalty rule.
+     *
+     * PATCH /api/revenue/penalty-rules/{penaltyRule}
      */
     public function update(
         UpdatePenaltyRuleRequest $request,
@@ -296,31 +349,55 @@ class PenaltyRuleController extends Controller
         try {
             $penaltyRule =
                 $this->penaltyRuleService->update(
-                    $penaltyRule,
-                    $request->validated(),
-                    $request->user()->id
+                    penaltyRule: $penaltyRule,
+                    data: $request->validated(),
+                    userId: $request->user()->id
                 );
 
-            return ApiResponse::success(
-                new PenaltyRuleResource(
+            return ApiResponse::updated(
+                data: new PenaltyRuleResource(
                     $penaltyRule
                 ),
-                'Penalty rule updated successfully.'
+                message: 'Penalty rule updated successfully.'
+            );
+        } catch (QueryException $e) {
+            report($e);
+
+            if ($this->isOverlapViolation($e)) {
+                return ApiResponse::conflict(
+                    message: $this->overlapMessage(),
+                    errors: [
+                        'effective_from' => [
+                            'The effective period overlaps another active penalty rule with the same commencement type.'
+                        ],
+                    ]
+                );
+            }
+
+            return ApiResponse::serverError(
+                'Failed to update penalty rule.',
+                $e
             );
         } catch (Throwable $e) {
             report($e);
 
-            return ApiResponse::error(
+            return ApiResponse::serverError(
                 'Failed to update penalty rule.',
-                500
+                $e
             );
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | ACTIVATE
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * ACTIVATE
-     * ============================================================
+     * Activate a penalty rule.
+     *
+     * PATCH /api/revenue/penalty-rules/{penaltyRule}/activate
      */
     public function activate(
         Request $request,
@@ -334,30 +411,54 @@ class PenaltyRuleController extends Controller
         try {
             $penaltyRule =
                 $this->penaltyRuleService->activate(
-                    $penaltyRule,
-                    $request->user()->id
+                    penaltyRule: $penaltyRule,
+                    userId: $request->user()->id
                 );
 
-            return ApiResponse::success(
-                new PenaltyRuleResource(
+            return ApiResponse::updated(
+                data: new PenaltyRuleResource(
                     $penaltyRule
                 ),
-                'Penalty rule activated successfully.'
+                message: 'Penalty rule activated successfully.'
+            );
+        } catch (QueryException $e) {
+            report($e);
+
+            if ($this->isOverlapViolation($e)) {
+                return ApiResponse::conflict(
+                    message: $this->overlapMessage(),
+                    errors: [
+                        'is_active' => [
+                            'This penalty rule cannot be activated because its effective period overlaps another active rule with the same commencement type.'
+                        ],
+                    ]
+                );
+            }
+
+            return ApiResponse::serverError(
+                'Failed to activate penalty rule.',
+                $e
             );
         } catch (Throwable $e) {
             report($e);
 
-            return ApiResponse::error(
+            return ApiResponse::serverError(
                 'Failed to activate penalty rule.',
-                500
+                $e
             );
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | DEACTIVATE
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * DEACTIVATE
-     * ============================================================
+     * Deactivate a penalty rule.
+     *
+     * PATCH /api/revenue/penalty-rules/{penaltyRule}/deactivate
      */
     public function deactivate(
         Request $request,
@@ -371,30 +472,36 @@ class PenaltyRuleController extends Controller
         try {
             $penaltyRule =
                 $this->penaltyRuleService->deactivate(
-                    $penaltyRule,
-                    $request->user()->id
+                    penaltyRule: $penaltyRule,
+                    userId: $request->user()->id
                 );
 
-            return ApiResponse::success(
-                new PenaltyRuleResource(
+            return ApiResponse::updated(
+                data: new PenaltyRuleResource(
                     $penaltyRule
                 ),
-                'Penalty rule deactivated successfully.'
+                message: 'Penalty rule deactivated successfully.'
             );
         } catch (Throwable $e) {
             report($e);
 
-            return ApiResponse::error(
+            return ApiResponse::serverError(
                 'Failed to deactivate penalty rule.',
-                500
+                $e
             );
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | HISTORY
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * HISTORY
-     * ============================================================
+     * Get the audit history of a penalty rule.
+     *
+     * GET /api/revenue/penalty-rules/{penaltyRule}/history
      */
     public function history(
         PenaltyRule $penaltyRule
@@ -405,16 +512,53 @@ class PenaltyRuleController extends Controller
         );
 
         /*
-         * This endpoint assumes you later add a dedicated
-         * penalty_rule_histories / audit mechanism.
-         *
-         * Do not pretend the current PenaltyRule table itself
-         * represents historical versions.
-         */
+        |--------------------------------------------------------------------------
+        | History
+        |--------------------------------------------------------------------------
+        |
+        | The central AuditLog is responsible for audit history.
+        |
+        | A dedicated history query should be implemented through
+        | AuditService / AuditLog rather than storing history inside
+        | penalty_rules.
+        |
+        */
 
         return ApiResponse::success(
-            [],
-            'Penalty rule history retrieved successfully.'
+            data: [],
+            message: 'Penalty rule history retrieved successfully.'
         );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATABASE CONFLICT HELPERS
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Determine whether the QueryException was caused by the
+     * PostgreSQL exclusion constraint.
+     */
+    private function isOverlapViolation(
+        QueryException $exception
+    ): bool {
+        if ($exception->getCode() !== '23P01') {
+            return false;
+        }
+
+        return str_contains(
+            $exception->getMessage(),
+            'penalty_rules_no_overlapping_periods'
+        );
+    }
+
+    /**
+     * Friendly domain message for an overlapping penalty rule.
+     */
+    private function overlapMessage(): string
+    {
+        return
+            'The effective period overlaps another active penalty rule with the same commencement type.';
     }
 }

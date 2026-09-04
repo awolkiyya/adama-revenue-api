@@ -1,19 +1,18 @@
 <?php
 
-namespace App\Services\Audit;
+namespace App\Services;
 
 use App\Models\AuditLog;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Str;
 
 class AuditService
 {
-
     /**
-     * Create audit log manually
+     * Create audit log manually.
      *
      * Example:
+     *
      * $auditService->log(
      *     'UPDATE',
      *     'TARIFF',
@@ -21,6 +20,9 @@ class AuditService
      *     $old,
      *     $new
      * );
+     *
+     * The optional $userId allows domain services to explicitly
+     * provide the user responsible for the action.
      */
     public function log(
         string $action,
@@ -28,271 +30,214 @@ class AuditService
         ?Model $model = null,
         ?array $oldValues = null,
         ?array $newValues = null,
-        ?string $description = null
+        ?string $description = null,
+        ?string $userId = null
     ): AuditLog {
-
-
         return AuditLog::create([
-
             /**
-             * Who performed action
+             * Who performed the action.
+             *
+             * Prefer the explicitly supplied user ID.
+             *
+             * Fall back to the currently authenticated user for
+             * existing callers such as login/logout/general HTTP
+             * operations.
              */
-            'user_id' => Auth::id(),
-
-
+            'user_id' => $userId ?? Auth::id(),
 
             /**
-             * Action
+             * Action.
              *
              * CREATE
              * UPDATE
              * DELETE
              * LOGIN
              * LOGOUT
+             * ACTIVATE
+             * DEACTIVATE
              * APPROVE
              * REJECT
              */
             'action' => strtoupper($action),
 
-
-
             /**
-             * Business module
+             * Business module.
              *
              * USER
              * REVENUE
              * TARIFF
+             * PENALTY
              * CITIZEN
+             * AUTH
              */
             'module' => strtoupper($module),
 
-
-
             /**
-             * Affected table
+             * Affected database table.
              */
             'table_name' => $model?->getTable(),
 
-
-
             /**
-             * Record UUID
+             * Affected record UUID.
              */
             'record_id' => $model?->id,
 
-
-
             /**
-             * Previous data
+             * Previous state.
              */
             'old_values' => $oldValues,
 
-
-
             /**
-             * New data
+             * New state.
              */
             'new_values' => $newValues,
 
-
-
             /**
-             * Security information
+             * Request/security information.
              */
             'ip_address' => request()->ip(),
 
-
             'user_agent' => request()->userAgent(),
 
-
-
             /**
-             * Human readable message
+             * Human-readable description.
              */
             'description' => $description,
-
         ]);
-
     }
 
-
-
-
-
     /**
-     * Create audit from model changes
+     * Create audit from model changes.
      *
-     * Smart update tracking
+     * Smart update tracking.
      *
-     * Example:
-     *
-     * $auditService->logModelUpdate(
-     *      $oldUser,
-     *      $user
-     * );
+     * Only changed attributes are stored.
      */
     public function logModelUpdate(
         Model $oldModel,
         Model $newModel,
-        string $module
+        string $module,
+        ?string $userId = null
     ): ?AuditLog {
-
-
         $old = $oldModel->getAttributes();
-
 
         $new = $newModel->getAttributes();
 
-
-
         /**
-         * Detect only changed fields
+         * Detect changed fields.
          */
         $changes = [];
 
-        foreach($new as $key => $value){
-
-            if(
-                array_key_exists($key,$old)
-                &&
-                $old[$key] != $value
-            ){
-
+        foreach ($new as $key => $value) {
+            if (
+                array_key_exists($key, $old)
+                && $old[$key] != $value
+            ) {
                 $changes[$key] = [
                     'old' => $old[$key],
                     'new' => $value,
                 ];
-
             }
-
         }
 
-
-
-        if(empty($changes)){
-
+        /**
+         * Nothing changed.
+         */
+        if (empty($changes)) {
             return null;
-
         }
-
-
 
         return $this->log(
+            action: 'UPDATE',
 
-            action:'UPDATE',
+            module: $module,
 
-            module:$module,
+            model: $newModel,
 
-            model:$newModel,
-
-            oldValues:collect($changes)
+            oldValues: collect($changes)
                 ->mapWithKeys(
-                    fn($item,$key)=>[
-                        $key=>$item['old']
+                    fn ($item, $key) => [
+                        $key => $item['old'],
                     ]
                 )
                 ->toArray(),
 
-
-            newValues:collect($changes)
+            newValues: collect($changes)
                 ->mapWithKeys(
-                    fn($item,$key)=>[
-                        $key=>$item['new']
+                    fn ($item, $key) => [
+                        $key => $item['new'],
                     ]
                 )
                 ->toArray(),
 
+            description: "{$module} updated",
 
-            description:
-                "{$module} updated"
-
+            userId: $userId
         );
-
     }
 
-
-
-
-
     /**
-     * Login audit
+     * ============================================================
+     * LOGIN
+     * ============================================================
      */
     public function login(
         Model $user
     ): AuditLog {
-
-
         return $this->log(
+            action: 'LOGIN',
 
-            action:'LOGIN',
+            module: 'AUTH',
 
-            module:'AUTH',
+            model: $user,
 
-            model:$user,
-
-            description:
-                'User logged in'
-
+            description: 'User logged in'
         );
-
     }
 
-
-
-
-
     /**
-     * Logout audit
+     * ============================================================
+     * LOGOUT
+     * ============================================================
      */
     public function logout(
         Model $user
     ): AuditLog {
-
-
         return $this->log(
+            action: 'LOGOUT',
 
-            action:'LOGOUT',
+            module: 'AUTH',
 
-            module:'AUTH',
+            model: $user,
 
-            model:$user,
-
-            description:
-                'User logged out'
-
+            description: 'User logged out'
         );
-
     }
 
-
-
-
-
     /**
-     * Approval workflow audit
+     * ============================================================
+     * APPROVAL WORKFLOW
+     * ============================================================
      */
     public function approval(
         string $module,
         Model $model,
         string $status,
-        ?string $comment = null
+        ?string $comment = null,
+        ?string $userId = null
     ): AuditLog {
-
-
         return $this->log(
+            action: strtoupper($status),
 
-            action:strtoupper($status),
+            module: $module,
 
-            module:$module,
-
-            model:$model,
+            model: $model,
 
             description:
                 $comment ??
-                "{$module} {$status}"
+                "{$module} {$status}",
 
+            userId: $userId
         );
-
     }
-
 }
