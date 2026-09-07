@@ -27,30 +27,72 @@ return new class extends Migration
         | Penalty Rules
         |--------------------------------------------------------------------------
         |
-        | A penalty rule defines the late-payment penalty policy applied
-        | to overdue revenue assessments.
+        | A penalty rule defines the legal/business policy used to determine
+        | penalties on overdue revenue assessments.
+        |
+        |--------------------------------------------------------------------------
+        | IMPORTANT ARCHITECTURAL RULE
+        |--------------------------------------------------------------------------
+        |
+        | This table defines HOW penalty commencement is determined.
+        |
+        | It does NOT store the global payment-period dates.
+        |
+        | Global payment-period configuration belongs to:
+        |
+        |     revenue_settings
+        |
+        | Specifically:
+        |
+        |     payment_start_month
+        |     payment_start_day
+        |     payment_end_month
+        |     payment_end_day
         |
         |--------------------------------------------------------------------------
         | Penalty Commencement Types
         |--------------------------------------------------------------------------
         |
         | FIXED_FISCAL_MONTH
-        |     Penalty commencement is determined by a configured
-        |     Ethiopian fiscal month.
+        |     Penalty commencement is determined from the global revenue
+        |     payment-period configuration in revenue_settings.
+        |
+        |     The calculation engine reads:
+        |
+        |         revenue_settings.payment_start_month
+        |         revenue_settings.payment_start_day
+        |
+        |     Therefore, no fiscal month is duplicated in this table.
         |
         | AGREEMENT_DATE
-        |     Penalty commencement is determined by the agreement date.
+        |     Penalty commencement is determined from the applicable
+        |     agreement date.
+        |
+        |--------------------------------------------------------------------------
+        | Example
+        |--------------------------------------------------------------------------
+        |
+        | penalty_rules:
+        |
+        |     start_type = FIXED_FISCAL_MONTH
+        |
+        | revenue_settings:
+        |
+        |     payment_start_month = 2
+        |     payment_start_day   = 1
+        |
+        | The penalty engine uses the configured Ethiopian fiscal
+        | payment-period start when determining commencement.
         |
         |--------------------------------------------------------------------------
         | Active Rules
         |--------------------------------------------------------------------------
         |
-        | Multiple active penalty rules are allowed.
+        | Multiple active rules are allowed only when their commencement
+        | strategies are different.
         |
-        | However, two ACTIVE rules with the SAME start_type may not have
-        | overlapping effective periods.
-        |
-        | Rules with DIFFERENT start_type values may overlap.
+        | Two ACTIVE rules using the SAME start_type may not have overlapping
+        | effective periods.
         |
         | Example:
         |
@@ -58,11 +100,15 @@ return new class extends Migration
         |     2025-09-11 → NULL
         |
         |     AGREEMENT_DATE
-        |     2026-09-04 → NULL
+        |     2025-09-11 → NULL
         |
-        | This is VALID because the commencement mechanisms are different.
+        | VALID:
         |
-        | But:
+        | They represent different commencement strategies.
+        |
+        |--------------------------------------------------------------------------
+        | Invalid Example
+        |--------------------------------------------------------------------------
         |
         |     AGREEMENT_DATE
         |     2025-09-11 → NULL
@@ -70,8 +116,10 @@ return new class extends Migration
         |     AGREEMENT_DATE
         |     2026-09-04 → NULL
         |
-        | is NOT VALID because both rules use the same commencement
-        | mechanism and overlap.
+        | INVALID:
+        |
+        | Both belong to the same commencement strategy and their effective
+        | periods overlap.
         |
         */
 
@@ -108,9 +156,9 @@ return new class extends Migration
             |
             | Result:
             |
-            |     Month 1 = 5%
-            |     Month 2 = 7%
-            |     Month 3 = 9%
+            |     Period 1 = 5%
+            |     Period 2 = 7%
+            |     Period 3 = 9%
             |     ...
             |     Maximum  = 25%
             |
@@ -143,38 +191,23 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             |
             | FIXED_FISCAL_MONTH
-            |     Penalty starts according to a configured Ethiopian
-            |     fiscal month.
+            |     Uses the global payment-period configuration from
+            |     revenue_settings.
             |
             | AGREEMENT_DATE
-            |     Penalty starts according to the agreement date.
+            |     Uses the applicable agreement date.
+            |
+            | IMPORTANT:
+            |
+            | No payment month/day is stored here.
+            |
+            | revenue_settings is the single source of truth for the
+            | global payment period.
             |
             */
 
             $table->string('start_type', 30)
                 ->default('FIXED_FISCAL_MONTH');
-
-            /*
-            |--------------------------------------------------------------------------
-            | Fixed Fiscal Month
-            |--------------------------------------------------------------------------
-            |
-            | Required when:
-            |
-            |     start_type = FIXED_FISCAL_MONTH
-            |
-            | Valid values:
-            |
-            |     1 - 13
-            |
-            | Must be NULL when:
-            |
-            |     start_type = AGREEMENT_DATE
-            |
-            */
-
-            $table->unsignedTinyInteger('start_fiscal_month')
-                ->nullable();
 
             /*
             |--------------------------------------------------------------------------
@@ -198,10 +231,10 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             |
             | effective_from:
-            |     First date on which this rule is applicable.
+            |     First date on which this penalty rule is applicable.
             |
             | effective_to:
-            |     Last date on which this rule is applicable.
+            |     Last date on which this penalty rule is applicable.
             |
             | NULL:
             |     No defined end date.
@@ -318,6 +351,16 @@ return new class extends Migration
         |--------------------------------------------------------------------------
         | Start Type Constraint
         |--------------------------------------------------------------------------
+        |
+        | FIXED_FISCAL_MONTH:
+        |
+        |     Uses revenue_settings.payment_start_month and
+        |     revenue_settings.payment_start_day.
+        |
+        | AGREEMENT_DATE:
+        |
+        |     Uses the applicable agreement date.
+        |
         */
 
         DB::statement(<<<'SQL'
@@ -386,38 +429,6 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Fiscal Month Constraint
-        |--------------------------------------------------------------------------
-        |
-        | FIXED_FISCAL_MONTH:
-        |
-        |     start_fiscal_month is required
-        |     and must be between 1 and 13.
-        |
-        | AGREEMENT_DATE:
-        |
-        |     start_fiscal_month must be NULL.
-        |
-        */
-
-        DB::statement(<<<'SQL'
-            ALTER TABLE penalty_rules
-            ADD CONSTRAINT penalty_rules_start_month_check
-            CHECK (
-                (
-                    start_type = 'FIXED_FISCAL_MONTH'
-                    AND start_fiscal_month BETWEEN 1 AND 13
-                )
-                OR
-                (
-                    start_type = 'AGREEMENT_DATE'
-                    AND start_fiscal_month IS NULL
-                )
-            )
-        SQL);
-
-        /*
-        |--------------------------------------------------------------------------
         | Effective Period Constraint
         |--------------------------------------------------------------------------
         |
@@ -440,14 +451,14 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Prevent Overlapping Rules Of The Same Start Type
+        | Prevent Overlapping Active Rules Of The Same Start Type
         |--------------------------------------------------------------------------
         |
         | IMPORTANT:
         |
-        | This constraint intentionally includes start_type.
+        | The start_type is intentionally part of the exclusion constraint.
         |
-        | Therefore:
+        | This means:
         |
         |     FIXED_FISCAL_MONTH
         |
@@ -455,8 +466,9 @@ return new class extends Migration
         |
         |     AGREEMENT_DATE
         |
-        | are independent rule families and MAY be active at the
-        | same time with overlapping effective periods.
+        | are independent rule families.
+        |
+        | They may therefore have overlapping effective periods.
         |
         |--------------------------------------------------------------------------
         | Valid:
@@ -466,7 +478,7 @@ return new class extends Migration
         | 2025-09-11 → NULL
         |
         | AGREEMENT_DATE
-        | 2026-09-04 → NULL
+        | 2025-09-11 → NULL
         |
         |--------------------------------------------------------------------------
         | Invalid:

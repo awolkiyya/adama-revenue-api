@@ -733,9 +733,8 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows viewing tariff version history.',
                 'is_system' => false,
             ],
-
-
-           /*
+            
+            /*
             |--------------------------------------------------------------------------
             | Interest Rule Configuration
             |--------------------------------------------------------------------------
@@ -745,7 +744,7 @@ class PermissionSeeder extends Seeder
                 'name' => 'interest_rules.view',
                 'label' => 'View Interest Rules',
                 'module' => 'interest_rules',
-                'description' => 'Allows viewing configured interest rules, including rates, calculation methods, calculation bases, and effective periods.',
+                'description' => 'Allows viewing configured interest rules, including interest rates, calculation basis, and effective periods.',
                 'is_system' => false,
             ],
 
@@ -753,7 +752,7 @@ class PermissionSeeder extends Seeder
                 'name' => 'interest_rules.create',
                 'label' => 'Create Interest Rule',
                 'module' => 'interest_rules',
-                'description' => 'Allows creating new interest rule configurations with rates, calculation methods, calculation bases, and effective periods.',
+                'description' => 'Allows creating new interest rules with an annual interest rate, calculation basis, and effective period.',
                 'is_system' => false,
             ],
 
@@ -761,7 +760,7 @@ class PermissionSeeder extends Seeder
                 'name' => 'interest_rules.update',
                 'label' => 'Update Interest Rule',
                 'module' => 'interest_rules',
-                'description' => 'Allows updating eligible interest rule configurations according to system policy.',
+                'description' => 'Allows updating eligible interest rule configurations, including rates, calculation basis, effective periods, legal references, and descriptions.',
                 'is_system' => false,
             ],
 
@@ -769,7 +768,7 @@ class PermissionSeeder extends Seeder
                 'name' => 'interest_rules.activate',
                 'label' => 'Activate Interest Rule',
                 'module' => 'interest_rules',
-                'description' => 'Allows activating an eligible interest rule configuration.',
+                'description' => 'Allows activating an interest rule configuration when its effective period does not conflict with another active rule.',
                 'is_system' => false,
             ],
 
@@ -777,7 +776,7 @@ class PermissionSeeder extends Seeder
                 'name' => 'interest_rules.deactivate',
                 'label' => 'Deactivate Interest Rule',
                 'module' => 'interest_rules',
-                'description' => 'Allows deactivating an eligible interest rule configuration.',
+                'description' => 'Allows deactivating an active interest rule configuration without deleting its historical record.',
                 'is_system' => false,
             ],
 
@@ -785,7 +784,7 @@ class PermissionSeeder extends Seeder
                 'name' => 'interest_rules.view_history',
                 'label' => 'View Interest Rule History',
                 'module' => 'interest_rules',
-                'description' => 'Allows viewing the history of interest rule configurations and changes.',
+                'description' => 'Allows viewing the historical configuration and changes of interest rules.',
                 'is_system' => false,
             ],
 

@@ -13,6 +13,7 @@ use App\Modules\Revenue\Controllers\TariffRuleController;
 use App\Modules\Revenue\Controllers\TariffFormulaVariableController;
 use App\Modules\Revenue\Controllers\PenaltyRuleController;
 use App\Modules\Revenue\Controllers\RevenueSettingController;
+use App\Modules\Revenue\Controllers\InterestRuleController;
 
 
 /*
@@ -309,7 +310,92 @@ Route::prefix('revenue')
     )
         ->name('penalty-rules.history');
 
+
+
+   /*
+    |--------------------------------------------------------------------------
+    | Interest Rules
+    |--------------------------------------------------------------------------
+    |
+    | Global interest-rate configuration.
+    |
+    | Interest rules define the legally applicable annual interest rate
+    | and calculation basis for municipal revenue.
+    |
+    | Interest rules are historical/legal configurations and must not
+    | be physically deleted.
+    |
+    */
+
+
     /*
+    |--------------------------------------------------------------------------
+    | Applicable Interest Rule
+    |--------------------------------------------------------------------------
+    |
+    | GET /revenue/interest-rules/applicable
+    |
+    */
+
+    Route::get(
+        'interest-rules/applicable',
+        [InterestRuleController::class, 'applicable']
+    )
+        ->name('interest-rules.applicable');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Interest Rule CRUD
+    |--------------------------------------------------------------------------
+    */
+
+    Route::apiResource(
+        'interest-rules',
+        InterestRuleController::class
+    )
+        ->only([
+            'index',
+            'store',
+            'show',
+            'update',
+        ]);
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Interest Rule Status
+    |--------------------------------------------------------------------------
+    */
+
+    Route::patch(
+        'interest-rules/{interestRule}/activate',
+        [InterestRuleController::class, 'activate']
+    )
+        ->name('interest-rules.activate');
+
+
+    Route::patch(
+        'interest-rules/{interestRule}/deactivate',
+        [InterestRuleController::class, 'deactivate']
+    )
+        ->name('interest-rules.deactivate');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Interest Rule History
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        'interest-rules/{interestRule}/history',
+        [InterestRuleController::class, 'history']
+    )
+        ->name('interest-rules.history');
+    
+    
+        /*
     |--------------------------------------------------------------------------
     | Global Revenue Settings
     |--------------------------------------------------------------------------

@@ -2,16 +2,20 @@
 
 namespace App\Providers;
 
+use App\Models\InterestRule;
 use App\Models\MeasurementUnit;
+use App\Models\PenaltyRule;
 use App\Models\RevenueCategory;
 use App\Models\RevenueService;
 use App\Models\Role;
 
-use App\Policies\PermissionPolicy;
-use App\Policies\RolePolicy;
+use App\Policies\InterestRulePolicy;
 use App\Policies\MeasurementUnitPolicy;
+use App\Policies\PenaltyRulePolicy;
+use App\Policies\PermissionPolicy;
 use App\Policies\RevenueCategoryPolicy;
 use App\Policies\RevenueServicePolicy;
+use App\Policies\RolePolicy;
 
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -69,6 +73,16 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(
             RevenueService::class,
             RevenueServicePolicy::class
+        );
+
+        Gate::policy(
+            PenaltyRule::class,
+            PenaltyRulePolicy::class
+        );
+
+        Gate::policy(
+            InterestRule::class,
+            InterestRulePolicy::class
         );
 
         /*

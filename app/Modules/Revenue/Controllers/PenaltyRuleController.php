@@ -346,6 +346,11 @@ class PenaltyRuleController extends Controller
         UpdatePenaltyRuleRequest $request,
         PenaltyRule $penaltyRule
     ): JsonResponse {
+        $this->authorize(
+            'update',
+            $penaltyRule
+        );
+    
         try {
             $penaltyRule =
                 $this->penaltyRuleService->update(
@@ -353,7 +358,7 @@ class PenaltyRuleController extends Controller
                     data: $request->validated(),
                     userId: $request->user()->id
                 );
-
+    
             return ApiResponse::updated(
                 data: new PenaltyRuleResource(
                     $penaltyRule
@@ -362,7 +367,7 @@ class PenaltyRuleController extends Controller
             );
         } catch (QueryException $e) {
             report($e);
-
+    
             if ($this->isOverlapViolation($e)) {
                 return ApiResponse::conflict(
                     message: $this->overlapMessage(),
@@ -373,14 +378,14 @@ class PenaltyRuleController extends Controller
                     ]
                 );
             }
-
+    
             return ApiResponse::serverError(
                 'Failed to update penalty rule.',
                 $e
             );
         } catch (Throwable $e) {
             report($e);
-
+    
             return ApiResponse::serverError(
                 'Failed to update penalty rule.',
                 $e

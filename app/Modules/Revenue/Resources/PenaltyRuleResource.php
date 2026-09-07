@@ -5,6 +5,9 @@ namespace App\Modules\Revenue\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * @mixin \App\Models\PenaltyRule
+ */
 class PenaltyRuleResource extends JsonResource
 {
     public function toArray(Request $request): array
@@ -22,61 +25,146 @@ class PenaltyRuleResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Scope
+            | Penalty Rate Configuration
             |--------------------------------------------------------------------------
+            |
+            | Rates are returned as numeric values for API consumers.
+            |
+            | The backend model keeps the underlying database values
+            | as decimal strings to preserve financial precision.
+            |
             */
 
-            'scope' => $this->isGlobal()
-                ? 'GLOBAL'
-                : 'SERVICE_SPECIFIC',
+            'initial_rate' => $this->initial_rate !== null
+                ? (float) $this->initial_rate
+                : null,
 
-            'scope_label' => $this->scope_label,
+            'increment_rate' => $this->increment_rate !== null
+                ? (float) $this->increment_rate
+                : null,
 
-            'revenue_service_id' => $this->revenue_service_id,
-
-            'revenue_service' => $this->when(
-                $this->relationLoaded('revenueService')
-                && $this->revenueService,
-                fn () => [
-                    'id' => $this->revenueService->id,
-                    'name' => $this->revenueService->name,
-                ]
-            ),
+            'maximum_rate' => $this->maximum_rate !== null
+                ? (float) $this->maximum_rate
+                : null,
 
             /*
             |--------------------------------------------------------------------------
-            | Calculation
+            | Formatted Rate Values
             |--------------------------------------------------------------------------
+            |
+            | Convenient display values for frontend clients.
+            |
             */
 
-            'calculation_type' => $this->calculation_type,
+            'initial_rate_formatted' =>
+                $this->initial_rate !== null
+                    ? rtrim(
+                        rtrim(
+                            number_format(
+                                (float) $this->initial_rate,
+                                4,
+                                '.',
+                                ''
+                            ),
+                            '0'
+                        ),
+                        '.'
+                    ) . '%'
+                    : null,
 
-            'calculation_type_label' =>
-                $this->calculation_type_label,
+            'increment_rate_formatted' =>
+                $this->increment_rate !== null
+                    ? rtrim(
+                        rtrim(
+                            number_format(
+                                (float) $this->increment_rate,
+                                4,
+                                '.',
+                                ''
+                            ),
+                            '0'
+                        ),
+                        '.'
+                    ) . '%'
+                    : null,
 
-            'fixed_amount' => $this->fixed_amount,
-
-            'initial_rate' => $this->initial_rate,
-
-            'increment_rate' => $this->increment_rate,
-
-            'maximum_rate' => $this->maximum_rate,
+            'maximum_rate_formatted' =>
+                $this->maximum_rate !== null
+                    ? rtrim(
+                        rtrim(
+                            number_format(
+                                (float) $this->maximum_rate,
+                                4,
+                                '.',
+                                ''
+                            ),
+                            '0'
+                        ),
+                        '.'
+                    ) . '%'
+                    : null,
 
             /*
             |--------------------------------------------------------------------------
-            | Start Configuration
+            | Progression
             |--------------------------------------------------------------------------
+            */
+
+            'progression_label' =>
+                $this->progression_label,
+
+            'rate_summary' =>
+                $this->rate_summary,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Commencement Configuration
+            |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            |
+            | There is intentionally NO:
+            |
+            |     start_fiscal_month
+            |
+            | The fixed fiscal commencement date is resolved from:
+            |
+            |     revenue_settings.payment_start_month
+            |     revenue_settings.payment_start_day
+            |
+            | start_type only determines WHICH commencement strategy
+            | the penalty engine uses.
+            |
             */
 
             'start_type' => $this->start_type,
 
-            'start_offset_value' => $this->start_offset_value,
+            'start_type_label' =>
+                $this->start_type_label,
 
-            'start_offset_unit' => $this->start_offset_unit,
+            /*
+            |--------------------------------------------------------------------------
+            | Increment Configuration
+            |--------------------------------------------------------------------------
+            */
 
-            'increment_period' => $this->increment_period,
+            'increment_period' =>
+                $this->increment_period,
 
-            'calculation_basis' => $this->calculation_basis,
+            'increment_period_label' =>
+                $this->increment_period_label,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Calculation Basis
+            |--------------------------------------------------------------------------
+            */
+
+            'calculation_basis' =>
+                $this->calculation_basis,
+
+            'calculation_basis_label' =>
+                $this->calculation_basis_label,
 
             /*
             |--------------------------------------------------------------------------
@@ -96,11 +184,16 @@ class PenaltyRuleResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'is_active' => $this->is_active,
+            'is_active' =>
+                (bool) $this->is_active,
 
-            'status' => $this->is_active
-                ? 'ACTIVE'
-                : 'INACTIVE',
+            'status' =>
+                $this->is_active
+                    ? 'ACTIVE'
+                    : 'INACTIVE',
+
+            'status_label' =>
+                $this->status_label,
 
             'is_effective_today' =>
                 $this->is_active
@@ -114,9 +207,11 @@ class PenaltyRuleResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'description' => $this->description,
+            'description' =>
+                $this->description,
 
-            'legal_reference' => $this->legal_reference,
+            'legal_reference' =>
+                $this->legal_reference,
 
             /*
             |--------------------------------------------------------------------------
@@ -124,9 +219,61 @@ class PenaltyRuleResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'created_by' => $this->created_by,
+            'created_by' =>
+                $this->created_by,
 
-            'updated_by' => $this->updated_by,
+            'updated_by' =>
+                $this->updated_by,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Audit Users
+            |--------------------------------------------------------------------------
+            |
+            | Only included when the corresponding relationship has
+            | explicitly been loaded by the controller/service.
+            |
+            */
+
+            'created_by_user' =>
+                $this->whenLoaded(
+                    'createdBy',
+                    fn () => $this->createdBy
+                        ? [
+                            'id' =>
+                                $this->createdBy->id,
+
+                            'name' =>
+                                $this->createdBy->name,
+
+                            'email' =>
+                                $this->createdBy->email,
+                        ]
+                        : null
+                ),
+
+            'updated_by_user' =>
+                $this->whenLoaded(
+                    'updatedBy',
+                    fn () => $this->updatedBy
+                        ? [
+                            'id' =>
+                                $this->updatedBy->id,
+
+                            'name' =>
+                                $this->updatedBy->name,
+
+                            'email' =>
+                                $this->updatedBy->email,
+                        ]
+                        : null
+                ),
+
+            /*
+            |--------------------------------------------------------------------------
+            | Timestamps
+            |--------------------------------------------------------------------------
+            */
 
             'created_at' =>
                 $this->created_at?->toISOString(),

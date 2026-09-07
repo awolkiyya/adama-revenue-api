@@ -99,7 +99,8 @@ class StoreBaseFieldRequest extends FormRequest
                     'DATE',
                     "FILE",
                     "CHECKBOX",
-                    "RADIO"
+                    "RADIO",
+                    "SELECT"
                 ]),
             ],
 

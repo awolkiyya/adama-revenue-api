@@ -102,17 +102,35 @@ class PenaltyRulePolicy
         User $user,
         PenaltyRule $penaltyRule
     ): bool {
-        if (! $this->hasPermission(
+        $hasPermission = $this->hasPermission(
             $user,
             'penalty_rules.update'
-        )) {
+        );
+    
+        if (! $hasPermission) {
+            \Log::warning('Penalty rule update denied: missing permission', [
+                'user_id' => $user->id,
+                'penalty_rule_id' => $penaltyRule->id,
+                'permission' => 'penalty_rules.update',
+            ]);
+    
             return false;
         }
-
-        return $this->canAccessPenaltyRule(
+    
+        $hasHierarchyAccess = $this->canAccessPenaltyRule(
             $user,
             $penaltyRule
         );
+    
+        if (! $hasHierarchyAccess) {
+            \Log::warning('Penalty rule update denied: hierarchy access', [
+                'user_id' => $user->id,
+                'penalty_rule_id' => $penaltyRule->id,
+                'revenue_service_id' => $penaltyRule->revenue_service_id,
+            ]);
+        }
+    
+        return $hasHierarchyAccess;
     }
 
     /**

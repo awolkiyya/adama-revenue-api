@@ -59,7 +59,8 @@ class StorePenaltyRuleRequest extends FormRequest
             |     Period 2 = 7%
             |     Period 3 = 9%
             |     ...
-            |     Maximum  = 25%
+            |     Period 11 = 25%
+            |     Period 12+ = 25%
             |
             */
 
@@ -91,6 +92,21 @@ class StorePenaltyRuleRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Penalty Commencement Type
             |--------------------------------------------------------------------------
+            |
+            | FIXED_FISCAL_MONTH:
+            |     The actual payment-period start is resolved from
+            |     Revenue General Settings:
+            |
+            |         payment_start_month
+            |         payment_start_day
+            |
+            | AGREEMENT_DATE:
+            |     The penalty commencement date is resolved from the
+            |     relevant agreement date.
+            |
+            | IMPORTANT:
+            |     No fiscal month is stored on the penalty rule itself.
+            |
             */
 
             'start_type' => [
@@ -99,27 +115,6 @@ class StorePenaltyRuleRequest extends FormRequest
                     PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
                     PenaltyRule::START_TYPE_AGREEMENT_DATE,
                 ]),
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Fixed Fiscal Month
-            |--------------------------------------------------------------------------
-            |
-            | Required only for FIXED_FISCAL_MONTH.
-            |
-            | Ethiopian fiscal months:
-            |
-            |     1 - 13
-            |
-            */
-
-            'start_fiscal_month' => [
-                'nullable',
-                'integer',
-                'min:1',
-                'max:13',
-                'required_if:start_type,FIXED_FISCAL_MONTH',
             ],
 
             /*
@@ -221,6 +216,9 @@ class StorePenaltyRuleRequest extends FormRequest
             'initial_rate.max' =>
                 'The initial penalty rate cannot exceed 100%.',
 
+            'initial_rate.decimal' =>
+                'The initial penalty rate may have up to 4 decimal places.',
+
             'increment_rate.required' =>
                 'The increment penalty rate is required.',
 
@@ -232,6 +230,9 @@ class StorePenaltyRuleRequest extends FormRequest
 
             'increment_rate.max' =>
                 'The increment penalty rate cannot exceed 100%.',
+
+            'increment_rate.decimal' =>
+                'The increment penalty rate may have up to 4 decimal places.',
 
             'maximum_rate.required' =>
                 'The maximum penalty rate is required.',
@@ -245,6 +246,9 @@ class StorePenaltyRuleRequest extends FormRequest
             'maximum_rate.max' =>
                 'The maximum penalty rate cannot exceed 100%.',
 
+            'maximum_rate.decimal' =>
+                'The maximum penalty rate may have up to 4 decimal places.',
+
             /*
             |--------------------------------------------------------------------------
             | Start Configuration
@@ -256,18 +260,6 @@ class StorePenaltyRuleRequest extends FormRequest
 
             'start_type.in' =>
                 'The selected penalty commencement type is invalid.',
-
-            'start_fiscal_month.required_if' =>
-                'The fiscal month is required when the penalty start type is FIXED_FISCAL_MONTH.',
-
-            'start_fiscal_month.integer' =>
-                'The fiscal month must be a whole number.',
-
-            'start_fiscal_month.min' =>
-                'The fiscal month must be between 1 and 13.',
-
-            'start_fiscal_month.max' =>
-                'The fiscal month must be between 1 and 13.',
 
             /*
             |--------------------------------------------------------------------------
@@ -323,29 +315,12 @@ class StorePenaltyRuleRequest extends FormRequest
     {
         /*
         |--------------------------------------------------------------------------
-        | Agreement Date
-        |--------------------------------------------------------------------------
-        |
-        | Fiscal month has no meaning when the penalty starts from the
-        | agreement date.
-        |
-        */
-
-        if (
-            $this->input('start_type') ===
-            PenaltyRule::START_TYPE_AGREEMENT_DATE
-        ) {
-            $this->merge([
-                'start_fiscal_month' => null,
-            ]);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
         | Increment Period
         |--------------------------------------------------------------------------
         |
         | MONTH is currently the only supported increment period.
+        |
+        | The client does not need to control this value.
         |
         */
 
@@ -358,7 +333,6 @@ class StorePenaltyRuleRequest extends FormRequest
     protected function withValidator($validator): void
     {
         $validator->after(function ($validator) {
-
             /*
             |--------------------------------------------------------------------------
             | Maximum Rate
@@ -376,49 +350,15 @@ class StorePenaltyRuleRequest extends FormRequest
                 $maximumRate !== null &&
                 is_numeric($initialRate) &&
                 is_numeric($maximumRate) &&
-                (float) $maximumRate < (float) $initialRate
+                bccomp(
+                    (string) $maximumRate,
+                    (string) $initialRate,
+                    4
+                ) < 0
             ) {
                 $validator->errors()->add(
                     'maximum_rate',
                     'The maximum penalty rate must be greater than or equal to the initial penalty rate.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Fixed Fiscal Month
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $this->input('start_type') ===
-                    PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH &&
-                $this->input('start_fiscal_month') === null
-            ) {
-                $validator->errors()->add(
-                    'start_fiscal_month',
-                    'The fiscal month is required when the penalty start type is FIXED_FISCAL_MONTH.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Agreement Date
-            |--------------------------------------------------------------------------
-            |
-            | This is mostly defensive because prepareForValidation()
-            | already converts the value to NULL.
-            |
-            */
-
-            if (
-                $this->input('start_type') ===
-                    PenaltyRule::START_TYPE_AGREEMENT_DATE &&
-                $this->input('start_fiscal_month') !== null
-            ) {
-                $validator->errors()->add(
-                    'start_fiscal_month',
-                    'The fiscal month must be empty when the penalty start type is AGREEMENT_DATE.'
                 );
             }
         });

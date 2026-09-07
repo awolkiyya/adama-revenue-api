@@ -12,7 +12,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class PenaltyRule extends Model
 {
-    use HasFactory, HasUuids;
+    use HasFactory;
+    use HasUuids;
 
     /*
     |--------------------------------------------------------------------------
@@ -20,14 +21,35 @@ class PenaltyRule extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Penalty commencement is resolved from the global
+     * revenue payment-period configuration.
+     *
+     * Source:
+     * revenue_settings.payment_start_month
+     * revenue_settings.payment_start_day
+     */
     public const START_TYPE_FIXED_FISCAL_MONTH = 'FIXED_FISCAL_MONTH';
 
+    /**
+     * Penalty commencement is resolved from the
+     * applicable agreement date.
+     */
     public const START_TYPE_AGREEMENT_DATE = 'AGREEMENT_DATE';
 
+    /**
+     * Penalty is calculated against the original principal amount.
+     */
     public const CALCULATION_BASIS_PRINCIPAL = 'PRINCIPAL';
 
+    /**
+     * Penalty is calculated against the outstanding balance.
+     */
     public const CALCULATION_BASIS_OUTSTANDING = 'OUTSTANDING';
 
+    /**
+     * Current supported penalty progression period.
+     */
     public const INCREMENT_PERIOD_MONTH = 'MONTH';
 
     /*
@@ -57,18 +79,16 @@ class PenaltyRule extends Model
     */
 
     protected $fillable = [
-        'revenue_service_id',
-
         'name',
 
         'initial_rate',
         'increment_rate',
         'maximum_rate',
 
-        'start_type',
-        'start_fiscal_month',
-
         'increment_period',
+
+        'start_type',
+
         'calculation_basis',
 
         'effective_from',
@@ -92,18 +112,46 @@ class PenaltyRule extends Model
     protected function casts(): array
     {
         return [
+            /*
+            |--------------------------------------------------------------------------
+            | Financial Rates
+            |--------------------------------------------------------------------------
+            |
+            | Keep these as decimal strings.
+            |
+            | Do NOT cast these to float because penalty calculations
+            | are financial calculations and must preserve decimal precision.
+            |
+            */
+
             'initial_rate' => 'decimal:4',
             'increment_rate' => 'decimal:4',
             'maximum_rate' => 'decimal:4',
 
-            'start_type' => 'string',
-            'start_fiscal_month' => 'integer',
+            /*
+            |--------------------------------------------------------------------------
+            | Configuration
+            |--------------------------------------------------------------------------
+            */
 
             'increment_period' => 'string',
+            'start_type' => 'string',
             'calculation_basis' => 'string',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Effective Period
+            |--------------------------------------------------------------------------
+            */
 
             'effective_from' => 'date',
             'effective_to' => 'date',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Status
+            |--------------------------------------------------------------------------
+            */
 
             'is_active' => 'boolean',
         ];
@@ -115,15 +163,10 @@ class PenaltyRule extends Model
     |--------------------------------------------------------------------------
     */
 
-    public function revenueService(): BelongsTo
-    {
-        return $this->belongsTo(
-            RevenueService::class,
-            'revenue_service_id'
-        );
-    }
-
-    public function creator(): BelongsTo
+    /**
+     * User who created this penalty rule.
+     */
+    public function createdBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
@@ -131,7 +174,10 @@ class PenaltyRule extends Model
         );
     }
 
-    public function updater(): BelongsTo
+    /**
+     * User who last updated this penalty rule.
+     */
+    public function updatedBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
@@ -145,21 +191,25 @@ class PenaltyRule extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Only active penalty rules.
+     */
     public function scopeActive(Builder $query): Builder
     {
         return $query->where('is_active', true);
     }
 
-    public function scopeGlobal(Builder $query): Builder
+    /**
+     * Only inactive penalty rules.
+     */
+    public function scopeInactive(Builder $query): Builder
     {
-        return $query->whereNull('revenue_service_id');
+        return $query->where('is_active', false);
     }
 
-    public function scopeServiceSpecific(Builder $query): Builder
-    {
-        return $query->whereNotNull('revenue_service_id');
-    }
-
+    /**
+     * Rules effective on the supplied date.
+     */
     public function scopeEffectiveOn(
         Builder $query,
         CarbonInterface|string $date
@@ -173,6 +223,9 @@ class PenaltyRule extends Model
             });
     }
 
+    /**
+     * Active rules effective on the supplied date.
+     */
     public function scopeActiveEffectiveOn(
         Builder $query,
         CarbonInterface|string $date
@@ -182,13 +235,47 @@ class PenaltyRule extends Model
             ->effectiveOn($date);
     }
 
-    public function scopeForService(
-        Builder $query,
-        string $revenueServiceId
-    ): Builder {
+    /**
+     * Rules using a fixed Ethiopian fiscal-month commencement.
+     */
+    public function scopeFixedFiscalMonth(Builder $query): Builder
+    {
         return $query->where(
-            'revenue_service_id',
-            $revenueServiceId
+            'start_type',
+            self::START_TYPE_FIXED_FISCAL_MONTH
+        );
+    }
+
+    /**
+     * Rules using agreement-date commencement.
+     */
+    public function scopeAgreementDate(Builder $query): Builder
+    {
+        return $query->where(
+            'start_type',
+            self::START_TYPE_AGREEMENT_DATE
+        );
+    }
+
+    /**
+     * Rules calculated against principal.
+     */
+    public function scopePrincipalBased(Builder $query): Builder
+    {
+        return $query->where(
+            'calculation_basis',
+            self::CALCULATION_BASIS_PRINCIPAL
+        );
+    }
+
+    /**
+     * Rules calculated against outstanding balance.
+     */
+    public function scopeOutstandingBased(Builder $query): Builder
+    {
+        return $query->where(
+            'calculation_basis',
+            self::CALCULATION_BASIS_OUTSTANDING
         );
     }
 
@@ -199,69 +286,31 @@ class PenaltyRule extends Model
     */
 
     /**
-     * Resolve the highest-priority active penalty rule
-     * for a revenue service and date.
+     * Resolve the active penalty rule applicable on a date.
      *
-     * Priority:
+     * Penalty rules are global.
      *
-     * 1. Service-specific rule
-     * 2. Global/default rule
-     * 3. No rule
+     * Therefore, unlike a service-specific tariff rule, this method
+     * does not resolve a rule by revenue_service_id.
      */
-    public static function resolveForService(
-        string $revenueServiceId,
+    public static function resolve(
         CarbonInterface|string $date
     ): ?self {
         return static::query()
             ->active()
             ->effectiveOn($date)
-            ->where(function (Builder $query) use ($revenueServiceId) {
-                $query
-                    ->where(
-                        'revenue_service_id',
-                        $revenueServiceId
-                    )
-                    ->orWhereNull('revenue_service_id');
-            })
-            ->orderByRaw(
-                'CASE
-                    WHEN revenue_service_id IS NULL THEN 1
-                    ELSE 0
-                 END'
-            )
+            ->orderByDesc('effective_from')
             ->first();
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Scope Helpers
-    |--------------------------------------------------------------------------
-    */
-
-    public function isGlobal(): bool
+    /**
+     * Resolve the currently applicable active penalty rule.
+     */
+    public static function resolveCurrent(): ?self
     {
-        return $this->revenue_service_id === null;
-    }
-
-    public function isServiceSpecific(): bool
-    {
-        return $this->revenue_service_id !== null;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Start Type Helpers
-    |--------------------------------------------------------------------------
-    */
-
-    public function startsFromFiscalMonth(): bool
-    {
-        return $this->start_type === self::START_TYPE_FIXED_FISCAL_MONTH;
-    }
-
-    public function startsFromAgreementDate(): bool
-    {
-        return $this->start_type === self::START_TYPE_AGREEMENT_DATE;
+        return static::resolve(
+            now()->toDateString()
+        );
     }
 
     /*
@@ -270,6 +319,9 @@ class PenaltyRule extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Determine whether this rule is effective on a date.
+     */
     public function isEffectiveOn(
         CarbonInterface|string $date
     ): bool {
@@ -277,7 +329,10 @@ class PenaltyRule extends Model
             ? $date
             : Carbon::parse($date);
 
-        if ($date->lt($this->effective_from)) {
+        if (
+            $this->effective_from === null ||
+            $date->lt($this->effective_from)
+        ) {
             return false;
         }
 
@@ -291,6 +346,90 @@ class PenaltyRule extends Model
         return true;
     }
 
+    /**
+     * Determine whether this rule is currently active and effective.
+     */
+    public function isCurrentlyEffective(): bool
+    {
+        return $this->is_active
+            && $this->isEffectiveOn(
+                now()->toDateString()
+            );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Start Type Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Determine whether commencement uses the global
+     * Ethiopian fiscal payment-period configuration.
+     *
+     * IMPORTANT:
+     *
+     * This model does NOT contain a fiscal month.
+     *
+     * The calculation/orchestration layer must read:
+     *
+     * revenue_settings.payment_start_month
+     * revenue_settings.payment_start_day
+     */
+    public function startsFromFiscalMonth(): bool
+    {
+        return $this->start_type ===
+            self::START_TYPE_FIXED_FISCAL_MONTH;
+    }
+
+    /**
+     * Determine whether commencement uses an agreement date.
+     */
+    public function startsFromAgreementDate(): bool
+    {
+        return $this->start_type ===
+            self::START_TYPE_AGREEMENT_DATE;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Calculation Basis Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Determine whether penalty uses the original principal.
+     */
+    public function usesPrincipal(): bool
+    {
+        return $this->calculation_basis ===
+            self::CALCULATION_BASIS_PRINCIPAL;
+    }
+
+    /**
+     * Determine whether penalty uses the outstanding balance.
+     */
+    public function usesOutstanding(): bool
+    {
+        return $this->calculation_basis ===
+            self::CALCULATION_BASIS_OUTSTANDING;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Increment Period Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Determine whether progression occurs monthly.
+     */
+    public function incrementsMonthly(): bool
+    {
+        return $this->increment_period ===
+            self::INCREMENT_PERIOD_MONTH;
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Rate Calculation
@@ -299,19 +438,37 @@ class PenaltyRule extends Model
 
     /**
      * Calculate the configured penalty percentage
-     * for a monthly penalty period.
+     * for a given penalty period.
      *
      * Example:
+     *
+     * Initial rate  = 5%
+     * Increment     = 2%
+     * Maximum       = 25%
      *
      * Period 1  = 5%
      * Period 2  = 7%
      * Period 3  = 9%
+     * Period 4  = 11%
      * ...
+     * Period 10 = 23%
      * Period 11 = 25%
-     * Period 12+ = 25%
+     * Period 12 = 25%
+     *
+     * IMPORTANT:
      *
      * This method calculates ONLY the percentage rate.
-     * It does not calculate the monetary penalty.
+     *
+     * It does NOT calculate:
+     *
+     * - principal
+     * - outstanding balance
+     * - monetary penalty
+     * - invoice amount
+     * - payment amount
+     *
+     * Actual financial calculation belongs in the dedicated
+     * penalty calculation service.
      */
     public function rateForPeriod(int $period): string
     {
@@ -325,6 +482,12 @@ class PenaltyRule extends Model
         $incrementRate = $this->getIncrementRate();
         $maximumRate = $this->getMaximumRate();
 
+        /*
+        |--------------------------------------------------------------------------
+        | initial_rate + ((period - 1) × increment_rate)
+        |--------------------------------------------------------------------------
+        */
+
         $rate = bcadd(
             $initialRate,
             bcmul(
@@ -335,7 +498,19 @@ class PenaltyRule extends Model
             4
         );
 
-        if (bccomp($rate, $maximumRate, 4) > 0) {
+        /*
+        |--------------------------------------------------------------------------
+        | Apply Maximum Rate
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            bccomp(
+                $rate,
+                $maximumRate,
+                4
+            ) > 0
+        ) {
             $rate = $maximumRate;
         }
 
@@ -348,16 +523,25 @@ class PenaltyRule extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Get initial penalty rate.
+     */
     public function getInitialRate(): string
     {
         return $this->initial_rate ?? '5.0000';
     }
 
+    /**
+     * Get monthly increment rate.
+     */
     public function getIncrementRate(): string
     {
         return $this->increment_rate ?? '2.0000';
     }
 
+    /**
+     * Get maximum penalty rate.
+     */
     public function getMaximumRate(): string
     {
         return $this->maximum_rate ?? '25.0000';
@@ -369,6 +553,9 @@ class PenaltyRule extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Human-readable commencement type.
+     */
     public function getStartTypeLabelAttribute(): string
     {
         return match ($this->start_type) {
@@ -379,21 +566,71 @@ class PenaltyRule extends Model
                 'Agreement Date',
 
             default =>
-                $this->start_type,
+                (string) $this->start_type,
         };
     }
 
-    public function getScopeLabelAttribute(): string
+    /**
+     * Human-readable calculation basis.
+     */
+    public function getCalculationBasisLabelAttribute(): string
     {
-        return $this->isGlobal()
-            ? 'Global'
-            : 'Service Specific';
+        return match ($this->calculation_basis) {
+            self::CALCULATION_BASIS_PRINCIPAL =>
+                'Principal',
+
+            self::CALCULATION_BASIS_OUTSTANDING =>
+                'Outstanding Balance',
+
+            default =>
+                (string) $this->calculation_basis,
+        };
     }
 
+    /**
+     * Human-readable increment period.
+     */
+    public function getIncrementPeriodLabelAttribute(): string
+    {
+        return match ($this->increment_period) {
+            self::INCREMENT_PERIOD_MONTH =>
+                'Monthly',
+
+            default =>
+                (string) $this->increment_period,
+        };
+    }
+
+    /**
+     * Human-readable progression.
+     */
     public function getProgressionLabelAttribute(): string
     {
         return sprintf(
             '%s%% initial + %s%% per month, maximum %s%%',
+            $this->getInitialRate(),
+            $this->getIncrementRate(),
+            $this->getMaximumRate()
+        );
+    }
+
+    /**
+     * Human-readable status.
+     */
+    public function getStatusLabelAttribute(): string
+    {
+        return $this->is_active
+            ? 'Active'
+            : 'Inactive';
+    }
+
+    /**
+     * Human-readable rate summary.
+     */
+    public function getRateSummaryAttribute(): string
+    {
+        return sprintf(
+            '%s%% → +%s%%/month → max %s%%',
             $this->getInitialRate(),
             $this->getIncrementRate(),
             $this->getMaximumRate()

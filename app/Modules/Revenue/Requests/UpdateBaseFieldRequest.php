@@ -88,6 +88,8 @@ class UpdateBaseFieldRequest extends FormRequest
                 'exists:measurement_units,id',
             ],
 
+
+           
             /*
             |--------------------------------------------------------------------------
             | Data Type
@@ -102,6 +104,10 @@ class UpdateBaseFieldRequest extends FormRequest
                     'TEXT',
                     'BOOLEAN',
                     'DATE',
+                    "FILE",
+                    "CHECKBOX",
+                    "RADIO",
+                    "SELECT"
                 ]),
             ],
 

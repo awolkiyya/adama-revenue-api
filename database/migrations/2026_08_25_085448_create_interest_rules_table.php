@@ -21,30 +21,59 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Annual Bank Interest Rate
+            | Interest Rate
             |--------------------------------------------------------------------------
             |
-            | Global annual interest rate applicable to all revenue services.
+            | The configured interest rate.
             |
-            | Stored as a percentage.
+            | The meaning of the rate is determined by rate_period.
+            |
+            | Examples:
+            |
+            | 24.7250 + YEAR  = 24.725% per year
+            | 2.0000   + MONTH = 2% per month
+            | 0.0500   + DAY   = 0.05% per day
+            |
+            | Stored as a percentage, not a decimal.
             |
             | Example:
             |
-            | 24.7250 = 24.725% per year
-            |
-            | The calculation engine converts this to decimal form:
-            |
             | 24.7250 / 100 = 0.24725
-            |
-            | Monthly rate is derived by the calculation engine:
-            |
-            | 24.7250 / 12 = 2.0604167% per month
-            |
-            | Do NOT store the monthly rate separately.
             |
             */
 
             $table->decimal('rate', 10, 4);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Rate Period
+            |--------------------------------------------------------------------------
+            |
+            | Defines the period represented by the configured rate.
+            |
+            | YEAR
+            | MONTH
+            | DAY
+            |
+            */
+
+            $table->string('rate_period', 20)
+                ->default('YEAR');
+
+            /*
+            |--------------------------------------------------------------------------
+            | Calculation Method
+            |--------------------------------------------------------------------------
+            |
+            | Defines how interest is accumulated.
+            |
+            | SIMPLE
+            | COMPOUND
+            |
+            */
+
+            $table->string('calculation_method', 30)
+                ->default('SIMPLE');
 
             /*
             |--------------------------------------------------------------------------
@@ -66,10 +95,10 @@ return new class extends Migration
             | Effective Period
             |--------------------------------------------------------------------------
             |
-            | Defines the legal/business period during which this annual
-            | interest rate applies.
+            | Defines the legal/business period during which this interest
+            | rule is applicable.
             |
-            | effective_to = NULL means the rule has no defined end date.
+            | effective_to = NULL means no defined end date.
             |
             */
 
@@ -88,7 +117,7 @@ return new class extends Migration
             |
             | effective_from / effective_to determine legal applicability.
             |
-            | Historical rules remain stored in the database.
+            | Historical rules remain stored.
             |
             */
 
@@ -102,7 +131,7 @@ return new class extends Migration
             |
             | Reference to the law, regulation, directive, proclamation,
             | council decision, bank directive, or other legal instrument
-            | defining the applicable annual interest rate.
+            | defining the applicable interest rule.
             |
             */
 
@@ -146,9 +175,6 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | Query Index
             |--------------------------------------------------------------------------
-            |
-            | Supports finding active rules within their effective period.
-            |
             */
 
             $table->index(
@@ -166,7 +192,7 @@ return new class extends Migration
         | Validate Interest Rate
         |--------------------------------------------------------------------------
         |
-        | Negative interest rates are not permitted.
+        | Interest rate cannot be negative.
         |
         */
 
@@ -178,11 +204,36 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
+        | Validate Rate Period
+        |--------------------------------------------------------------------------
+        */
+
+        DB::statement(<<<'SQL'
+            ALTER TABLE interest_rules
+            ADD CONSTRAINT interest_rules_rate_period_check
+            CHECK (
+                rate_period IN ('YEAR', 'MONTH', 'DAY')
+            )
+        SQL);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Calculation Method
+        |--------------------------------------------------------------------------
+        */
+
+        DB::statement(<<<'SQL'
+            ALTER TABLE interest_rules
+            ADD CONSTRAINT interest_rules_calculation_method_check
+            CHECK (
+                calculation_method IN ('SIMPLE', 'COMPOUND')
+            )
+        SQL);
+
+        /*
+        |--------------------------------------------------------------------------
         | Validate Calculation Basis
         |--------------------------------------------------------------------------
-        |
-        | Only these two monetary bases are supported.
-        |
         */
 
         DB::statement(<<<'SQL'
@@ -197,9 +248,6 @@ return new class extends Migration
         |--------------------------------------------------------------------------
         | Validate Effective Period
         |--------------------------------------------------------------------------
-        |
-        | effective_to cannot be earlier than effective_from.
-        |
         */
 
         DB::statement(<<<'SQL'
@@ -218,8 +266,9 @@ return new class extends Migration
         |
         | Prevents overlapping ACTIVE interest rules.
         |
-        | Because effective_to is business-inclusive, we add one day and
-        | create a PostgreSQL half-open range:
+        | effective_to is business-inclusive.
+        |
+        | Example:
         |
         | 2026-07-08 → 2027-07-07
         |
@@ -234,9 +283,7 @@ return new class extends Migration
         |
         | are valid.
         |
-        | But overlapping periods are rejected.
-        |
-        | NULL effective_to represents an open-ended rule.
+        | Overlapping active periods are rejected.
         |
         */
 

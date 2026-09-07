@@ -12,26 +12,22 @@ class PenaltyRuleService
 {
     /**
      * Audit module identifier.
-     *
-     * Keep this consistent with the Revenue module's
-     * existing system-log conventions.
      */
     private const MODULE = 'penalty_rules';
 
     /**
-     * Fields that represent the actual penalty-rule business state.
+     * Fields representing the actual penalty-rule business state.
      *
-     * Timestamps, UUIDs and audit-user fields are intentionally
-     * excluded from business change comparisons.
+     * Persistence metadata such as UUIDs, timestamps and audit-user
+     * fields are intentionally excluded.
      */
     private const AUDIT_FIELDS = [
         'name',
         'initial_rate',
         'increment_rate',
         'maximum_rate',
-        'start_type',
-        'start_fiscal_month',
         'increment_period',
+        'start_type',
         'calculation_basis',
         'effective_from',
         'effective_to',
@@ -53,9 +49,6 @@ class PenaltyRuleService
 
     /**
      * Create a penalty rule.
-     *
-     * Business mutation and audit logging are executed inside
-     * the same database transaction.
      */
     public function create(
         array $data,
@@ -83,7 +76,7 @@ class PenaltyRuleService
 
             /*
             |--------------------------------------------------------------------------
-            | Ownership
+            | Audit Ownership
             |--------------------------------------------------------------------------
             */
 
@@ -92,16 +85,14 @@ class PenaltyRuleService
 
             /*
             |--------------------------------------------------------------------------
-            | Overlap Validation
+            | Active Rule Overlap
             |--------------------------------------------------------------------------
             |
-            | Only active rules participate.
+            | Only active rules participate in overlap validation.
             |
-            | Same start_type:
-            |     overlapping = prohibited
+            | Rules with different start types may overlap.
             |
-            | Different start_type:
-            |     overlapping = allowed
+            | Rules with the same start type may not overlap.
             |
             */
 
@@ -156,7 +147,7 @@ class PenaltyRuleService
     /**
      * Update an existing penalty rule.
      *
-     * PATCH-style input is supported. Business validation is
+     * The supplied data may be partial, but business validation is
      * performed against the complete resulting state.
      */
     public function update(
@@ -173,10 +164,6 @@ class PenaltyRuleService
             |--------------------------------------------------------------------------
             | Lock Current Record
             |--------------------------------------------------------------------------
-            |
-            | Prevent concurrent modifications from operating on
-            | stale state.
-            |
             */
 
             $penaltyRule = PenaltyRule::query()
@@ -207,13 +194,11 @@ class PenaltyRuleService
 
             /*
             |--------------------------------------------------------------------------
-            | Normalize Candidate
+            | Normalize
             |--------------------------------------------------------------------------
             */
 
-            $candidate = $this->normalize(
-                $candidate
-            );
+            $candidate = $this->normalize($candidate);
 
             /*
             |--------------------------------------------------------------------------
@@ -221,13 +206,11 @@ class PenaltyRuleService
             |--------------------------------------------------------------------------
             */
 
-            $this->validateBusinessRules(
-                $candidate
-            );
+            $this->validateBusinessRules($candidate);
 
             /*
             |--------------------------------------------------------------------------
-            | Overlap Validation
+            | Active Rule Overlap
             |--------------------------------------------------------------------------
             */
 
@@ -243,8 +226,9 @@ class PenaltyRuleService
             | Prepare Update
             |--------------------------------------------------------------------------
             |
-            | Only permitted business fields are accepted from the
-            | candidate. created_by is never modified.
+            | Only canonical business fields may be updated.
+            |
+            | created_by is intentionally never modified.
             |
             */
 
@@ -252,8 +236,7 @@ class PenaltyRuleService
 
             foreach (self::AUDIT_FIELDS as $field) {
                 if (array_key_exists($field, $candidate)) {
-                    $updateData[$field] =
-                        $candidate[$field];
+                    $updateData[$field] = $candidate[$field];
                 }
             }
 
@@ -271,10 +254,7 @@ class PenaltyRuleService
             |--------------------------------------------------------------------------
             */
 
-            $penaltyRule->fill(
-                $updateData
-            );
-
+            $penaltyRule->fill($updateData);
             $penaltyRule->save();
 
             /*
@@ -297,23 +277,22 @@ class PenaltyRuleService
 
             /*
             |--------------------------------------------------------------------------
-            | Detect Actual Changes
+            | Detect Actual Business Changes
             |--------------------------------------------------------------------------
             */
 
-            $changedValues =
-                $this->getChangedAuditValues(
-                    $oldValues,
-                    $newValues
-                );
+            $changedValues = $this->getChangedAuditValues(
+                $oldValues,
+                $newValues
+            );
 
             /*
             |--------------------------------------------------------------------------
             | Audit UPDATE
             |--------------------------------------------------------------------------
             |
-            | Do not create an audit entry when the business
-            | configuration did not actually change.
+            | Do not create an audit entry when no business
+            | configuration actually changed.
             |
             */
 
@@ -345,10 +324,6 @@ class PenaltyRuleService
 
     /**
      * Activate an inactive penalty rule.
-     *
-     * Activation is a state change and therefore uses the same
-     * SystemLogService::updated() mechanism as other configuration
-     * changes.
      */
     public function activate(
         PenaltyRule $penaltyRule,
@@ -381,31 +356,23 @@ class PenaltyRuleService
 
             /*
             |--------------------------------------------------------------------------
-            | Validate Rule
+            | Validate Rule Before Activation
             |--------------------------------------------------------------------------
             */
 
-            $this->validateActivation(
-                $penaltyRule
-            );
+            $this->validateActivation($penaltyRule);
 
             /*
             |--------------------------------------------------------------------------
-            | Overlap Validation
+            | Check Active Rule Overlap
             |--------------------------------------------------------------------------
             */
 
             $this->ensureNoOverlappingActiveRule(
                 [
-                    'start_type' =>
-                        $penaltyRule->start_type,
-
-                    'effective_from' =>
-                        $penaltyRule->effective_from,
-
-                    'effective_to' =>
-                        $penaltyRule->effective_to,
-
+                    'start_type' => $penaltyRule->start_type,
+                    'effective_from' => $penaltyRule->effective_from,
+                    'effective_to' => $penaltyRule->effective_to,
                     'is_active' => true,
                 ],
                 $penaltyRule->id
@@ -582,15 +549,17 @@ class PenaltyRuleService
     /**
      * Normalize penalty-rule input.
      *
-     * The application currently supports monthly increments only.
+     * The application currently supports monthly progression only.
      */
-    private function normalize(
-        array $data
-    ): array {
+    private function normalize(array $data): array
+    {
         /*
         |--------------------------------------------------------------------------
         | Increment Period
         |--------------------------------------------------------------------------
+        |
+        | MONTH is the only supported progression period.
+        |
         */
 
         $data['increment_period'] =
@@ -602,51 +571,15 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         */
 
-        if (! array_key_exists(
-            'is_active',
-            $data
-        )) {
+        if (!array_key_exists('is_active', $data)) {
             $data['is_active'] = true;
         }
 
-        $data['is_active'] =
-            filter_var(
-                $data['is_active'],
-                FILTER_VALIDATE_BOOLEAN,
-                FILTER_NULL_ON_FAILURE
-            ) ?? (bool) $data['is_active'];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Start Type
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            ($data['start_type'] ?? null) ===
-            PenaltyRule::START_TYPE_AGREEMENT_DATE
-        ) {
-            /*
-             * Agreement-date rules never use a fiscal month.
-             */
-            $data['start_fiscal_month'] = null;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Fixed Fiscal Month
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            ($data['start_type'] ?? null) ===
-            PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH
-            &&
-            isset($data['start_fiscal_month'])
-        ) {
-            $data['start_fiscal_month'] =
-                (int) $data['start_fiscal_month'];
-        }
+        $data['is_active'] = filter_var(
+            $data['is_active'],
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE
+        ) ?? (bool) $data['is_active'];
 
         /*
         |--------------------------------------------------------------------------
@@ -654,22 +587,13 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         */
 
-        if (
-            array_key_exists(
-                'name',
-                $data
-            )
-        ) {
-            $data['name'] =
-                trim((string) $data['name']);
+        if (array_key_exists('name', $data)) {
+            $data['name'] = trim(
+                (string) $data['name']
+            );
         }
 
-        if (
-            array_key_exists(
-                'legal_reference',
-                $data
-            )
-        ) {
+        if (array_key_exists('legal_reference', $data)) {
             $data['legal_reference'] =
                 $data['legal_reference'] !== null
                     ? trim(
@@ -678,12 +602,7 @@ class PenaltyRuleService
                     : null;
         }
 
-        if (
-            array_key_exists(
-                'description',
-                $data
-            )
-        ) {
+        if (array_key_exists('description', $data)) {
             $data['description'] =
                 $data['description'] !== null
                     ? trim(
@@ -691,6 +610,21 @@ class PenaltyRuleService
                     )
                     : null;
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Remove Stale / Unsupported Fields
+        |--------------------------------------------------------------------------
+        |
+        | These fields are deliberately discarded so they cannot
+        | accidentally reach the model or audit payload.
+        |
+        */
+
+        unset(
+            $data['revenue_service_id'],
+            $data['start_fiscal_month']
+        );
 
         return $data;
     }
@@ -724,7 +658,7 @@ class PenaltyRuleService
 
         if (
             $initialRate === null
-            || ! is_numeric($initialRate)
+            || !is_numeric($initialRate)
         ) {
             throw ValidationException::withMessages([
                 'initial_rate' =>
@@ -734,7 +668,7 @@ class PenaltyRuleService
 
         if (
             $incrementRate === null
-            || ! is_numeric($incrementRate)
+            || !is_numeric($incrementRate)
         ) {
             throw ValidationException::withMessages([
                 'increment_rate' =>
@@ -744,7 +678,7 @@ class PenaltyRuleService
 
         if (
             $maximumRate === null
-            || ! is_numeric($maximumRate)
+            || !is_numeric($maximumRate)
         ) {
             throw ValidationException::withMessages([
                 'maximum_rate' =>
@@ -752,9 +686,15 @@ class PenaltyRuleService
             ]);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Rate Bounds
+        |--------------------------------------------------------------------------
+        */
+
         if (
-            (float) $initialRate < 0
-            || (float) $initialRate > 100
+            bccomp((string) $initialRate, '0', 4) < 0
+            || bccomp((string) $initialRate, '100', 4) > 0
         ) {
             throw ValidationException::withMessages([
                 'initial_rate' =>
@@ -763,8 +703,8 @@ class PenaltyRuleService
         }
 
         if (
-            (float) $incrementRate < 0
-            || (float) $incrementRate > 100
+            bccomp((string) $incrementRate, '0', 4) < 0
+            || bccomp((string) $incrementRate, '100', 4) > 0
         ) {
             throw ValidationException::withMessages([
                 'increment_rate' =>
@@ -773,8 +713,8 @@ class PenaltyRuleService
         }
 
         if (
-            (float) $maximumRate < 0
-            || (float) $maximumRate > 100
+            bccomp((string) $maximumRate, '0', 4) < 0
+            || bccomp((string) $maximumRate, '100', 4) > 0
         ) {
             throw ValidationException::withMessages([
                 'maximum_rate' =>
@@ -782,9 +722,18 @@ class PenaltyRuleService
             ]);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Maximum Rate Relationship
+        |--------------------------------------------------------------------------
+        */
+
         if (
-            (float) $maximumRate <
-            (float) $initialRate
+            bccomp(
+                (string) $maximumRate,
+                (string) $initialRate,
+                4
+            ) < 0
         ) {
             throw ValidationException::withMessages([
                 'maximum_rate' =>
@@ -801,7 +750,7 @@ class PenaltyRuleService
         $startType =
             $data['start_type'] ?? null;
 
-        if (! in_array(
+        if (!in_array(
             $startType,
             [
                 PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
@@ -812,50 +761,6 @@ class PenaltyRuleService
             throw ValidationException::withMessages([
                 'start_type' =>
                     'The selected penalty commencement type is invalid.',
-            ]);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Fixed Fiscal Month
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $startType ===
-            PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH
-        ) {
-            $fiscalMonth =
-                $data['start_fiscal_month'] ?? null;
-
-            if (
-                $fiscalMonth === null
-                || ! is_numeric($fiscalMonth)
-                || (int) $fiscalMonth < 1
-                || (int) $fiscalMonth > 13
-            ) {
-                throw ValidationException::withMessages([
-                    'start_fiscal_month' =>
-                        'The fiscal month must be between 1 and 13 when the penalty start type is FIXED_FISCAL_MONTH.',
-                ]);
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Agreement Date
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $startType ===
-            PenaltyRule::START_TYPE_AGREEMENT_DATE
-            &&
-            ($data['start_fiscal_month'] ?? null) !== null
-        ) {
-            throw ValidationException::withMessages([
-                'start_fiscal_month' =>
-                    'The fiscal month must be empty when the penalty start type is AGREEMENT_DATE.',
             ]);
         }
 
@@ -884,7 +789,7 @@ class PenaltyRuleService
         $calculationBasis =
             $data['calculation_basis'] ?? null;
 
-        if (! in_array(
+        if (!in_array(
             $calculationBasis,
             [
                 PenaltyRule::CALCULATION_BASIS_PRINCIPAL,
@@ -942,9 +847,106 @@ class PenaltyRuleService
     ): void {
         /*
         |--------------------------------------------------------------------------
+        | Rates
+        |--------------------------------------------------------------------------
+        */
+
+        $initialRate =
+            $penaltyRule->initial_rate;
+
+        $incrementRate =
+            $penaltyRule->increment_rate;
+
+        $maximumRate =
+            $penaltyRule->maximum_rate;
+
+        if (
+            $initialRate === null
+            || !is_numeric($initialRate)
+        ) {
+            throw ValidationException::withMessages([
+                'initial_rate' =>
+                    'The penalty rule has an invalid initial rate.',
+            ]);
+        }
+
+        if (
+            $incrementRate === null
+            || !is_numeric($incrementRate)
+        ) {
+            throw ValidationException::withMessages([
+                'increment_rate' =>
+                    'The penalty rule has an invalid increment rate.',
+            ]);
+        }
+
+        if (
+            $maximumRate === null
+            || !is_numeric($maximumRate)
+        ) {
+            throw ValidationException::withMessages([
+                'maximum_rate' =>
+                    'The penalty rule has an invalid maximum rate.',
+            ]);
+        }
+
+        if (
+            bccomp((string) $initialRate, '0', 4) < 0
+            || bccomp((string) $initialRate, '100', 4) > 0
+        ) {
+            throw ValidationException::withMessages([
+                'initial_rate' =>
+                    'The initial penalty rate must be between 0 and 100%.',
+            ]);
+        }
+
+        if (
+            bccomp((string) $incrementRate, '0', 4) < 0
+            || bccomp((string) $incrementRate, '100', 4) > 0
+        ) {
+            throw ValidationException::withMessages([
+                'increment_rate' =>
+                    'The increment penalty rate must be between 0 and 100%.',
+            ]);
+        }
+
+        if (
+            bccomp((string) $maximumRate, '0', 4) < 0
+            || bccomp((string) $maximumRate, '100', 4) > 0
+        ) {
+            throw ValidationException::withMessages([
+                'maximum_rate' =>
+                    'The maximum penalty rate must be between 0 and 100%.',
+            ]);
+        }
+
+        if (
+            bccomp(
+                (string) $maximumRate,
+                (string) $initialRate,
+                4
+            ) < 0
+        ) {
+            throw ValidationException::withMessages([
+                'maximum_rate' =>
+                    'The maximum penalty rate must be greater than or equal to the initial penalty rate.',
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
         | Effective Period
         |--------------------------------------------------------------------------
         */
+
+        if (
+            $penaltyRule->effective_from === null
+        ) {
+            throw ValidationException::withMessages([
+                'effective_from' =>
+                    'The penalty rule must have an effective start date.',
+            ]);
+        }
 
         if (
             $penaltyRule->effective_to !== null
@@ -964,7 +966,7 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         */
 
-        if (! in_array(
+        if (!in_array(
             $penaltyRule->start_type,
             [
                 PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
@@ -982,42 +984,24 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         | Fixed Fiscal Month
         |--------------------------------------------------------------------------
+        |
+        | No fiscal month is stored on the penalty rule.
+        |
+        | FIXED_FISCAL_MONTH resolves its actual commencement period
+        | from Revenue General Settings.
+        |
         */
 
         if (
             $penaltyRule->start_type ===
             PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH
-            &&
-            (
-                $penaltyRule->start_fiscal_month === null
-                ||
-                $penaltyRule->start_fiscal_month < 1
-                ||
-                $penaltyRule->start_fiscal_month > 13
-            )
         ) {
-            throw ValidationException::withMessages([
-                'start_fiscal_month' =>
-                    'The fiscal month must be between 1 and 13 for FIXED_FISCAL_MONTH.',
-            ]);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Agreement Date
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $penaltyRule->start_type ===
-            PenaltyRule::START_TYPE_AGREEMENT_DATE
-            &&
-            $penaltyRule->start_fiscal_month !== null
-        ) {
-            throw ValidationException::withMessages([
-                'start_fiscal_month' =>
-                    'The fiscal month must be empty for AGREEMENT_DATE.',
-            ]);
+            /*
+             * No additional rule-level validation is required here.
+             *
+             * The actual payment-period month/day belongs to
+             * Revenue General Settings.
+             */
         }
 
         /*
@@ -1042,7 +1026,7 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         */
 
-        if (! in_array(
+        if (!in_array(
             $penaltyRule->calculation_basis,
             [
                 PenaltyRule::CALCULATION_BASIS_PRINCIPAL,
@@ -1064,28 +1048,12 @@ class PenaltyRuleService
     */
 
     /**
-     * Prevent overlapping ACTIVE penalty rules of the same
-     * start_type.
+     * Prevent overlapping ACTIVE penalty rules with the same
+     * commencement type.
      *
      * Different start types are intentionally allowed to overlap.
      *
-     * Example allowed:
-     *
-     * FIXED_FISCAL_MONTH
-     * 2025-09-11 → NULL
-     *
-     * AGREEMENT_DATE
-     * 2026-09-04 → NULL
-     *
-     * Example rejected:
-     *
-     * AGREEMENT_DATE
-     * 2025-09-11 → NULL
-     *
-     * AGREEMENT_DATE
-     * 2026-09-04 → NULL
-     *
-     * The PostgreSQL exclusion constraint remains the final
+     * PostgreSQL exclusion constraint remains the final
      * concurrency-safe protection.
      */
     private function ensureNoOverlappingActiveRule(
@@ -1133,14 +1101,8 @@ class PenaltyRuleService
         */
 
         $query = PenaltyRule::query()
-            ->where(
-                'is_active',
-                true
-            )
-            ->where(
-                'start_type',
-                $startType
-            );
+            ->where('is_active', true)
+            ->where('start_type', $startType);
 
         /*
         |--------------------------------------------------------------------------
@@ -1185,9 +1147,7 @@ class PenaltyRuleService
             $effectiveFrom
         ) {
             $query
-                ->whereNull(
-                    'effective_to'
-                )
+                ->whereNull('effective_to')
                 ->orWhereDate(
                     'effective_to',
                     '>=',
@@ -1220,18 +1180,7 @@ class PenaltyRuleService
     */
 
     /**
-     * Extract only business-relevant values for audit logging.
-     *
-     * We intentionally do not include:
-     *
-     * - id
-     * - created_at
-     * - updated_at
-     * - created_by
-     * - updated_by
-     *
-     * Those are persistence metadata rather than configuration
-     * changes.
+     * Extract business-relevant values for audit logging.
      */
     private function getAuditValues(
         PenaltyRule $penaltyRule
@@ -1258,9 +1207,6 @@ class PenaltyRuleService
             'start_type' =>
                 $penaltyRule->start_type,
 
-            'start_fiscal_month' =>
-                $penaltyRule->start_fiscal_month,
-
             'increment_period' =>
                 $penaltyRule->increment_period,
 
@@ -1278,7 +1224,7 @@ class PenaltyRuleService
                 ),
 
             'is_active' =>
-                $penaltyRule->is_active,
+                (bool) $penaltyRule->is_active,
 
             'legal_reference' =>
                 $penaltyRule->legal_reference,
@@ -1319,16 +1265,13 @@ class PenaltyRuleService
                 $newValues[$key] ?? null;
 
             if (
-                ! $this->auditValuesEqual(
+                !$this->auditValuesEqual(
                     $oldValue,
                     $newValue
                 )
             ) {
-                $oldChanged[$key] =
-                    $oldValue;
-
-                $newChanged[$key] =
-                    $newValue;
+                $oldChanged[$key] = $oldValue;
+                $newChanged[$key] = $newValue;
             }
         }
 
@@ -1353,8 +1296,7 @@ class PenaltyRuleService
     ): bool {
         if (
             is_array($oldValue)
-            ||
-            is_array($newValue)
+            || is_array($newValue)
         ) {
             return $oldValue === $newValue;
         }
@@ -1369,15 +1311,8 @@ class PenaltyRuleService
     */
 
     /**
-     * Normalize decimal values before writing them into the
-     * audit payload.
-     *
-     * Laravel's decimal cast may return a string such as:
-     *
-     * "5.0000"
-     *
-     * Keeping the representation consistent prevents false
-     * audit changes caused only by decimal formatting.
+     * Normalize decimal values before writing them into
+     * the audit payload.
      */
     private function normalizeAuditNumber(
         mixed $value
