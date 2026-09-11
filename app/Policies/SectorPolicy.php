@@ -17,21 +17,24 @@ class SectorPolicy
      *
      * Permission:
      *
-     *     sectors.view
+     *     sectors.read
+     *
+     * This checks whether the user can retrieve/list
+     * sector records.
+     *
+     * `sectors.view` is reserved for accessing the
+     * Sector Management interface.
      *
      * IMPORTANT:
      *
-     * This only checks whether the user has permission to
-     * access the sector resource.
-     *
-     * The actual query must be scoped to the user's
+     * The actual query must still be scoped to the user's
      * organizational scope.
      */
     public function viewAny(User $user): bool
     {
         return $this->hasPermission(
             $user,
-            'sectors.view'
+            'sectors.read'
         );
     }
 
@@ -42,11 +45,14 @@ class SectorPolicy
      *
      * Permission:
      *
-     *     sectors.view
+     *     sectors.read
      *
      * +
      *
      * Organizational scope.
+     *
+     * The user must have read permission and the requested
+     * sector must belong to their organizational scope.
      */
     public function view(
         User $user,
@@ -54,7 +60,7 @@ class SectorPolicy
     ): bool {
         return $this->hasPermission(
             $user,
-            'sectors.view'
+            'sectors.read'
         ) && $this->hasAccessToModel(
             $user,
             $sector

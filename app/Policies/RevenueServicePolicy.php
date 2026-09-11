@@ -3,6 +3,7 @@
 namespace App\Policies;
 
 use App\Models\RevenueService;
+use App\Models\ServiceAccessRule;
 use App\Models\User;
 use App\Policies\Concerns\ChecksHierarchy;
 use Illuminate\Support\Facades\Log;
@@ -16,20 +17,45 @@ class RevenueServicePolicy
      * VIEW ANY REVENUE SERVICES
      * ============================================================
      *
-     * Controls access to the revenue services listing endpoint.
+     * Controls access to the revenue service collection endpoint.
      *
      * Controller:
      *     index()
      *
      * Permission:
-     *     revenue_services.view
+     *     revenue_services.read
+     *
+     * A non-system user must:
+     *
+     *     1. Have revenue_services.read
+     *     2. Belong to a sector
+     *     3. Have at least one active service access rule
+     *
+     * IMPORTANT:
+     *
+     * This method only determines whether the user can access
+     * the collection endpoint.
+     *
+     * It does NOT determine which services are returned.
+     *
+     * The query/service layer must additionally filter the
+     * revenue services using the user's sector and active
+     * service_access_rules.
      */
     public function viewAny(User $user): bool
     {
-        return $this->authorizeWithLog(
+        $allowed =
+            $this->hasPermission(
+                $user,
+                'revenue_services.read'
+            )
+            && $this->hasServiceAccess($user);
+
+        return $this->logAuthorization(
             $user,
-            'revenue_services.view',
-            'viewAny'
+            'revenue_services.read',
+            'viewAny',
+            $allowed
         );
     }
 
@@ -38,22 +64,36 @@ class RevenueServicePolicy
      * VIEW REVENUE SERVICE
      * ============================================================
      *
-     * Controls access to viewing a specific revenue service.
+     * Controls access to a specific revenue service.
      *
      * Controller:
      *     show()
      *
      * Permission:
-     *     revenue_services.view
+     *     revenue_services.read
+     *
+     * A non-system user must have an active access rule for
+     * the specific service and their sector.
      */
     public function view(
         User $user,
         RevenueService $service
     ): bool {
-        return $this->authorizeWithLog(
+        $allowed =
+            $this->hasPermission(
+                $user,
+                'revenue_services.read'
+            )
+            && $this->hasServiceAccess(
+                $user,
+                $service
+            );
+
+        return $this->logAuthorization(
             $user,
-            'revenue_services.view',
+            'revenue_services.read',
             'view',
+            $allowed,
             [
                 'resource_id' => $service->id,
             ]
@@ -65,13 +105,11 @@ class RevenueServicePolicy
      * CREATE REVENUE SERVICE
      * ============================================================
      *
-     * Controls access to creating a new revenue service.
-     *
-     * Controller:
-     *     store()
-     *
      * Permission:
      *     revenue_services.create
+     *
+     * Service access is not checked because the service does not
+     * exist yet.
      */
     public function create(User $user): bool
     {
@@ -87,13 +125,13 @@ class RevenueServicePolicy
      * UPDATE REVENUE SERVICE
      * ============================================================
      *
-     * Controls access to updating an existing revenue service.
-     *
-     * Controller:
-     *     update()
-     *
      * Permission:
      *     revenue_services.update
+     *
+     * This is a management operation.
+     *
+     * It does not depend on the user's sector-level service
+     * access because service configuration is administrative.
      */
     public function update(
         User $user,
@@ -114,25 +152,11 @@ class RevenueServicePolicy
      * DELETE REVENUE SERVICE
      * ============================================================
      *
-     * Controls access to deleting a revenue service.
-     *
-     * Controller:
-     *     destroy()
-     *
      * Permission:
      *     revenue_services.delete
      *
-     * IMPORTANT:
-     * Dependency checks should remain inside
-     * RevenueServiceService::delete().
-     *
-     * The policy only answers:
-     *
-     *     "Does this user have permission to delete?"
-     *
-     * The service answers:
-     *
-     *     "Is this service actually safe/allowed to delete?"
+     * If deletion is not supported by the application, this
+     * ability should be removed and deactivation should be used.
      */
     public function delete(
         User $user,
@@ -150,29 +174,246 @@ class RevenueServicePolicy
 
     /**
      * ============================================================
+     * ACTIVATE REVENUE SERVICE
+     * ============================================================
+     *
+     * Permission:
+     *     revenue_services.activate
+     *
+     * Management operation.
+     *
+     * Sector-level service access is not checked here.
+     */
+    public function activate(
+        User $user,
+        RevenueService $service
+    ): bool {
+        return $this->authorizeWithLog(
+            $user,
+            'revenue_services.activate',
+            'activate',
+            [
+                'resource_id' => $service->id,
+            ]
+        );
+    }
+
+    /**
+     * ============================================================
+     * DEACTIVATE REVENUE SERVICE
+     * ============================================================
+     *
+     * Permission:
+     *     revenue_services.deactivate
+     *
+     * Management operation.
+     *
+     * Sector-level service access is not checked here.
+     */
+    public function deactivate(
+        User $user,
+        RevenueService $service
+    ): bool {
+        return $this->authorizeWithLog(
+            $user,
+            'revenue_services.deactivate',
+            'deactivate',
+            [
+                'resource_id' => $service->id,
+            ]
+        );
+    }
+
+    /**
+     * ============================================================
+     * VIEW REVENUE SERVICE HISTORY
+     * ============================================================
+     *
+     * Permission:
+     *     revenue_services.view_history
+     *
+     * History is considered read access to a specific revenue
+     * service, therefore the user's service access is checked.
+     */
+    public function viewHistory(
+        User $user,
+        RevenueService $service
+    ): bool {
+        $allowed =
+            $this->hasPermission(
+                $user,
+                'revenue_services.view_history'
+            )
+            && $this->hasServiceAccess(
+                $user,
+                $service
+            );
+
+        return $this->logAuthorization(
+            $user,
+            'revenue_services.view_history',
+            'viewHistory',
+            $allowed,
+            [
+                'resource_id' => $service->id,
+            ]
+        );
+    }
+
+    /**
+     * ============================================================
+     * SERVICE ACCESS CHECK
+     * ============================================================
+     *
+     * Determines whether a user has access to revenue services
+     * through service_access_rules.
+     *
+     * Two modes are supported.
+     *
+     * ------------------------------------------------------------
+     * MODE 1: COLLECTION ACCESS
+     * ------------------------------------------------------------
+     *
+     *     hasServiceAccess($user)
+     *
+     * Used by:
+     *
+     *     viewAny()
+     *
+     * Checks whether the user's sector has at least one active
+     * service access rule.
+     *
+     * ------------------------------------------------------------
+     * MODE 2: SPECIFIC SERVICE ACCESS
+     * ------------------------------------------------------------
+     *
+     *     hasServiceAccess($user, $service)
+     *
+     * Used by:
+     *
+     *     view()
+     *     viewHistory()
+     *
+     * Checks whether the user's sector has an active access rule
+     * for the specific revenue service.
+     *
+     * ------------------------------------------------------------
+     * ACCESS MODEL
+     * ------------------------------------------------------------
+     *
+     * SYSTEM_ADMIN
+     *     → ALLOWED
+     *
+     * User has no sector
+     *     → DENIED
+     *
+     * Sector has no active service rule
+     *     → DENIED
+     *
+     * Sector has active service rule
+     *     → ALLOWED
+     */
+    private function hasServiceAccess(
+        User $user,
+        ?RevenueService $service = null
+    ): bool {
+        /*
+        |--------------------------------------------------------------------------
+        | SYSTEM ADMINISTRATOR
+        |--------------------------------------------------------------------------
+        |
+        | System administrators have unrestricted access to revenue
+        | services and therefore bypass sector-level access rules.
+        |
+        */
+
+        if ($user->hasRole('SYSTEM_ADMIN')) {
+            return true;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | SECTOR REQUIRED
+        |--------------------------------------------------------------------------
+        |
+        | A non-system user must belong to a sector because service
+        | access rules are defined using sector_id.
+        |
+        */
+
+        if (! $user->sector_id) {
+            return false;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | SPECIFIC SERVICE
+        |--------------------------------------------------------------------------
+        |
+        | Used by:
+        *
+        *     view()
+        *     viewHistory()
+        |
+        | The user's sector must have an active rule for this
+        | specific revenue service.
+        |
+        */
+
+        if ($service !== null) {
+            return ServiceAccessRule::query()
+                ->where(
+                    'service_id',
+                    $service->id
+                )
+                ->where(
+                    'sector_id',
+                    $user->sector_id
+                )
+                ->where(
+                    'is_active',
+                    true
+                )
+                ->exists();
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | ANY SERVICE
+        |--------------------------------------------------------------------------
+        |
+        | Used by viewAny().
+        |
+        | The user only needs at least one active service access
+        | rule to be allowed into the service collection endpoint.
+        |
+        | IMPORTANT:
+        |
+        | This does NOT mean the user can see every service.
+        |
+        | The RevenueService query must separately filter the
+        | collection to only services accessible to this sector.
+        |
+        */
+
+        return ServiceAccessRule::query()
+            ->where(
+                'sector_id',
+                $user->sector_id
+            )
+            ->where(
+                'is_active',
+                true
+            )
+            ->exists();
+    }
+
+    /**
+     * ============================================================
      * AUTHORIZATION + LOGGING
      * ============================================================
      *
-     * Logs BOTH successful and failed authorization checks.
-     *
-     * Example successful log:
-     *
-     *     authorized: true
-     *
-     * Example denied log:
-     *
-     *     authorized: false
-     *
-     * This gives us an audit trail showing:
-     *
-     *     - Who attempted the action
-     *     - Which ability was checked
-     *     - Which permission was required
-     *     - Whether authorization succeeded
-     *     - Which resource was involved
-     *     - IP address
-     *     - HTTP method
-     *     - Route name
+     * Checks a permission and records the authorization decision.
      */
     private function authorizeWithLog(
         User $user,
@@ -185,17 +426,53 @@ class RevenueServicePolicy
             $permission
         );
 
+        return $this->logAuthorization(
+            $user,
+            $permission,
+            $ability,
+            $allowed,
+            $context
+        );
+    }
+
+    /**
+     * ============================================================
+     * LOG AUTHORIZATION
+     * ============================================================
+     *
+     * Centralized authorization logging.
+     */
+    private function logAuthorization(
+        User $user,
+        string $permission,
+        string $ability,
+        bool $allowed,
+        array $context = []
+    ): bool {
         Log::info(
             'Revenue service policy authorization check.',
             array_merge(
                 [
-                    'user_id' => $user->id,
-                    'ability' => $ability,
-                    'permission' => $permission,
-                    'authorized' => $allowed,
-                    'ip_address' => request()->ip(),
-                    'route' => request()->route()?->getName(),
-                    'method' => request()->method(),
+                    'user_id' =>
+                        $user->id,
+
+                    'ability' =>
+                        $ability,
+
+                    'permission' =>
+                        $permission,
+
+                    'authorized' =>
+                        $allowed,
+
+                    'ip_address' =>
+                        request()->ip(),
+
+                    'route' =>
+                        request()->route()?->getName(),
+
+                    'method' =>
+                        request()->method(),
                 ],
                 $context
             )

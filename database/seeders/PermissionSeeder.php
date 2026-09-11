@@ -222,7 +222,6 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows viewing the backend-defined permission catalog.',
                 'is_system' => true,
             ],
-
             /*
             |--------------------------------------------------------------------------
             | Administrative Units
@@ -233,7 +232,15 @@ class PermissionSeeder extends Seeder
                 'name' => 'administrative_units.view',
                 'label' => 'View Administrative Units',
                 'module' => 'administrative_units',
-                'description' => 'Allows viewing the administrative structure.',
+                'description' => 'Allows accessing the Administrative Units management interface.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'administrative_units.read',
+                'label' => 'Read Administrative Units',
+                'module' => 'administrative_units',
+                'description' => 'Allows reading and retrieving administrative unit records and the administrative structure.',
                 'is_system' => true,
             ],
 
@@ -260,7 +267,7 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows deleting administrative units according to system policy.',
                 'is_system' => true,
             ],
-
+            
             /*
             |--------------------------------------------------------------------------
             | Sector Management
@@ -271,7 +278,15 @@ class PermissionSeeder extends Seeder
                 'name' => 'sectors.view',
                 'label' => 'View Sectors',
                 'module' => 'sectors',
-                'description' => 'Allows viewing sectors.',
+                'description' => 'Allows accessing the Sector Management interface.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'sectors.read',
+                'label' => 'Read Sectors',
+                'module' => 'sectors',
+                'description' => 'Allows reading and retrieving sector records.',
                 'is_system' => true,
             ],
 
@@ -309,7 +324,15 @@ class PermissionSeeder extends Seeder
                 'name' => 'citizens.view',
                 'label' => 'View Citizens',
                 'module' => 'citizens',
-                'description' => 'Allows viewing citizen records.',
+                'description' => 'Allows accessing the citizen management interface.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'citizens.read',
+                'label' => 'Read Citizens',
+                'module' => 'citizens',
+                'description' => 'Allows reading and retrieving citizen records.',
                 'is_system' => false,
             ],
 
@@ -565,7 +588,15 @@ class PermissionSeeder extends Seeder
                 'name' => 'revenue_services.view',
                 'label' => 'View Revenue Services',
                 'module' => 'revenue_services',
-                'description' => 'Allows viewing revenue services and their configurations.',
+                'description' => 'Allows accessing the Revenue Services management interface.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'revenue_services.read',
+                'label' => 'Read Revenue Services',
+                'module' => 'revenue_services',
+                'description' => 'Allows reading and retrieving revenue service records and configurations.',
                 'is_system' => false,
             ],
 
@@ -960,6 +991,70 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows viewing the history of revenue assessments and their decisions.',
                 'is_system' => false,
             ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Invoice Management
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'invoices.view',
+                'label' => 'View Invoices',
+                'module' => 'invoices',
+                'description' => 'Allows accessing the invoice management module and invoice-related screens.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'invoices.read',
+                'label' => 'Read Invoices',
+                'module' => 'invoices',
+                'description' => 'Allows retrieving and viewing invoice data, including invoice details, amounts, status, taxpayer information, and payment balance.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'invoices.create',
+                'label' => 'Create Invoice',
+                'module' => 'invoices',
+                'description' => 'Allows creating invoices from eligible assessments or authorized direct collection processes.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'invoices.issue',
+                'label' => 'Issue Invoice',
+                'module' => 'invoices',
+                'description' => 'Allows officially issuing a draft invoice and making it financially effective for payment.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'invoices.cancel',
+                'label' => 'Cancel Invoice',
+                'module' => 'invoices',
+                'description' => 'Allows cancelling eligible draft invoices before they become financially effective.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'invoices.void',
+                'label' => 'Void Invoice',
+                'module' => 'invoices',
+                'description' => 'Allows voiding an already issued invoice when it must be invalidated according to financial control rules.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'invoices.view_history',
+                'label' => 'View Invoice History',
+                'module' => 'invoices',
+                'description' => 'Allows viewing the history of invoice creation, issuance, cancellation, voiding, and other recorded changes.',
+                'is_system' => false,
+            ],
+
+
 
 
 

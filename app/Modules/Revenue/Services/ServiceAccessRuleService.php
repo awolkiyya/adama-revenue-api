@@ -13,24 +13,18 @@ class ServiceAccessRuleService
     /**
      * Get all access rules.
      */
-    public function all(array $filters = [])
-    {
+    public function all(
+        RevenueService $service,
+        array $filters = []
+    ) {
         return ServiceAccessRule::query()
-
+            ->where('service_id', $service->id)
+    
             ->with([
                 'service',
                 'sector',
             ])
-
-            ->when(
-                isset($filters['service_id']),
-                fn ($q) =>
-                    $q->where(
-                        'service_id',
-                        $filters['service_id']
-                    )
-            )
-
+    
             ->when(
                 isset($filters['sector_id']),
                 fn ($q) =>
@@ -39,7 +33,7 @@ class ServiceAccessRuleService
                         $filters['sector_id']
                     )
             )
-
+    
             ->when(
                 isset($filters['is_active']),
                 fn ($q) =>
@@ -51,9 +45,8 @@ class ServiceAccessRuleService
                         )
                     )
             )
-
+    
             ->latest()
-
             ->paginate();
     }
 
@@ -61,20 +54,15 @@ class ServiceAccessRuleService
      * Get access rules summary.
      */
     public function summary(
+        RevenueService $service,
         array $filters = []
     ): array {
-        $query = ServiceAccessRule::query();
-
-        $query
-            ->when(
-                isset($filters['service_id']),
-                fn ($q) =>
-                    $q->where(
-                        'service_id',
-                        $filters['service_id']
-                    )
+        $query = ServiceAccessRule::query()
+            ->where(
+                'service_id',
+                $service->id
             )
-
+    
             ->when(
                 isset($filters['sector_id']),
                 fn ($q) =>
@@ -83,7 +71,7 @@ class ServiceAccessRuleService
                         $filters['sector_id']
                     )
             )
-
+    
             ->when(
                 isset($filters['is_active']),
                 fn ($q) =>
@@ -95,16 +83,16 @@ class ServiceAccessRuleService
                         )
                     )
             );
-
+    
         return [
             'total' =>
                 (clone $query)->count(),
-
+    
             'sectors' =>
                 (clone $query)
                     ->distinct('sector_id')
                     ->count('sector_id'),
-
+    
             'active' =>
                 (clone $query)
                     ->where(
@@ -112,7 +100,7 @@ class ServiceAccessRuleService
                         true
                     )
                     ->count(),
-
+    
             'inactive' =>
                 (clone $query)
                     ->where(

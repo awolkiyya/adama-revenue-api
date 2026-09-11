@@ -17,10 +17,13 @@ class CitizenPolicy
      *
      * Permission:
      *
-     *     citizens.view
+     *     citizens.read
      *
-     * Any authenticated user with citizens.view can access
-     * the citizen list.
+     * Allows retrieving and listing citizen records.
+     *
+     * The `view` permission is intended for accessing the
+     * Citizen Management interface, while `read` controls
+     * access to the actual citizen data.
      *
      * No organizational scope restriction applies.
      */
@@ -28,7 +31,7 @@ class CitizenPolicy
     {
         return $this->hasPermission(
             $user,
-            'citizens.view'
+            'citizens.read'
         );
     }
 
@@ -39,7 +42,9 @@ class CitizenPolicy
      *
      * Permission:
      *
-     *     citizens.view
+     *     citizens.read
+     *
+     * Allows retrieving an individual citizen record.
      *
      * Citizens are globally managed resources.
      *
@@ -52,7 +57,7 @@ class CitizenPolicy
     ): bool {
         return $this->hasPermission(
             $user,
-            'citizens.view'
+            'citizens.read'
         );
     }
 
@@ -153,7 +158,7 @@ class CitizenPolicy
      *
      *     citizens.view_history
      *
-     * Citizen history is also globally accessible to users
+     * Citizen history is globally accessible to users
      * who have this permission.
      */
     public function viewHistory(

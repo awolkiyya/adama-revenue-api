@@ -12,6 +12,10 @@ use App\Modules\Revenue\Services\ServiceAccessRuleService;
 use App\Services\ApiResponse;
 use Illuminate\Http\Request;
 use Throwable;
+use Illuminate\Http\JsonResponse;
+
+
+
 
 class ServiceAccessRuleController extends Controller
 {
@@ -27,28 +31,27 @@ class ServiceAccessRuleController extends Controller
      *
      * GET /revenue/services/{service}/access-rules
      */
-    public function index(Request $request)
-    {
+    public function index(
+        RevenueService $service,
+        Request $request
+    ): JsonResponse {
         try {
-            $this->authorize(
-                'viewAny',
-                ServiceAccessRule::class
+            $rules = $this->service->all(
+                $service,
+                $request->all()
             );
-
+    
             return ApiResponse::success(
-                ServiceAccessRuleResource::collection(
-                    $this->service->all(
-                        $request->all()
-                    )
-                ),
-                'Service access rules retrieved successfully',
+                ServiceAccessRuleResource::collection($rules),
+                'Service access rules retrieved successfully.',
                 summary: $this->service->summary(
+                    $service,
                     $request->all()
                 )
             );
         } catch (Throwable $e) {
             report($e);
-
+    
             return ApiResponse::serverError(
                 exception: $e
             );

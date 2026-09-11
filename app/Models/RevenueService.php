@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -96,6 +97,23 @@ class RevenueService extends Model
     }
 
     /**
+     * Service Access Rules
+     *
+     * RevenueService
+     *      |
+     *      └── ServiceAccessRule
+     *                  |
+     *                  └── Sector
+     */
+    public function accessRules(): HasMany
+    {
+        return $this->hasMany(
+            ServiceAccessRule::class,
+            'service_id'
+        );
+    }
+
+    /**
      * Created By
      */
     public function creator(): BelongsTo
@@ -134,7 +152,10 @@ class RevenueService extends Model
     |--------------------------------------------------------------------------
     */
 
-    public function scopeActive($query)
+    /**
+     * Only active revenue services.
+     */
+    public function scopeActive(Builder $query): Builder
     {
         return $query->where(
             'is_active',
@@ -142,11 +163,52 @@ class RevenueService extends Model
         );
     }
 
-    public function scopeInactive($query)
+    /**
+     * Only inactive revenue services.
+     */
+    public function scopeInactive(Builder $query): Builder
     {
         return $query->where(
             'is_active',
             false
+        );
+    }
+
+    /**
+     * Revenue services accessible to a user.
+     *
+     * SYSTEM_ADMIN:
+     *     Can access all services.
+     *
+     * Other users:
+     *     Can access only services that have an
+     *     active access rule for their sector.
+     */
+    public function scopeAccessibleTo(
+        Builder $query,
+        User $user
+    ): Builder {
+        if ($user->hasRole('SYSTEM_ADMIN')) {
+            return $query;
+        }
+
+        if (! $user->sector_id) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->whereHas(
+            'accessRules',
+            function (Builder $accessQuery) use ($user) {
+                $accessQuery
+                    ->where(
+                        'sector_id',
+                        $user->sector_id
+                    )
+                    ->where(
+                        'is_active',
+                        true
+                    );
+            }
         );
     }
 }

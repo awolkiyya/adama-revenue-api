@@ -17,10 +17,13 @@ class AdministrativeUnitPolicy
      *
      * Permission:
      *
-     *     administrative_units.view
+     *     administrative_units.read
      *
-     * This determines whether the user can access the
-     * administrative-unit resource.
+     * This determines whether the user can retrieve/list
+     * administrative units.
+     *
+     * `administrative_units.view` is reserved for accessing
+     * the Administrative Units management interface.
      *
      * The actual query must still be scope-aware.
      */
@@ -28,7 +31,7 @@ class AdministrativeUnitPolicy
     {
         return $this->hasPermission(
             $user,
-            'administrative_units.view'
+            'administrative_units.read'
         );
     }
 
@@ -39,11 +42,15 @@ class AdministrativeUnitPolicy
      *
      * Permission:
      *
-     *     administrative_units.view
+     *     administrative_units.read
      *
      * +
      *
      * Organizational scope.
+     *
+     * A user must have read permission and the requested
+     * administrative unit must belong to their organizational
+     * scope.
      */
     public function view(
         User $user,
@@ -51,7 +58,7 @@ class AdministrativeUnitPolicy
     ): bool {
         return $this->hasPermission(
             $user,
-            'administrative_units.view'
+            'administrative_units.read'
         ) && $this->hasAdministrativeUnitScope(
             $user,
             $unit
@@ -82,6 +89,14 @@ class AdministrativeUnitPolicy
      * =========================================================
      * UPDATE ADMINISTRATIVE UNIT
      * =========================================================
+     *
+     * Permission:
+     *
+     *     administrative_units.update
+     *
+     * +
+     *
+     * Organizational scope.
      */
     public function update(
         User $user,
@@ -100,6 +115,14 @@ class AdministrativeUnitPolicy
      * =========================================================
      * DELETE ADMINISTRATIVE UNIT
      * =========================================================
+     *
+     * Permission:
+     *
+     *     administrative_units.delete
+     *
+     * +
+     *
+     * Organizational scope.
      */
     public function delete(
         User $user,
@@ -210,6 +233,9 @@ class AdministrativeUnitPolicy
      * =========================================================
      * RESOLVE CITY
      * =========================================================
+     *
+     * Walks up the administrative hierarchy until the
+     * CITY-level ancestor is found.
      */
     protected function resolveCityId(
         AdministrativeUnit $unit
@@ -244,6 +270,9 @@ class AdministrativeUnitPolicy
      * =========================================================
      * RESOLVE SUBCITY
      * =========================================================
+     *
+     * Walks up the administrative hierarchy until the
+     * SUBCITY-level ancestor is found.
      */
     protected function resolveSubcityId(
         AdministrativeUnit $unit
@@ -278,6 +307,9 @@ class AdministrativeUnitPolicy
      * =========================================================
      * RESOLVE WEREDA
      * =========================================================
+     *
+     * Walks up the administrative hierarchy until the
+     * WEREDA-level ancestor is found.
      */
     protected function resolveWeredaId(
         AdministrativeUnit $unit
