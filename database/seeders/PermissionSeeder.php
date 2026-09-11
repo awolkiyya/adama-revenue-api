@@ -883,6 +883,85 @@ class PermissionSeeder extends Seeder
             ],
 
 
+            /*
+            |--------------------------------------------------------------------------
+            | Assessment
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'assessment.view',
+                'label' => 'View Assessments',
+                'module' => 'assessment',
+                'description' => 'Allows viewing revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.create',
+                'label' => 'Create Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows creating new revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.register_existing',
+                'label' => 'Register Existing Agreement',
+                'module' => 'assessment',
+                'description' => 'Allows registering an existing revenue agreement and continuing its outstanding financial obligation from the current balance.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.update',
+                'label' => 'Update Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows updating eligible revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.submit',
+                'label' => 'Submit Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows submitting revenue assessments for decision.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.verify',
+                'label' => 'Verify Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows verifying revenue assessment details.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.approve',
+                'label' => 'Approve Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows approving submitted revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.reject',
+                'label' => 'Reject Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows rejecting submitted revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.view_history',
+                'label' => 'View Assessment History',
+                'module' => 'assessment',
+                'description' => 'Allows viewing the history of revenue assessments and their decisions.',
+                'is_system' => false,
+            ],
+
+
 
 
 
