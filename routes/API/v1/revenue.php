@@ -41,6 +41,12 @@ Route::prefix('revenue')
     );
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | Revenue Codes
+    |--------------------------------------------------------------------------
+    */
+
     Route::get(
         'codes',
         [RevenueCodeController::class, 'index']
@@ -64,29 +70,133 @@ Route::prefix('revenue')
     | Service Access Rules
     |--------------------------------------------------------------------------
     |
-    | Revenue Service
-    |     └── Access Rules
+    | Access is configured per:
+    |
+    |     Revenue Service
+    |          |
+    |          └── Sector
+    |
+    | Each service/sector combination has:
+    |
+    |     is_active = true
+    |         → Sector is allowed to use the service
+    |
+    |     is_active = false
+    |         → Sector is not allowed to use the service
+    |
+    | The frontend ServiceAccessDialog submits the complete sector
+    | configuration in one request.
     |
     */
 
-    Route::apiResource(
-        'services.access-rules',
-        ServiceAccessRuleController::class
-    )->parameters([
-        'access-rules' => 'rule',
-    ]);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Retrieve Service Access Configuration
+    |--------------------------------------------------------------------------
+    |
+    | GET /revenue/services/{service}/access-rules
+    |
+    | Returns the access configuration for all sectors belonging to
+    | the selected revenue service.
+    |
+    */
+
+    Route::get(
+        'services/{service}/access-rules',
+        [ServiceAccessRuleController::class, 'index']
+    )->name('services.access-rules.index');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Synchronize Service Access Configuration
+    |--------------------------------------------------------------------------
+    |
+    | PUT /revenue/services/{service}/access-rules
+    |
+    | Example payload:
+    |
+    | {
+    |     "sectors": [
+    |         {
+    |             "sectorId": "uuid",
+    |             "sectorName": "Sector A",
+    |             "isActive": true
+    |         },
+    |         {
+    |             "sectorId": "uuid",
+    |             "sectorName": "Sector B",
+    |             "isActive": false
+    |         }
+    |     ]
+    | }
+    |
+    | The backend synchronizes the complete configuration.
+    |
+    */
+
+    Route::put(
+        'services/{service}/access-rules',
+        [ServiceAccessRuleController::class, 'sync']
+    )->name('services.access-rules.sync');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Individual Service Access Rule
+    |--------------------------------------------------------------------------
+    |
+    | GET /revenue/services/{service}/access-rules/{rule}
+    |
+    | Used when an individual service/sector access rule needs to be
+    | inspected.
+    |
+    */
+
+    Route::get(
+        'services/{service}/access-rules/{rule}',
+        [ServiceAccessRuleController::class, 'show']
+    )->name('services.access-rules.show');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Update Individual Service Access Rule
+    |--------------------------------------------------------------------------
+    |
+    | PATCH /revenue/services/{service}/access-rules/{rule}
+    |
+    | Updates:
+    |
+    |     sector_id
+    |     is_active
+    |
+    | No role or actions are involved.
+    |
+    */
+
+    Route::patch(
+        'services/{service}/access-rules/{rule}',
+        [ServiceAccessRuleController::class, 'update']
+    )->name('services.access-rules.update');
 
 
     /*
     |--------------------------------------------------------------------------
     | Service Access Rule Status
     |--------------------------------------------------------------------------
+    |
+    | PATCH /revenue/services/{service}/access-rules/{rule}/status
+    |
+    | Changes only the active/inactive state.
+    |
     */
 
     Route::patch(
         'services/{service}/access-rules/{rule}/status',
         [ServiceAccessRuleController::class, 'changeStatus']
-    );
+    )->name('services.access-rules.status');
 
 
     /*
@@ -112,8 +222,7 @@ Route::prefix('revenue')
     Route::get(
         'tariff-versions/summary',
         [TariffVersionController::class, 'summary']
-    )
-        ->name('tariff-versions.summary');
+    )->name('tariff-versions.summary');
 
 
     /*
@@ -125,8 +234,7 @@ Route::prefix('revenue')
     Route::patch(
         'tariff-versions/{id}/activate',
         [TariffVersionController::class, 'activate']
-    )
-        ->name('tariff-versions.activate');
+    )->name('tariff-versions.activate');
 
 
     /*
@@ -138,8 +246,7 @@ Route::prefix('revenue')
     Route::patch(
         'tariff-versions/{id}/restore',
         [TariffVersionController::class, 'restore']
-    )
-        ->name('tariff-versions.restore');
+    )->name('tariff-versions.restore');
 
 
     /*
@@ -217,8 +324,8 @@ Route::prefix('revenue')
         'tariff-versions.tariff-rules',
         TariffRuleController::class
     )->parameters([
-        'tariff-rules' => 'tariffRule',
-    ]);
+            'tariff-rules' => 'tariffRule',
+        ]);
 
 
     /*
@@ -311,8 +418,7 @@ Route::prefix('revenue')
         ->name('penalty-rules.history');
 
 
-
-   /*
+    /*
     |--------------------------------------------------------------------------
     | Interest Rules
     |--------------------------------------------------------------------------
@@ -353,8 +459,7 @@ Route::prefix('revenue')
     Route::apiResource(
         'interest-rules',
         InterestRuleController::class
-    )
-        ->only([
+    )->only([
             'index',
             'store',
             'show',
@@ -393,9 +498,9 @@ Route::prefix('revenue')
         [InterestRuleController::class, 'history']
     )
         ->name('interest-rules.history');
-    
-    
-        /*
+
+
+    /*
     |--------------------------------------------------------------------------
     | Global Revenue Settings
     |--------------------------------------------------------------------------
@@ -416,6 +521,7 @@ Route::prefix('revenue')
     | - deactivate
     |
     */
+
     Route::get(
         'settings',
         [RevenueSettingController::class, 'show']
@@ -430,7 +536,6 @@ Route::prefix('revenue')
         ->name('revenue-settings.update');
 
 });
-
 
 
 

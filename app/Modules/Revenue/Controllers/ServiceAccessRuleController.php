@@ -3,231 +3,213 @@
 namespace App\Modules\Revenue\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Models\RevenueService;
+use App\Models\ServiceAccessRule;
 use App\Modules\Revenue\Requests\StoreServiceAccessRuleRequest;
 use App\Modules\Revenue\Requests\UpdateServiceAccessRuleRequest;
-use App\Models\ServiceAccessRule;
-use App\Modules\Revenue\Services\ServiceAccessRuleService;
 use App\Modules\Revenue\Resources\ServiceAccessRuleResource;
+use App\Modules\Revenue\Services\ServiceAccessRuleService;
 use App\Services\ApiResponse;
 use Illuminate\Http\Request;
 use Throwable;
 
-
 class ServiceAccessRuleController extends Controller
 {
-
     public function __construct(
         private ServiceAccessRuleService $service
     ) {}
 
-
-
-   /**
-     * List service access rules
+    /**
+     * List service access rules.
+     *
+     * Permission:
+     * service_access_rules.view
+     *
+     * GET /revenue/services/{service}/access-rules
      */
     public function index(Request $request)
     {
-
         try {
-
+            $this->authorize(
+                'viewAny',
+                ServiceAccessRule::class
+            );
 
             return ApiResponse::success(
-
                 ServiceAccessRuleResource::collection(
-
                     $this->service->all(
                         $request->all()
                     )
-
                 ),
-
                 'Service access rules retrieved successfully',
-
-
                 summary: $this->service->summary(
                     $request->all()
                 )
-
             );
-
-
-        } catch(Throwable $e) {
-
-
+        } catch (Throwable $e) {
             report($e);
-
 
             return ApiResponse::serverError(
                 exception: $e
             );
-
-
         }
-
     }
 
-
-
-
-
     /**
-     * Create access rule
+     * Synchronize all sector access rules for a revenue service.
+     *
+     * Permission:
+     * service_access_rules.update
+     *
+     * PUT /revenue/services/{service}/access-rules
      */
-    public function store(
-        StoreServiceAccessRuleRequest $request
-    )
-    {
-
+    public function sync(
+        UpdateServiceAccessRuleRequest $request,
+        RevenueService $service
+    ) {
         try {
+            $this->authorize(
+                'sync',
+                [
+                    ServiceAccessRule::class,
+                    $service,
+                ]
+            );
 
-
-            $rule = $this->service->create(
+            $rules = $this->service->sync(
+                $service,
                 $request->validated()
             );
 
-
-            return ApiResponse::created(
-
-                new ServiceAccessRuleResource($rule),
-
-                'Service access rule created successfully'
-
+            return ApiResponse::updated(
+                ServiceAccessRuleResource::collection(
+                    $rules
+                ),
+                'Service access rules synchronized successfully'
             );
-
-
-        } catch(Throwable $e) {
-
+        } catch (Throwable $e) {
             report($e);
 
             return ApiResponse::serverError(
                 exception: $e
             );
-
         }
-
     }
 
-
-
-
-
     /**
-     * Show access rule
+     * Show a single service access rule.
+     *
+     * Permission:
+     * service_access_rules.view
+     *
+     * GET /revenue/services/{service}/access-rules/{rule}
      */
     public function show(
-        ServiceAccessRule $service_access_rule
-    )
-    {
-
+        ServiceAccessRule $rule
+    ) {
         try {
-
-
-            return ApiResponse::success(
-
-                new ServiceAccessRuleResource(
-                    $this->service->find(
-                        $service_access_rule
-                    )
-                ),
-
-                'Service access rule retrieved successfully'
-
+            $this->authorize(
+                'view',
+                $rule
             );
 
-
-        } catch(Throwable $e) {
-
+            return ApiResponse::success(
+                new ServiceAccessRuleResource(
+                    $this->service->find($rule)
+                ),
+                'Service access rule retrieved successfully'
+            );
+        } catch (Throwable $e) {
             report($e);
 
             return ApiResponse::serverError(
                 exception: $e
             );
-
         }
-
     }
 
-
-
-
-
     /**
-     * Update access rule
+     * Update a single service access rule.
+     *
+     * Permission:
+     * service_access_rules.update
+     *
+     * PATCH /revenue/services/{service}/access-rules/{rule}
      */
     public function update(
         UpdateServiceAccessRuleRequest $request,
-        ServiceAccessRule $service_access_rule
-    )
-    {
-
+        ServiceAccessRule $rule
+    ) {
         try {
-
-
-            $rule = $this->service->update(
-
-                $service_access_rule,
-
-                $request->validated()
-
+            $this->authorize(
+                'update',
+                $rule
             );
 
+            $updatedRule = $this->service->update(
+                $rule,
+                $request->validated()
+            );
 
             return ApiResponse::updated(
-
-                new ServiceAccessRuleResource($rule),
-
+                new ServiceAccessRuleResource(
+                    $updatedRule
+                ),
                 'Service access rule updated successfully'
-
             );
-
-
-        } catch(Throwable $e) {
-
+        } catch (Throwable $e) {
             report($e);
 
             return ApiResponse::serverError(
                 exception: $e
             );
-
         }
-
     }
-
-
-
-
 
     /**
-     * Delete access rule
+     * Change the active status of a service access rule.
+     *
+     * Permission:
+     * service_access_rules.activate
+     * service_access_rules.deactivate
+     *
+     * PATCH /revenue/services/{service}/access-rules/{rule}/status
      */
-    public function destroy(
-        ServiceAccessRule $service_access_rule
-    )
-    {
-
+    public function changeStatus(
+        Request $request,
+        ServiceAccessRule $rule
+    ) {
         try {
+            $isActive = $request->boolean('is_active');
 
-
-            $this->service->delete(
-                $service_access_rule
+            $this->authorize(
+                $isActive
+                    ? 'activate'
+                    : 'deactivate',
+                $rule
             );
 
-
-            return ApiResponse::deleted(
-                'Service access rule deleted successfully'
+            $updatedRule = $this->service->update(
+                $rule,
+                [
+                    'is_active' => $isActive,
+                ]
             );
 
-
-        } catch(Throwable $e) {
-
+            return ApiResponse::updated(
+                new ServiceAccessRuleResource(
+                    $updatedRule
+                ),
+                $isActive
+                    ? 'Service access rule activated successfully'
+                    : 'Service access rule deactivated successfully'
+            );
+        } catch (Throwable $e) {
             report($e);
 
             return ApiResponse::serverError(
                 exception: $e
             );
-
         }
-
     }
-
 }

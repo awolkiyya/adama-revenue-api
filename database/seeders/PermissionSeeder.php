@@ -612,6 +612,45 @@ class PermissionSeeder extends Seeder
 
             /*
             |--------------------------------------------------------------------------
+            | Service Access Rule Configuration
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'service_access_rules.view',
+                'label' => 'View Service Access Rules',
+                'module' => 'service_access_rules',
+                'description' => 'Allows viewing revenue service access configuration, including which sectors are allowed or not allowed to use each revenue service.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'service_access_rules.update',
+                'label' => 'Update Service Access Rules',
+                'module' => 'service_access_rules',
+                'description' => 'Allows configuring and updating which sectors are allowed or not allowed to use a revenue service.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'service_access_rules.activate',
+                'label' => 'Activate Service Access Rule',
+                'module' => 'service_access_rules',
+                'description' => 'Allows activating access for a sector so the sector is allowed to use the configured revenue service.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'service_access_rules.deactivate',
+                'label' => 'Deactivate Service Access Rule',
+                'module' => 'service_access_rules',
+                'description' => 'Allows deactivating access for a sector so the sector is not allowed to use the configured revenue service.',
+                'is_system' => false,
+            ],
+
+
+            /*
+            |--------------------------------------------------------------------------
             | Tariff Management
             |--------------------------------------------------------------------------
             */

@@ -14,20 +14,29 @@ class BaseFieldOption extends Model
 
     protected $table = 'base_field_options';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Mass Assignment
+    |--------------------------------------------------------------------------
+    */
+
     protected $fillable = [
         'id',
         'base_field_id',
         'value',
         'label',
-        'description',
         'sort_order',
         'is_default',
-        'is_active',
     ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | Casts
+    |--------------------------------------------------------------------------
+    */
 
     protected $casts = [
         'is_default' => 'boolean',
-        'is_active' => 'boolean',
         'sort_order' => 'integer',
     ];
 

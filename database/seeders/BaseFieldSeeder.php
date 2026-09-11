@@ -360,8 +360,6 @@ class BaseFieldSeeder extends Seeder
 
                         $baseFieldOption->label = $option['label'];
 
-                        $baseFieldOption->description =
-                            $option['description'] ?? null;
 
                         $baseFieldOption->sort_order =
                             $optionIndex + 1;
@@ -369,7 +367,6 @@ class BaseFieldSeeder extends Seeder
                         $baseFieldOption->is_default =
                             $option['is_default'] ?? false;
 
-                        $baseFieldOption->is_active = true;
 
                         if (!$baseFieldOption->exists) {
                             $baseFieldOption->id = (string) Str::uuid();

@@ -4,136 +4,133 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
-
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('service_access_rules', function (Blueprint $table) {
 
+            /*
+            |--------------------------------------------------------------------------
+            | Primary Key
+            |--------------------------------------------------------------------------
+            */
 
-            /**
-             * UUID Primary Key
-             */
             $table->uuid('id')->primary();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Service
+            |--------------------------------------------------------------------------
+            |
+            | The revenue service whose sector access is being configured.
+            |
+            */
 
-
-            /**
-             * Revenue Service relation
-             */
-            $table->uuid('service_id')
-                ->index();
-
-            $table->foreign('service_id')
-                ->references('id')
-                ->on('revenue_services')
+            $table->foreignUuid('service_id')
+                ->constrained('revenue_services')
                 ->cascadeOnDelete();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Sector
+            |--------------------------------------------------------------------------
+            |
+            | The sector that is allowed or denied access to the service.
+            |
+            */
 
-
-            /**
-             * Sector relation
-             */
-            $table->uuid('sector_id')
-                ->index();
-
-            $table->foreign('sector_id')
-                ->references('id')
-                ->on('sectors')
+            $table->foreignUuid('sector_id')
+                ->constrained('sectors')
                 ->cascadeOnDelete();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Access Status
+            |--------------------------------------------------------------------------
+            |
+            | true  = sector is allowed to access the service
+            | false = sector is not allowed to access the service
+            |
+            */
 
-
-            /**
-             * Spatie Role relation
-             *
-             * roles.id = bigint
-             */
-            $table->unsignedBigInteger('role_id')
-                ->index();
-
-            $table->foreign('role_id')
-                ->references('id')
-                ->on('roles')
-                ->cascadeOnDelete();
-
-
-
-            /**
-             * Allowed Service Actions
-             *
-             * JSON array:
-             *
-             * [
-             *   "CREATE",
-             *   "UPDATE",
-             *   "SUBMIT",
-             *   "VERIFY"
-             * ]
-             */
-            $table->json('actions');
-
-
-
-            /**
-             * Active status
-             */
             $table->boolean('is_active')
-                ->default(true)
-                ->index();
+                ->default(true);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Audit Users
+            |--------------------------------------------------------------------------
+            |
+            | Tracks who created and last updated the access rule.
+            |
+            */
 
-
-            /**
-             * Audit users
-             */
-            $table->uuid('created_by')
-                ->nullable();
-
-            $table->uuid('updated_by')
-                ->nullable();
-
-
-
-            $table->foreign('created_by')
-                ->references('id')
-                ->on('users')
+            $table->foreignUuid('created_by')
+                ->nullable()
+                ->constrained('users')
                 ->nullOnDelete();
 
-
-            $table->foreign('updated_by')
-                ->references('id')
-                ->on('users')
+            $table->foreignUuid('updated_by')
+                ->nullable()
+                ->constrained('users')
                 ->nullOnDelete();
 
-
+            /*
+            |--------------------------------------------------------------------------
+            | Timestamps
+            |--------------------------------------------------------------------------
+            */
 
             $table->timestamps();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Soft Deletes
+            |--------------------------------------------------------------------------
+            |
+            | Allows an access rule to be removed without permanently
+            | destroying its history.
+            |
+            */
 
             $table->softDeletes();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Unique Service + Sector
+            |--------------------------------------------------------------------------
+            |
+            | A service can have only one access configuration
+            | for each sector.
+            |
+            */
 
-
-            /**
-             * One permission group:
-             *
-             * Service + Sector + Role
-             */
             $table->unique([
                 'service_id',
                 'sector_id',
-                'role_id'
             ]);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Indexes
+            |--------------------------------------------------------------------------
+            */
+
+            $table->index([
+                'service_id',
+                'is_active',
+            ]);
+
+            $table->index([
+                'sector_id',
+                'is_active',
+            ]);
         });
     }
-
-
 
     public function down(): void
     {
         Schema::dropIfExists('service_access_rules');
     }
-
 };

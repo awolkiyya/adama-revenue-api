@@ -2,36 +2,33 @@
 
 namespace App\Modules\Revenue\Requests;
 
-use App\Enums\ServiceAction;
-use App\Models\ServiceAccessRule;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rules\Enum;
 use Illuminate\Validation\Rule;
 
 class StoreServiceAccessRuleRequest extends FormRequest
 {
-
     /**
-     * Authorization
+     * Determine whether the user is authorized to make this request.
      */
     public function authorize(): bool
     {
         return auth()->check();
     }
 
-
-
     /**
-     * Validation rules
+     * Validation rules.
      */
     public function rules(): array
     {
         return [
-
             /*
             |--------------------------------------------------------------------------
             | Service
             |--------------------------------------------------------------------------
+            |
+            | Injected from route:
+            | /services/{service}/access-rules
+            |
             */
             'service_id' => [
                 'required',
@@ -39,275 +36,197 @@ class StoreServiceAccessRuleRequest extends FormRequest
                 Rule::exists('revenue_services', 'id'),
             ],
 
-
-
             /*
             |--------------------------------------------------------------------------
-            | Sector
+            | Sectors
             |--------------------------------------------------------------------------
             */
-            'sector_id' => [
-                'required',
-                'uuid',
-                Rule::exists('sectors', 'id'),
-            ],
-
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Role
-            |--------------------------------------------------------------------------
-            */
-            'role_id' => [
-                'required',
-                'integer',
-                Rule::exists('roles', 'id'),
-            ],
-
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Actions
-            |--------------------------------------------------------------------------
-            */
-            'actions' => [
+            'sectors' => [
                 'required',
                 'array',
                 'min:1',
             ],
 
-
-
-            'actions.*' => [
+            'sectors.*' => [
                 'required',
-                new Enum(ServiceAction::class),
+                'array',
             ],
-
-
 
             /*
             |--------------------------------------------------------------------------
-            | Status
+            | Sector ID
             |--------------------------------------------------------------------------
             */
-            'is_active' => [
-                'sometimes',
-                'boolean',
+            'sectors.*.sectorId' => [
+                'required',
+                'uuid',
+                Rule::exists('sectors', 'id'),
             ],
 
+            /*
+            |--------------------------------------------------------------------------
+            | Sector Name
+            |--------------------------------------------------------------------------
+            |
+            | This is display data from the frontend.
+            | It is NOT persisted by the backend.
+            |
+            */
+            'sectors.*.sectorName' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Access Status
+            |--------------------------------------------------------------------------
+            */
+            'sectors.*.isActive' => [
+                'required',
+                'boolean',
+            ],
         ];
     }
 
-
-
     /**
-     * Additional validation
+     * Additional validation.
      */
     public function withValidator($validator): void
     {
-
         $validator->after(function ($validator) {
+            $sectors = $this->input('sectors', []);
 
-
-            $serviceId = $this->service_id;
-
-
-            if (!$serviceId) {
+            if (!is_array($sectors)) {
                 return;
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent duplicate sectors
+            |--------------------------------------------------------------------------
+            */
+            $sectorIds = array_column(
+                $sectors,
+                'sectorId'
+            );
 
-
-            $exists = ServiceAccessRule::query()
-
-                ->where(
-                    'service_id',
-                    $serviceId
-                )
-
-                ->where(
-                    'sector_id',
-                    $this->sector_id
-                )
-
-                ->where(
-                    'role_id',
-                    $this->role_id
-                )
-
-                ->exists();
-
-
-
-            if ($exists) {
-
+            if (count($sectorIds) !== count(array_unique($sectorIds))) {
                 $validator->errors()->add(
-                    'actions',
-                    'This access rule already exists for the selected service, sector and role.'
+                    'sectors',
+                    'The same sector cannot be configured more than once.'
                 );
-
             }
-
-
         });
-
     }
 
-
-
-
-
     /**
-     * Custom attributes
+     * Custom attribute names.
      */
     public function attributes(): array
     {
         return [
-
             'service_id' => 'service',
-
-            'sector_id' => 'sector',
-
-            'role_id' => 'role',
-
-            'actions' => 'service actions',
-
+            'sectors' => 'sectors',
+            'sectors.*.sectorId' => 'sector',
+            'sectors.*.sectorName' => 'sector name',
+            'sectors.*.isActive' => 'access status',
         ];
     }
 
-
-
-
-
     /**
-     * Custom messages
+     * Custom validation messages.
      */
     public function messages(): array
     {
         return [
-
             'service_id.required' =>
                 'Service is required.',
+
+            'service_id.uuid' =>
+                'Service must be a valid UUID.',
 
             'service_id.exists' =>
                 'The selected service does not exist.',
 
+            'sectors.required' =>
+                'Please configure at least one sector.',
 
+            'sectors.array' =>
+                'Sectors must be an array.',
 
-            'sector_id.required' =>
-                'Please select a sector.',
+            'sectors.min' =>
+                'Please configure at least one sector.',
 
-            'sector_id.exists' =>
+            'sectors.*.sectorId.required' =>
+                'Sector is required.',
+
+            'sectors.*.sectorId.uuid' =>
+                'Sector must be a valid UUID.',
+
+            'sectors.*.sectorId.exists' =>
                 'The selected sector does not exist.',
 
+            'sectors.*.sectorName.string' =>
+                'Sector name must be a string.',
 
+            'sectors.*.isActive.required' =>
+                'Access status is required.',
 
-            'role_id.required' =>
-                'Please select a role.',
-
-            'role_id.exists' =>
-                'The selected role does not exist.',
-
-
-
-            'actions.required' =>
-                'Please select at least one action.',
-
-            'actions.array' =>
-                'Actions must be an array.',
-
-            'actions.min' =>
-                'Please select at least one action.',
-
-
-
-            'is_active.boolean' =>
-                'Active status must be true or false.',
-
+            'sectors.*.isActive.boolean' =>
+                'Access status must be true or false.',
         ];
     }
 
-
-
-
-
     /**
-     * Prepare request data
+     * Prepare request data.
      */
     protected function prepareForValidation(): void
     {
-
-
         /*
         |--------------------------------------------------------------------------
-        | Default active status
-        |--------------------------------------------------------------------------
-        */
-
-        if (!$this->has('is_active')) {
-
-            $this->merge([
-                'is_active' => true,
-            ]);
-
-        }
-
-
-
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Remove duplicate actions
-        |--------------------------------------------------------------------------
-        */
-
-        if ($this->has('actions')) {
-
-            $this->merge([
-
-                'actions' => array_values(
-                    array_unique(
-                        $this->actions
-                    )
-                ),
-
-            ]);
-
-        }
-
-
-
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Inject service_id from route
+        | Inject service ID from route
         |--------------------------------------------------------------------------
         |
         | Route:
         | /services/{service}/access-rules
         |
-        | {service} is UUID string
-        |
         */
+        $service = $this->route('service');
 
-        $serviceId = $this->route('service');
-
+        $serviceId = is_object($service)
+            ? $service->id
+            : $service;
 
         if ($serviceId) {
-
             $this->merge([
-
                 'service_id' => $serviceId,
-
             ]);
-
         }
 
-
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize sector data
+        |--------------------------------------------------------------------------
+        */
+        if ($this->has('sectors') && is_array($this->sectors)) {
+            $this->merge([
+                'sectors' => array_map(
+                    static function (array $sector): array {
+                        return [
+                            'sectorId' => $sector['sectorId'] ?? null,
+                            'sectorName' => $sector['sectorName'] ?? null,
+                            'isActive' => filter_var(
+                                $sector['isActive'] ?? false,
+                                FILTER_VALIDATE_BOOLEAN,
+                                FILTER_NULL_ON_FAILURE
+                            ),
+                        ];
+                    },
+                    $this->sectors
+                ),
+            ]);
+        }
     }
-
 }

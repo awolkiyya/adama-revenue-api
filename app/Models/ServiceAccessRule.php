@@ -2,78 +2,40 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
-
-use Spatie\Permission\Models\Role;
-
-
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class ServiceAccessRule extends Model
 {
-
     use HasUuids, SoftDeletes;
-
-
 
     protected $table = 'service_access_rules';
 
-
-
     protected $primaryKey = 'id';
-
-
 
     public $incrementing = false;
 
-
-
     protected $keyType = 'string';
 
-
-
+    /**
+     * Mass assignable attributes.
+     */
     protected $fillable = [
-
         'service_id',
-
         'sector_id',
-
-        'role_id',
-
-        'actions',
-
         'is_active',
-
         'created_by',
-
         'updated_by',
-
     ];
 
-
-
+    /**
+     * Attribute casts.
+     */
     protected $casts = [
-
-        /**
-         * JSON actions array
-         *
-         * Example:
-         *
-         * [
-         *   "CREATE",
-         *   "APPROVE"
-         * ]
-         */
-        'actions' => 'array',
-
-
         'is_active' => 'boolean',
-
     ];
-
-
-
 
     /*
     |--------------------------------------------------------------------------
@@ -81,92 +43,49 @@ class ServiceAccessRule extends Model
     |--------------------------------------------------------------------------
     */
 
-
-
     /**
-     * Revenue Service
+     * Revenue service.
      */
-    public function service()
+    public function service(): BelongsTo
     {
-
         return $this->belongsTo(
             RevenueService::class,
             'service_id'
         );
-
     }
 
-
-
-
-
     /**
-     * Sector
+     * Sector.
      */
-    public function sector()
+    public function sector(): BelongsTo
     {
-
         return $this->belongsTo(
             Sector::class,
             'sector_id'
         );
-
     }
 
-
-
-
-
     /**
-     * Role
+     * User who created the rule.
      */
-    public function role()
+    public function creator(): BelongsTo
     {
-
-        return $this->belongsTo(
-            Role::class,
-            'role_id'
-        );
-
-    }
-
-
-
-
-
-    /**
-     * Created By User
-     */
-    public function creator()
-    {
-
         return $this->belongsTo(
             User::class,
             'created_by'
         );
-
     }
 
-
-
-
-
     /**
-     * Updated By User
+     * User who last updated the rule.
      */
-    public function updater()
+    public function updater(): BelongsTo
     {
-
         return $this->belongsTo(
             User::class,
             'updated_by'
         );
-
     }
-
-
-
-
 
     /*
     |--------------------------------------------------------------------------
@@ -174,37 +93,25 @@ class ServiceAccessRule extends Model
     |--------------------------------------------------------------------------
     */
 
-
-
     /**
-     * Active rules only
+     * Scope to active access rules.
      */
     public function scopeActive($query)
     {
-
         return $query->where(
             'is_active',
             true
         );
-
     }
-
-
-
 
     /**
-     * Check action permission
+     * Scope to inactive access rules.
      */
-    public function hasAction(
-        string $action
-    ): bool
+    public function scopeInactive($query)
     {
-
-        return in_array(
-            $action,
-            $this->actions ?? []
+        return $query->where(
+            'is_active',
+            false
         );
-
     }
-
 }

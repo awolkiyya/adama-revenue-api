@@ -8,9 +8,19 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 use App\Models\BaseField;
+use App\Models\BaseFieldOption;
 
 class BaseFieldService
 {
+    /**
+     * Data types that support options.
+     */
+    private const OPTION_DATA_TYPES = [
+        'SELECT',
+        'RADIO',
+        'CHECKBOX',
+    ];
+
     /**
      * Relationships required for the complete BaseField representation.
      */
@@ -123,12 +133,6 @@ class BaseFieldService
 
         $perPage = (int) ($filters['per_page'] ?? 15);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Per Page Protection
-        |--------------------------------------------------------------------------
-        */
-
         $perPage = max(1, min($perPage, 100));
 
         return $query->paginate($perPage);
@@ -151,7 +155,14 @@ class BaseFieldService
     {
         try {
             $baseField = DB::transaction(function () use ($data) {
-                return BaseField::create([
+
+                /*
+                |--------------------------------------------------------------------------
+                | Create Base Field
+                |--------------------------------------------------------------------------
+                */
+
+                $baseField = BaseField::create([
                     'code' => $data['code'],
                     'name' => $data['name'],
                     'description' => $data['description'] ?? null,
@@ -160,15 +171,37 @@ class BaseFieldService
                     'is_active' => $data['is_active'] ?? true,
                     'sort_order' => $data['sort_order'] ?? 0,
                 ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Create Options
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $this->supportsOptions($baseField->data_type)
+                    && !empty($data['options'])
+                ) {
+                    $this->createOptions(
+                        $baseField,
+                        $data['options']
+                    );
+                }
+
+                return $baseField;
             });
 
             Log::info('Base field created successfully.', [
                 'base_field_id' => $baseField->id,
                 'code' => $baseField->code,
+                'data_type' => $baseField->data_type,
+                'options_count' => $baseField->options()->count(),
             ]);
 
             return $baseField->load(self::RELATIONS);
+
         } catch (Exception $exception) {
+
             Log::error('Failed to create base field.', [
                 'message' => $exception->getMessage(),
                 'trace' => $exception->getTraceAsString(),
@@ -187,13 +220,21 @@ class BaseFieldService
     ): BaseField {
         try {
             $baseField = DB::transaction(function () use ($id, $data) {
+
                 $baseField = BaseField::findOrFail($id);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Update Base Field
+                |--------------------------------------------------------------------------
+                */
 
                 $baseField->update([
                     'code' => $data['code'],
                     'name' => $data['name'],
                     'description' => $data['description'] ?? null,
-                    'measurement_unit_id' => $data['measurement_unit_id'] ?? null,
+                    'measurement_unit_id' =>
+                        $data['measurement_unit_id'] ?? null,
                     'data_type' => $data['data_type'],
                     'is_active' => $data['is_active']
                         ?? $baseField->is_active,
@@ -201,16 +242,48 @@ class BaseFieldService
                         ?? $baseField->sort_order,
                 ]);
 
+                /*
+                |--------------------------------------------------------------------------
+                | Synchronize Options
+                |--------------------------------------------------------------------------
+                */
+
+                if ($this->supportsOptions($baseField->data_type)) {
+
+                    $this->syncOptions(
+                        $baseField,
+                        $data['options'] ?? []
+                    );
+
+                } else {
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Remove Old Options
+                    |--------------------------------------------------------------------------
+                    |
+                    | If a field changes from SELECT/RADIO/CHECKBOX to
+                    | another data type, it must no longer have options.
+                    |
+                    */
+
+                    $baseField->options()->delete();
+                }
+
                 return $baseField;
             });
 
             Log::info('Base field updated successfully.', [
                 'base_field_id' => $baseField->id,
                 'code' => $baseField->code,
+                'data_type' => $baseField->data_type,
+                'options_count' => $baseField->options()->count(),
             ]);
 
             return $baseField->load(self::RELATIONS);
+
         } catch (Exception $exception) {
+
             Log::error('Failed to update base field.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),
@@ -219,6 +292,183 @@ class BaseFieldService
 
             throw $exception;
         }
+    }
+
+    /**
+     * Create options for a base field.
+     */
+    private function createOptions(
+        BaseField $baseField,
+        array $options
+    ): void {
+        foreach ($options as $index => $option) {
+
+            BaseFieldOption::create([
+                'base_field_id' => $baseField->id,
+
+                'value' => $option['value'],
+
+                'label' => $option['label'],
+
+                'sort_order' =>
+                    $option['sort_order'] ?? $index,
+
+                'is_default' =>
+                    $option['is_default'] ?? false,
+            ]);
+        }
+    }
+
+    /**
+     * Synchronize options during update.
+     *
+     * Existing options with an ID are updated.
+     * New options without an ID are created.
+     * Existing options omitted from the request are deleted.
+     */
+    private function syncOptions(
+        BaseField $baseField,
+        array $options
+    ): void {
+        /*
+        |--------------------------------------------------------------------------
+        | No Options
+        |--------------------------------------------------------------------------
+        |
+        | If the frontend sends an empty array, remove all existing options.
+        |
+        */
+
+        if (empty($options)) {
+            $baseField->options()->delete();
+
+            return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Existing Option IDs
+        |--------------------------------------------------------------------------
+        */
+
+        $existingOptionIds = $baseField
+            ->options()
+            ->pluck('id')
+            ->map(fn ($id) => (string) $id)
+            ->toArray();
+
+        $submittedOptionIds = [];
+
+        /*
+        |--------------------------------------------------------------------------
+        | Create / Update Options
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($options as $index => $option) {
+
+            $optionId = $option['id'] ?? null;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update Existing Option
+            |--------------------------------------------------------------------------
+            */
+
+            if ($optionId !== null) {
+
+                $optionId = (string) $optionId;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Security Check
+                |--------------------------------------------------------------------------
+                |
+                | Prevent updating an option belonging to another
+                | BaseField.
+                |
+                */
+
+                if (!in_array($optionId, $existingOptionIds, true)) {
+                    throw new Exception(
+                        'The selected option does not belong to this base field.'
+                    );
+                }
+
+                $baseFieldOption = $baseField
+                    ->options()
+                    ->whereKey($optionId)
+                    ->firstOrFail();
+
+                $baseFieldOption->update([
+                    'value' => $option['value'],
+
+                    'label' => $option['label'],
+
+                    'sort_order' =>
+                        $option['sort_order'] ?? $index,
+
+                    'is_default' =>
+                        $option['is_default'] ?? false,
+                ]);
+
+                $submittedOptionIds[] = $optionId;
+
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Create New Option
+            |--------------------------------------------------------------------------
+            */
+
+            $newOption = BaseFieldOption::create([
+                'base_field_id' => $baseField->id,
+
+                'value' => $option['value'],
+
+                'label' => $option['label'],
+
+                'sort_order' =>
+                    $option['sort_order'] ?? $index,
+
+                'is_default' =>
+                    $option['is_default'] ?? false,
+            ]);
+
+            $submittedOptionIds[] = (string) $newOption->id;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Delete Removed Options
+        |--------------------------------------------------------------------------
+        */
+
+        $optionsToDelete = array_diff(
+            $existingOptionIds,
+            $submittedOptionIds
+        );
+
+        if (!empty($optionsToDelete)) {
+            $baseField
+                ->options()
+                ->whereIn('id', $optionsToDelete)
+                ->delete();
+        }
+    }
+
+    /**
+     * Determine whether a data type supports options.
+     */
+    private function supportsOptions(string $dataType): bool
+    {
+        return in_array(
+            strtoupper($dataType),
+            self::OPTION_DATA_TYPES,
+            true
+        );
     }
 
     /**
@@ -239,7 +489,9 @@ class BaseFieldService
             ]);
 
             return $result;
+
         } catch (Exception $exception) {
+
             Log::error('Failed to delete base field.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),
@@ -257,6 +509,7 @@ class BaseFieldService
     {
         try {
             $baseField = DB::transaction(function () use ($id) {
+
                 $baseField = BaseField::withTrashed()
                     ->findOrFail($id);
 
@@ -271,7 +524,9 @@ class BaseFieldService
             ]);
 
             return $baseField->load(self::RELATIONS);
+
         } catch (Exception $exception) {
+
             Log::error('Failed to restore base field.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),
@@ -291,6 +546,7 @@ class BaseFieldService
     ): BaseField {
         try {
             $baseField = DB::transaction(function () use ($id, $status) {
+
                 $baseField = BaseField::findOrFail($id);
 
                 $baseField->update([
@@ -306,7 +562,9 @@ class BaseFieldService
             ]);
 
             return $baseField->load(self::RELATIONS);
+
         } catch (Exception $exception) {
+
             Log::error('Failed to change base field status.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),

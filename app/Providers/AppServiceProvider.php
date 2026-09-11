@@ -8,6 +8,7 @@ use App\Models\PenaltyRule;
 use App\Models\RevenueCategory;
 use App\Models\RevenueService;
 use App\Models\Role;
+use App\Models\ServiceAccessRule;
 
 use App\Policies\InterestRulePolicy;
 use App\Policies\MeasurementUnitPolicy;
@@ -16,6 +17,7 @@ use App\Policies\PermissionPolicy;
 use App\Policies\RevenueCategoryPolicy;
 use App\Policies\RevenueServicePolicy;
 use App\Policies\RolePolicy;
+use App\Policies\ServiceAccessRulePolicy;
 
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -73,6 +75,11 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(
             RevenueService::class,
             RevenueServicePolicy::class
+        );
+
+        Gate::policy(
+            ServiceAccessRule::class,
+            ServiceAccessRulePolicy::class
         );
 
         Gate::policy(
