@@ -20,12 +20,15 @@ class RevenueSettingSeeder extends Seeder
         |
         | This creates the initial global Revenue Management configuration.
         |
-        | The configuration contains only global operational behavior.
+        | This configuration contains only global operational behavior.
         |
         | Tariff rates       -> tariff_rules
         | Penalty rules      -> penalty_rules
         | Interest rules     -> interest_rules
-        | Invoice due dates  -> invoices
+        | Legal due date     -> annual_payment_due_date
+        |
+        | The annual payment due date is stored as an Ethiopian recurring
+        | MM-DD value. The year is intentionally not stored.
         |
         */
 
@@ -38,8 +41,8 @@ class RevenueSettingSeeder extends Seeder
             |
             | revenue_settings is a singleton configuration.
             |
-            | The database already guarantees that only one active record
-            | can exist through the partial unique index.
+            | The database guarantees that only one active record can exist
+            | through the partial unique index.
             |
             */
 
@@ -62,6 +65,7 @@ class RevenueSettingSeeder extends Seeder
                 return;
             }
 
+
             /*
             |--------------------------------------------------------------------------
             | Create Initial Configuration
@@ -69,6 +73,7 @@ class RevenueSettingSeeder extends Seeder
             */
 
             DB::table('revenue_settings')->insert([
+
                 /*
                 |--------------------------------------------------------------------------
                 | Primary Key
@@ -77,43 +82,50 @@ class RevenueSettingSeeder extends Seeder
 
                 'id' => (string) Str::uuid(),
 
+
                 /*
                 |--------------------------------------------------------------------------
-                | Global Payment Period
+                | Annual Payment Due Date
                 |--------------------------------------------------------------------------
                 |
-                | Ethiopian fiscal/revenue period:
+                | Ethiopian recurring annual deadline.
                 |
-                | Start: Meskerem 1
-                | End:   Pagume 6
-                |
-                | Month 1  = Meskerem
                 | Month 13 = Pagume
+                | Day 6    = final Pagume day
+                |
+                | Stored as:
+                |
+                |     MM-DD
+                |
+                | The year is intentionally omitted because this deadline
+                | recurs every Ethiopian calendar year.
                 |
                 */
 
-                'payment_start_month' => 1,
-                'payment_start_day' => 1,
+                'annual_payment_due_date' => '13-06',
 
-                'payment_end_month' => 13,
-                'payment_end_day' => 6,
 
                 /*
                 |--------------------------------------------------------------------------
                 | Penalty / Interest
                 |--------------------------------------------------------------------------
                 |
-                | These only enable the engines.
+                | These fields only enable or disable the calculation engines.
                 |
-                | Actual rates/rules are configured in:
+                | Actual penalty rates/rules are configured in:
                 |
-                | penalty_rules
-                | interest_rules
+                |     penalty_rules
+                |
+                | Actual interest rates/rules are configured in:
+                |
+                |     interest_rules
                 |
                 */
 
                 'penalty_enabled' => true,
+
                 'interest_enabled' => true,
+
 
                 /*
                 |--------------------------------------------------------------------------
@@ -129,6 +141,7 @@ class RevenueSettingSeeder extends Seeder
 
                 'assessment_reassessment_allowed' => true,
 
+
                 /*
                 |--------------------------------------------------------------------------
                 | Invoice
@@ -143,6 +156,7 @@ class RevenueSettingSeeder extends Seeder
 
                 'invoice_allow_overdue_payment' => true,
 
+
                 /*
                 |--------------------------------------------------------------------------
                 | Payment
@@ -153,12 +167,19 @@ class RevenueSettingSeeder extends Seeder
 
                 'payment_auto_receipt' => true,
 
+
                 /*
                 |--------------------------------------------------------------------------
                 | Payment Methods
                 |--------------------------------------------------------------------------
                 |
-                | At least one method is required by the database constraint.
+                | At least one payment method must be enabled.
+                |
+                | The database migration defaults to:
+                |
+                |     CASH
+                |     BANK
+                |     MOBILE_MONEY
                 |
                 */
 
@@ -167,6 +188,7 @@ class RevenueSettingSeeder extends Seeder
                     'BANK',
                     'MOBILE_MONEY',
                 ]),
+
 
                 /*
                 |--------------------------------------------------------------------------
@@ -180,6 +202,7 @@ class RevenueSettingSeeder extends Seeder
 
                 'receipt_allow_reprint' => true,
 
+
                 /*
                 |--------------------------------------------------------------------------
                 | Status
@@ -187,6 +210,7 @@ class RevenueSettingSeeder extends Seeder
                 */
 
                 'is_active' => true,
+
 
                 /*
                 |--------------------------------------------------------------------------
@@ -198,22 +222,26 @@ class RevenueSettingSeeder extends Seeder
 
                 'description' =>
                     'Global Revenue Management configuration. ' .
-                    'Tariff, penalty, and interest rates are managed ' .
+                    'The annual payment due date is used to resolve ' .
+                    'the applicable legal due date for assessment services. ' .
+                    'Tariff, penalty, and interest rules are managed ' .
                     'through their respective rule configurations.',
+
 
                 /*
                 |--------------------------------------------------------------------------
                 | Audit
                 |--------------------------------------------------------------------------
                 |
-                | Seeder-created configuration has no application user as
-                | creator/updater.
+                | Seeder-created configuration has no application user
+                | as creator/updater.
                 |
                 */
 
                 'created_by' => null,
 
                 'updated_by' => null,
+
 
                 /*
                 |--------------------------------------------------------------------------

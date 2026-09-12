@@ -497,71 +497,145 @@ protected function applyListFilters(
 
 
 
+/*
+|--------------------------------------------------------------------------
+| CREATE FROM APPROVED ASSESSMENT
+|--------------------------------------------------------------------------
+|
+| Responsibility:
+|
+| - Validate approved assessment
+| - Create invoice
+| - Create invoice items
+| - Preserve Decision Provider snapshot
+| - Preserve authoritative due date
+| - Aggregate invoice totals
+|
+| This service DOES NOT:
+|
+| - calculate tariffs
+| - resolve tariff rules
+| - calculate penalties
+| - calculate interest
+| - recalculate assessment amounts
+| - issue invoices
+| - send SMS
+|
+| Penalty and interest are initialized at zero and are calculated
+| later by the outstanding-balance / accrual calculation layer
+| when their legal conditions are satisfied.
+|
+| Issuance and notification are handled by:
+|
+| InvoiceIssuanceService
+|
+|--------------------------------------------------------------------------
+*/
 
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE FROM APPROVED ASSESSMENT
-    |--------------------------------------------------------------------------
-    |
-    | Responsibility:
-    |
-    | - Validate approved assessment
-    | - Create invoice
-    | - Create invoice items
-    | - Preserve Decision Provider snapshot
-    | - Aggregate invoice totals
-    |
-    | This service DOES NOT:
-    |
-    | - calculate tariffs
-    | - resolve tariff rules
-    | - recalculate amounts
-    | - issue invoices
-    | - send SMS
-    |
-    | Issuance and notification are handled by:
-    |
-    | InvoiceIssuanceService
-    |
-    |--------------------------------------------------------------------------
-    */
+public function createFromAssessment(
+    Assessment $assessment
+): Invoice {
 
-    public function createFromAssessment(
-        Assessment $assessment
-    ): Invoice {
+    return DB::transaction(function () use ($assessment) {
 
-        return DB::transaction(function () use ($assessment) {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. LOCK ASSESSMENT
+        |--------------------------------------------------------------------------
+        |
+        | Prevent concurrent invoice creation against the same assessment.
+        |
+        */
+
+        $assessment = Assessment::query()
+            ->with([
+                'citizen',
+                'services.service',
+                'services.values',
+            ])
+            ->lockForUpdate()
+            ->findOrFail($assessment->id);
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. VALIDATE ASSESSMENT STATUS
+        |--------------------------------------------------------------------------
+        */
+
+        if ($assessment->status !== 'APPROVED') {
+
+            throw ValidationException::withMessages([
+                'assessment' => [
+                    'Only approved assessments can generate an invoice.',
+                ],
+            ]);
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. PREVENT DUPLICATE INVOICE
+        |--------------------------------------------------------------------------
+        |
+        | One approved assessment should normally produce one invoice.
+        |
+        | A database unique constraint on invoices.assessment_id should
+        | also exist as the final concurrency-level protection.
+        |
+        */
+
+        $existingInvoice = Invoice::query()
+            ->where('assessment_id', $assessment->id)
+            ->first();
+
+        if ($existingInvoice) {
+
+            return $existingInvoice->load([
+                'items',
+                'assessment',
+                'citizen',
+            ]);
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. VALIDATE SERVICES
+        |--------------------------------------------------------------------------
+        */
+
+        if ($assessment->services->isEmpty()) {
+
+            throw ValidationException::withMessages([
+                'assessment' => [
+                    'The approved assessment has no services.',
+                ],
+            ]);
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. VALIDATE ALL SERVICES
+        |--------------------------------------------------------------------------
+        */
+
+        $assessmentDueDate = null;
+
+        foreach ($assessment->services as $assessmentService) {
 
             /*
             |--------------------------------------------------------------------------
-            | 1. LOCK ASSESSMENT
-            |--------------------------------------------------------------------------
-            |
-            | Prevent concurrent invoice creation against the same assessment.
-            |
-            */
-
-            $assessment = Assessment::query()
-                ->with([
-                    'citizen',
-                    'services.service',
-                    'services.values',
-                ])
-                ->lockForUpdate()
-                ->findOrFail($assessment->id);
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | 2. VALIDATE ASSESSMENT STATUS
+            | SERVICE STATUS
             |--------------------------------------------------------------------------
             */
 
-            if ($assessment->status !== 'APPROVED') {
+            if ($assessmentService->status !== 'COMPLETED') {
 
                 throw ValidationException::withMessages([
                     'assessment' => [
-                        'Only approved assessments can generate an invoice.',
+                        'All assessment services must be completed before an invoice can be generated.',
                     ],
                 ]);
             }
@@ -569,38 +643,28 @@ protected function applyListFilters(
 
             /*
             |--------------------------------------------------------------------------
-            | 3. PREVENT DUPLICATE INVOICE
+            | COMPUTED AMOUNT
             |--------------------------------------------------------------------------
             |
-            | One approved assessment should normally produce one invoice.
+            | This is the authoritative principal amount calculated during
+            | assessment calculation.
             |
             */
 
-            $existingInvoice = Invoice::query()
-                ->where('assessment_id', $assessment->id)
-                ->first();
-
-            if ($existingInvoice) {
-
-                return $existingInvoice->load([
-                    'items',
-                    'assessment',
-                    'citizen',
-                ]);
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | 4. VALIDATE SERVICES
-            |--------------------------------------------------------------------------
-            */
-
-            if ($assessment->services->isEmpty()) {
+            if ($assessmentService->computed_amount === null) {
 
                 throw ValidationException::withMessages([
                     'assessment' => [
-                        'The approved assessment has no services.',
+                        'Every assessment service must have a computed amount before invoicing.',
+                    ],
+                ]);
+            }
+
+            if ((float) $assessmentService->computed_amount < 0) {
+
+                throw ValidationException::withMessages([
+                    'assessment' => [
+                        'Every assessment service must have a non-negative computed amount before invoicing.',
                     ],
                 ]);
             }
@@ -608,145 +672,340 @@ protected function applyListFilters(
 
             /*
             |--------------------------------------------------------------------------
-            | 5. VALIDATE ALL SERVICES
+            | DECISION PROVIDER METADATA
             |--------------------------------------------------------------------------
             */
 
-            foreach ($assessment->services as $assessmentService) {
+            if (
+                $assessmentService->calculation_metadata !== null
+                &&
+                ! is_array($assessmentService->calculation_metadata)
+            ) {
 
-                /*
-                |--------------------------------------------------------------------------
-                | SERVICE STATUS
-                |--------------------------------------------------------------------------
-                */
-
-                if ($assessmentService->status !== 'COMPLETED') {
-
-                    throw ValidationException::withMessages([
-                        'assessment' => [
-                            'All assessment services must be completed before an invoice can be generated.',
-                        ],
-                    ]);
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | COMPUTED AMOUNT
-                |--------------------------------------------------------------------------
-                */
-
-                if ($assessmentService->computed_amount === null) {
-
-                    throw ValidationException::withMessages([
-                        'assessment' => [
-                            'Every assessment service must have a computed amount before invoicing.',
-                        ],
-                    ]);
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | DECISION PROVIDER METADATA
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    $assessmentService->calculation_metadata !== null
-                    &&
-                    !is_array($assessmentService->calculation_metadata)
-                ) {
-
-                    throw ValidationException::withMessages([
-                        'assessment' => [
-                            'Invalid calculation metadata found for an assessment service.',
-                        ],
-                    ]);
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | REVENUE SERVICE
-                |--------------------------------------------------------------------------
-                */
-
-                if (!$assessmentService->service_id) {
-
-                    throw ValidationException::withMessages([
-                        'assessment' => [
-                            'Every assessment service must reference a revenue service.',
-                        ],
-                    ]);
-                }
+                throw ValidationException::withMessages([
+                    'assessment' => [
+                        'Invalid calculation metadata found for an assessment service.',
+                    ],
+                ]);
             }
 
 
             /*
             |--------------------------------------------------------------------------
-            | 6. GENERATE INVOICE NUMBER
+            | REVENUE SERVICE
             |--------------------------------------------------------------------------
-            |
-            | InvoiceNumberService uses the Ethiopian calendar year and
-            | InvoiceSequence for concurrency-safe numbering.
-            |
-            | IMPORTANT:
-            |
-            | We are already inside DB::transaction().
-            |
-            | InvoiceNumberService therefore MUST NOT start another
-            | transaction.
-            |
             */
 
-            $invoiceNumber =
-                $this->invoiceNumberService->generate();
+            if (! $assessmentService->service_id) {
+
+                throw ValidationException::withMessages([
+                    'assessment' => [
+                        'Every assessment service must reference a revenue service.',
+                    ],
+                ]);
+            }
 
 
             /*
             |--------------------------------------------------------------------------
-            | 7. CREATE INVOICE
+            | DUE DATE
             |--------------------------------------------------------------------------
             |
-            | The invoice starts as DRAFT.
+            | assessment_services.due_date is the authoritative due date
+            | resolved during assessment calculation.
             |
-            | InvoiceIssuanceService is responsible for:
-            |
-            | DRAFT → ISSUED
-            |
-            | and taxpayer notification.
+            | If the invoice is designed to have one common due date,
+            | every assessment service must resolve to the same date.
             |
             */
 
-            $invoice = Invoice::query()->create([
+            if ($assessmentService->due_date === null) {
+
+                throw ValidationException::withMessages([
+                    'assessment' => [
+                        'Every assessment service must have a due date before an invoice can be generated.',
+                    ],
+                ]);
+            }
+
+            if ($assessmentDueDate === null) {
+
+                $assessmentDueDate = $assessmentService->due_date;
+
+            } elseif (
+                $assessmentDueDate->format('Y-m-d')
+                !==
+                $assessmentService->due_date->format('Y-m-d')
+            ) {
+
+                throw ValidationException::withMessages([
+                    'assessment' => [
+                        'All assessment services must have the same due date before an invoice can be generated.',
+                    ],
+                ]);
+            }
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. GENERATE INVOICE NUMBER
+        |--------------------------------------------------------------------------
+        |
+        | InvoiceNumberService uses the Ethiopian calendar year and
+        | InvoiceSequence for concurrency-safe numbering.
+        |
+        | IMPORTANT:
+        |
+        | We are already inside DB::transaction().
+        |
+        | InvoiceNumberService therefore MUST NOT start another
+        | transaction.
+        |
+        */
+
+        $invoiceNumber =
+            $this->invoiceNumberService->generate();
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. CREATE INVOICE
+        |--------------------------------------------------------------------------
+        |
+        | The invoice starts as DRAFT.
+        |
+        | Penalty and interest are both zero at invoice creation.
+        |
+        | They are not calculated here because they are time-dependent
+        | financial components handled by the outstanding-balance /
+        | accrual calculation layer.
+        |
+        */
+
+        $invoice = Invoice::query()->create([
+
+            'id' =>
+                (string) Str::uuid(),
+
+            'invoice_number' =>
+                $invoiceNumber,
+
+            'source_type' =>
+                'ASSESSMENT',
+
+            'assessment_id' =>
+                $assessment->id,
+
+            'citizen_id' =>
+                $assessment->citizen_id,
+
+            'administrative_unit_id' =>
+                $assessment->administrative_unit_id,
+
+            'status' =>
+                'DRAFT',
+
+            'currency' =>
+                'ETB',
+
+            /*
+            |--------------------------------------------------------------------------
+            | AUTHORITATIVE DUE DATE
+            |--------------------------------------------------------------------------
+            */
+
+            'due_date' =>
+                $assessmentDueDate,
+
+            /*
+            |--------------------------------------------------------------------------
+            | INITIAL FINANCIAL VALUES
+            |--------------------------------------------------------------------------
+            */
+
+            'subtotal' =>
+                0,
+
+            'discount_amount' =>
+                0,
+
+            'penalty_amount' =>
+                0,
+
+            'interest_amount' =>
+                0,
+
+            'total_amount' =>
+                0,
+
+            'paid_amount' =>
+                0,
+
+            'balance_due' =>
+                0,
+
+            'created_by' =>
+                Auth::id(),
+        ]);
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 8. CREATE INVOICE ITEMS
+        |--------------------------------------------------------------------------
+        */
+
+        $lineNumber = 1;
+
+        foreach ($assessment->services as $assessmentService) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | AUTHORITATIVE AMOUNT
+            |--------------------------------------------------------------------------
+            |
+            | This amount was already calculated by the Decision Provider.
+            |
+            | InvoiceService NEVER recalculates it.
+            |
+            */
+
+            $amount =
+                $assessmentService->computed_amount;
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | CALCULATION METADATA
+            |--------------------------------------------------------------------------
+            */
+
+            $metadata =
+                is_array($assessmentService->calculation_metadata)
+                    ? $assessmentService->calculation_metadata
+                    : [];
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | TARIFF REFERENCES
+            |--------------------------------------------------------------------------
+            */
+
+            $tariffVersionId =
+                $metadata['tariff_version_id']
+                ?? null;
+
+            $tariffRuleId =
+                $metadata['tariff_rule_id']
+                ?? null;
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | INPUT SNAPSHOT
+            |--------------------------------------------------------------------------
+            |
+            | Preserve exactly what was used during assessment.
+            |
+            */
+
+            $inputSnapshot =
+                $assessmentService->values
+                    ->mapWithKeys(
+                        function ($value) {
+
+                            return [
+                                $value->field_code =>
+                                    $value->value,
+                            ];
+                        }
+                    )
+                    ->toArray();
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | DECISION SNAPSHOT
+            |--------------------------------------------------------------------------
+            |
+            | Preserve the exact Decision Provider metadata.
+            |
+            */
+
+            $calculationSnapshot =
+                $metadata;
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | CREATE INVOICE ITEM
+            |--------------------------------------------------------------------------
+            */
+
+            InvoiceItem::query()->create([
 
                 'id' =>
                     (string) Str::uuid(),
 
-                'invoice_number' =>
-                    $invoiceNumber,
+                'invoice_id' =>
+                    $invoice->id,
 
-                'source_type' =>
-                    'ASSESSMENT',
+                'assessment_service_id' =>
+                    $assessmentService->id,
 
-                'assessment_id' =>
-                    $assessment->id,
+                'service_id' =>
+                    $assessmentService->service_id,
 
-                'citizen_id' =>
-                    $assessment->citizen_id,
+                'line_number' =>
+                    $lineNumber,
 
-                'administrative_unit_id' =>
-                    $assessment->administrative_unit_id,
+                /*
+                |--------------------------------------------------------------------------
+                | DESCRIPTION SNAPSHOT
+                |--------------------------------------------------------------------------
+                */
 
-                'status' =>
-                    'DRAFT',
+                'description' =>
+                    $assessmentService
+                        ->service
+                        ?->name
+                    ?? 'Revenue Service',
 
-                'currency' =>
-                    'ETB',
+                /*
+                |--------------------------------------------------------------------------
+                | PRESENTATION VALUES
+                |--------------------------------------------------------------------------
+                */
 
-                'subtotal' =>
-                    0,
+                'quantity' =>
+                    $metadata['quantity']
+                    ?? null,
+
+                'unit' =>
+                    $metadata['unit']
+                    ?? null,
+
+                'unit_price' =>
+                    $metadata['unit_price']
+                    ?? null,
+
+                /*
+                |--------------------------------------------------------------------------
+                | FINANCIAL VALUES
+                |--------------------------------------------------------------------------
+                |
+                | amount = original assessed principal.
+                |
+                | Penalty and interest start at zero.
+                |
+                | They are calculated later when applicable.
+                |
+                */
+
+                'amount' =>
+                    $amount,
 
                 'discount_amount' =>
                     0,
@@ -754,286 +1013,135 @@ protected function applyListFilters(
                 'penalty_amount' =>
                     0,
 
+                'interest_amount' =>
+                    0,
+
                 'total_amount' =>
-                    0,
+                    $amount,
 
-                'paid_amount' =>
-                    0,
-
-                'balance_due' =>
-                    0,
-
-                'created_by' =>
-                    Auth::id(),
-            ]);
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | 8. CREATE INVOICE ITEMS
-            |--------------------------------------------------------------------------
-            */
-
-            $lineNumber = 1;
-
-            foreach ($assessment->services as $assessmentService) {
+                'currency' =>
+                    $assessmentService->currency_code
+                    ?? 'ETB',
 
                 /*
                 |--------------------------------------------------------------------------
-                | AUTHORITATIVE AMOUNT
-                |--------------------------------------------------------------------------
-                |
-                | This amount was already calculated by the Decision Provider.
-                |
-                | InvoiceService NEVER recalculates it.
-                |
-                */
-
-                $amount =
-                    $assessmentService->computed_amount;
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | CALCULATION METADATA
+                | TARIFF SNAPSHOT REFERENCES
                 |--------------------------------------------------------------------------
                 */
 
-                $metadata =
-                    is_array($assessmentService->calculation_metadata)
-                        ? $assessmentService->calculation_metadata
-                        : [];
+                'tariff_version_id' =>
+                    $tariffVersionId,
 
-
-                /*
-                |--------------------------------------------------------------------------
-                | TARIFF REFERENCES
-                |--------------------------------------------------------------------------
-                */
-
-                $tariffVersionId =
-                    $metadata['tariff_version_id']
-                    ?? null;
-
-                $tariffRuleId =
-                    $metadata['tariff_rule_id']
-                    ?? null;
-
+                'tariff_rule_id' =>
+                    $tariffRuleId,
 
                 /*
                 |--------------------------------------------------------------------------
                 | INPUT SNAPSHOT
                 |--------------------------------------------------------------------------
-                |
-                | Preserve exactly what was used during assessment.
-                |
                 */
 
-                $inputSnapshot =
-                    $assessmentService->values
-                        ->mapWithKeys(
-                            function ($value) {
-
-                                return [
-                                    $value->field_code =>
-                                        $value->value,
-                                ];
-                            }
-                        )
-                        ->toArray();
-
+                'input_snapshot' =>
+                    $inputSnapshot,
 
                 /*
                 |--------------------------------------------------------------------------
-                | DECISION SNAPSHOT
-                |--------------------------------------------------------------------------
-                |
-                | Preserve the exact Decision Provider metadata.
-                |
-                */
-
-                $calculationSnapshot =
-                    $metadata;
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | CREATE INVOICE ITEM
+                | DECISION PROVIDER SNAPSHOT
                 |--------------------------------------------------------------------------
                 */
 
-                InvoiceItem::query()->create([
-
-                    'id' =>
-                        (string) Str::uuid(),
-
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'assessment_service_id' =>
-                        $assessmentService->id,
-
-                    'service_id' =>
-                        $assessmentService->service_id,
-
-                    'line_number' =>
-                        $lineNumber,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | DESCRIPTION SNAPSHOT
-                    |--------------------------------------------------------------------------
-                    */
-
-                    'description' =>
-                        $assessmentService
-                            ->service
-                            ?->name
-                        ?? 'Revenue Service',
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | PRESENTATION VALUES
-                    |--------------------------------------------------------------------------
-                    */
-
-                    'quantity' =>
-                        $metadata['quantity']
-                        ?? null,
-
-                    'unit' =>
-                        $metadata['unit']
-                        ?? null,
-
-                    'unit_price' =>
-                        $metadata['unit_price']
-                        ?? null,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | FINANCIAL VALUES
-                    |--------------------------------------------------------------------------
-                    */
-
-                    'amount' =>
-                        $amount,
-
-                    'discount_amount' =>
-                        0,
-
-                    'penalty_amount' =>
-                        0,
-
-                    'total_amount' =>
-                        $amount,
-
-                    'currency' =>
-                        $assessmentService->currency_code
-                        ?? 'ETB',
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | TARIFF SNAPSHOT REFERENCES
-                    |--------------------------------------------------------------------------
-                    */
-
-                    'tariff_version_id' =>
-                        $tariffVersionId,
-
-                    'tariff_rule_id' =>
-                        $tariffRuleId,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | INPUT SNAPSHOT
-                    |--------------------------------------------------------------------------
-                    */
-
-                    'input_snapshot' =>
-                        $inputSnapshot,
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | DECISION PROVIDER SNAPSHOT
-                    |--------------------------------------------------------------------------
-                    */
-
-                    'calculation_snapshot' =>
-                        $calculationSnapshot,
-                ]);
-
-
-                $lineNumber++;
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | 9. AGGREGATE INVOICE TOTALS
-            |--------------------------------------------------------------------------
-            |
-            | Accounting aggregation only.
-            |
-            | No tariff calculation occurs here.
-            |
-            */
-
-            $totals = InvoiceItem::query()
-                ->where('invoice_id', $invoice->id)
-                ->selectRaw(
-                    'COALESCE(SUM(amount), 0) as subtotal'
-                )
-                ->selectRaw(
-                    'COALESCE(SUM(discount_amount), 0) as discount_amount'
-                )
-                ->selectRaw(
-                    'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
-                )
-                ->selectRaw(
-                    'COALESCE(SUM(total_amount), 0) as total_amount'
-                )
-                ->first();
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | 10. UPDATE FINANCIAL TOTALS
-            |--------------------------------------------------------------------------
-            */
-
-            $invoice->update([
-
-                'subtotal' =>
-                    $totals->subtotal,
-
-                'discount_amount' =>
-                    $totals->discount_amount,
-
-                'penalty_amount' =>
-                    $totals->penalty_amount,
-
-                'total_amount' =>
-                    $totals->total_amount,
-
-                'paid_amount' =>
-                    0,
-
-                'balance_due' =>
-                    $totals->total_amount,
+                'calculation_snapshot' =>
+                    $calculationSnapshot,
             ]);
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | 11. RETURN COMPLETE INVOICE
-            |--------------------------------------------------------------------------
-            */
+            $lineNumber++;
+        }
 
-            return $invoice->fresh([
-                'items',
-                'assessment',
-                'citizen',
-            ]);
-        });
-    }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 9. AGGREGATE INVOICE TOTALS
+        |--------------------------------------------------------------------------
+        |
+        | Accounting aggregation only.
+        |
+        | No tariff calculation occurs here.
+        |
+        | No penalty calculation occurs here.
+        |
+        | No interest calculation occurs here.
+        |
+        */
+
+        $totals = InvoiceItem::query()
+            ->where('invoice_id', $invoice->id)
+
+            ->selectRaw(
+                'COALESCE(SUM(amount), 0) as subtotal'
+            )
+
+            ->selectRaw(
+                'COALESCE(SUM(discount_amount), 0) as discount_amount'
+            )
+
+            ->selectRaw(
+                'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
+            )
+
+            ->selectRaw(
+                'COALESCE(SUM(interest_amount), 0) as interest_amount'
+            )
+
+            ->selectRaw(
+                'COALESCE(SUM(total_amount), 0) as total_amount'
+            )
+
+            ->first();
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 10. UPDATE FINANCIAL TOTALS
+        |--------------------------------------------------------------------------
+        */
+
+        $invoice->update([
+
+            'subtotal' =>
+                $totals->subtotal,
+
+            'discount_amount' =>
+                $totals->discount_amount,
+
+            'penalty_amount' =>
+                $totals->penalty_amount,
+
+            'interest_amount' =>
+                $totals->interest_amount,
+
+            'total_amount' =>
+                $totals->total_amount,
+
+            'paid_amount' =>
+                0,
+
+            'balance_due' =>
+                $totals->total_amount,
+        ]);
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 11. RETURN COMPLETE INVOICE
+        |--------------------------------------------------------------------------
+        */
+
+        return $invoice->fresh([
+            'items',
+            'assessment',
+            'citizen',
+        ]);
+    });
+}
 }

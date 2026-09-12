@@ -30,8 +30,6 @@ return new class extends Migration
             |
             | INV-2026-000001
             |
-            | The UNIQUE constraint already creates an index.
-            |
             */
 
             $table->string('invoice_number', 100)
@@ -83,9 +81,6 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | CITIZEN / TAXPAYER
             |--------------------------------------------------------------------------
-            |
-            | Every invoice belongs to a taxpayer.
-            |
             */
 
             $table->foreignUuid('citizen_id')
@@ -97,9 +92,6 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | ADMINISTRATIVE UNIT
             |--------------------------------------------------------------------------
-            |
-            | Administrative unit responsible for the revenue.
-            |
             */
 
             $table->foreignUuid('administrative_unit_id')
@@ -135,7 +127,6 @@ return new class extends Migration
             |    ↓
             | VOID
             |
-            |--------------------------------------------------------------------------
             */
 
             $table->enum('status', [
@@ -155,13 +146,6 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | CURRENCY
             |--------------------------------------------------------------------------
-            |
-            | ISO 4217 currency code.
-            |
-            | Example:
-            |
-            | ETB
-            |
             */
 
             $table->string('currency', 3)
@@ -175,22 +159,40 @@ return new class extends Migration
             |
             | All financial values are backend-authoritative.
             |
-            | The frontend must never determine these values.
+            | subtotal:
+            |     Original assessed/service principal total.
+            |
+            | discount_amount:
+            |     Approved discount applied to the invoice.
+            |
+            | penalty_amount:
+            |     Statutory penalty accrued according to the applicable
+            |     penalty rule.
+            |
+            | interest_amount:
+            |     Statutory interest accrued according to the applicable
+            |     interest rule.
+            |
+            | total_amount:
+            |     Current invoice total after discount, penalty and interest.
+            |
+            | paid_amount:
+            |     Amount already allocated to this invoice.
+            |
+            | balance_due:
+            |     Current unpaid amount.
             |
             | Example:
             |
-            | Property Tax       3,500
-            | Waste Fee            500
-            | Permit Fee         1,000
-            | -------------------------
-            | Subtotal            5,000
-            | Discount             -200
-            | Penalty              +100
-            | -------------------------
-            | TOTAL               4,900
+            | Principal            5,000
+            | Discount               200
+            | Penalty                100
+            | Interest                50
+            | --------------------------
+            | Total                 4,950
             |
-            | Paid                2,000
-            | Balance Due         2,900
+            | Paid                  2,000
+            | Balance               2,950
             |
             */
 
@@ -208,12 +210,66 @@ return new class extends Migration
             )->default(0);
 
 
+            /*
+            |--------------------------------------------------------------------------
+            | PENALTY
+            |--------------------------------------------------------------------------
+            |
+            | Penalty is kept separate from interest because they are
+            | governed by different rules and may have different calculation
+            | bases and legal references.
+            |
+            */
+
             $table->decimal(
                 'penalty_amount',
                 18,
                 4
             )->default(0);
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | INTEREST
+            |--------------------------------------------------------------------------
+            |
+            | Interest is kept separate from penalty.
+            |
+            | It is NOT calculated when the invoice is initially created
+            | from an assessment.
+            |
+            | Initial value:
+            |
+            |     0
+            |
+            | It may later be accrued according to the applicable
+            | InterestRule.
+            |
+            */
+
+            $table->decimal(
+                'interest_amount',
+                18,
+                4
+            )->default(0);
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | TOTAL AMOUNT
+            |--------------------------------------------------------------------------
+            |
+            | Current financial total of the invoice.
+            |
+            | Conceptually:
+            |
+            | total_amount =
+            |     subtotal
+            |     - discount_amount
+            |     + penalty_amount
+            |     + interest_amount
+            |
+            */
 
             $table->decimal(
                 'total_amount',
@@ -222,12 +278,32 @@ return new class extends Migration
             )->default(0);
 
 
+            /*
+            |--------------------------------------------------------------------------
+            | PAID AMOUNT
+            |--------------------------------------------------------------------------
+            */
+
             $table->decimal(
                 'paid_amount',
                 18,
                 4
             )->default(0);
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | BALANCE DUE
+            |--------------------------------------------------------------------------
+            |
+            | Current unpaid amount.
+            |
+            | Conceptually:
+            |
+            | balance_due =
+            |     total_amount - paid_amount
+            |
+            */
 
             $table->decimal(
                 'balance_due',
@@ -362,15 +438,7 @@ return new class extends Migration
             |
             | Used when:
             |
-            | source_type = DIRECT_COLLECTION
-            |
-            | Example:
-            |
-            | {
-            |     "collection_point": "Market Center",
-            |     "reference": "FC-2026-001",
-            |     "remarks": "Field collection"
-            | }
+            |     source_type = DIRECT_COLLECTION
             |
             */
 

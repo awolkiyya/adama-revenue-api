@@ -1,6 +1,6 @@
 <?php
 
-namespace  App\Modules\Revenue\Requests;
+namespace App\Modules\Revenue\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -25,42 +25,33 @@ class RevenueSettingRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Period
+            | Annual Payment Due Date
             |--------------------------------------------------------------------------
             |
-            | Ethiopian calendar:
+            | Ethiopian recurring annual date.
+            |
+            | Format:
+            |
+            |     MM-DD
             |
             | Months 1-12 = days 1-30
-            | Month 13    = days 1-6
+            | Month 13    = days 1-6 (Pagume)
+            |
+            | Examples:
+            |
+            |     01-01
+            |     10-30
+            |     13-06
+            |
+            | The year is intentionally not stored because the date
+            | recurs every Ethiopian calendar year.
             |
             */
 
-            'payment_start_month' => [
+            'annual_payment_due_date' => [
                 'nullable',
-                'integer',
-                'between:1,13',
-                'required_with:payment_start_day',
-            ],
-
-            'payment_start_day' => [
-                'nullable',
-                'integer',
-                'between:1,31',
-                'required_with:payment_start_month',
-            ],
-
-            'payment_end_month' => [
-                'nullable',
-                'integer',
-                'between:1,13',
-                'required_with:payment_end_day',
-            ],
-
-            'payment_end_day' => [
-                'nullable',
-                'integer',
-                'between:1,31',
-                'required_with:payment_end_month',
+                'string',
+                'regex:/^(0[1-9]|1[0-3])-(0[1-9]|[12][0-9]|30)$/',
             ],
 
 
@@ -220,6 +211,14 @@ class RevenueSettingRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
+        if ($this->has('annual_payment_due_date')) {
+            $this->merge([
+                'annual_payment_due_date' => $this->annual_payment_due_date !== null
+                    ? trim((string) $this->annual_payment_due_date)
+                    : null,
+            ]);
+        }
+
         if ($this->has('invoice_prefix')) {
             $this->merge([
                 'invoice_prefix' => trim((string) $this->invoice_prefix),
@@ -240,12 +239,22 @@ class RevenueSettingRequest extends FormRequest
             ]);
         }
 
+        if ($this->has('description')) {
+            $this->merge([
+                'description' => $this->description !== null
+                    ? trim((string) $this->description)
+                    : null,
+            ]);
+        }
+
         if ($this->has('enabled_payment_methods')) {
             $this->merge([
                 'enabled_payment_methods' => array_values(
                     array_unique(
                         array_map(
-                            static fn ($method) => strtoupper(trim((string) $method)),
+                            static fn ($method) => strtoupper(
+                                trim((string) $method)
+                            ),
                             $this->enabled_payment_methods ?? []
                         )
                     )
@@ -262,82 +271,83 @@ class RevenueSettingRequest extends FormRequest
     {
         $validator->after(function ($validator) {
 
-            $this->validateEthiopianDate(
-                $validator,
-                'payment_start_month',
-                'payment_start_day',
-                'payment_start'
-            );
-
-            $this->validateEthiopianDate(
-                $validator,
-                'payment_end_month',
-                'payment_end_day',
-                'payment_end'
-            );
+            $this->validateAnnualPaymentDueDate($validator);
         });
     }
 
 
     /**
-     * Validate an Ethiopian month/day combination.
+     * Validate the Ethiopian recurring annual payment due date.
+     *
+     * Expected format:
+     *
+     *     MM-DD
+     *
+     * Months 1-12:
+     *     days 1-30
+     *
+     * Month 13 / Pagume:
+     *     days 1-6
      */
-    private function validateEthiopianDate(
-        $validator,
-        string $monthField,
-        string $dayField,
-        string $prefix
-    ): void {
-        $month = $this->input($monthField);
-        $day = $this->input($dayField);
+    private function validateAnnualPaymentDueDate($validator): void
+    {
+        $value = $this->input('annual_payment_due_date');
 
         /*
         |--------------------------------------------------------------------------
-        | Both null = no configured period
+        | Null = no configured annual payment due date
         |--------------------------------------------------------------------------
         */
 
-        if ($month === null && $day === null) {
+        if ($value === null || $value === '') {
+            return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Parse MM-DD
+        |--------------------------------------------------------------------------
+        */
+
+        if (! preg_match('/^(\d{2})-(\d{2})$/', $value, $matches)) {
+            return;
+        }
+
+        $month = (int) $matches[1];
+        $day = (int) $matches[2];
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ethiopian months 1-12
+        |--------------------------------------------------------------------------
+        */
+
+        if ($month >= 1 && $month <= 12) {
+            if ($day < 1 || $day > 30) {
+                $validator->errors()->add(
+                    'annual_payment_due_date',
+                    'The annual payment due date must use a day between 1 and 30 for Ethiopian months 1-12.'
+                );
+            }
+
             return;
         }
 
 
         /*
         |--------------------------------------------------------------------------
-        | Month 1-12
+        | Ethiopian month 13 / Pagume
         |--------------------------------------------------------------------------
         */
 
-        if (
-            $month !== null &&
-            (int) $month >= 1 &&
-            (int) $month <= 12 &&
-            $day !== null &&
-            (int) $day > 30
-        ) {
-            $validator->errors()->add(
-                $dayField,
-                "The {$prefix} day must be between 1 and 30 for Ethiopian months 1-12."
-            );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Month 13 / Pagume
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $month !== null &&
-            (int) $month === 13 &&
-            $day !== null &&
-            (int) $day > 6
-        ) {
-            $validator->errors()->add(
-                $dayField,
-                "The {$prefix} day must be between 1 and 6 for Ethiopian month 13."
-            );
+        if ($month === 13) {
+            if ($day < 1 || $day > 6) {
+                $validator->errors()->add(
+                    'annual_payment_due_date',
+                    'The annual payment due date must use a day between 1 and 6 for Ethiopian month 13 (Pagume).'
+                );
+            }
         }
     }
 }

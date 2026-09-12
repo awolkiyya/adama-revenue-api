@@ -25,21 +25,23 @@ class RevenueSettingResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Period
+            | Annual Payment Due Date
             |--------------------------------------------------------------------------
+            |
+            | Stored as an Ethiopian recurring MM-DD value.
+            |
+            | Examples:
+            |
+            |     01-01
+            |     10-30
+            |     13-06
+            |
+            | The year is intentionally not stored because the payment
+            | deadline recurs every Ethiopian calendar year.
+            |
             */
 
-            'payment_period' => [
-                'start' => $this->paymentStartPeriod(),
-                'end' => $this->paymentEndPeriod(),
-                'configured' => $this->hasPaymentPeriod(),
-            ],
-
-            'payment_start_month' => $this->payment_start_month,
-            'payment_start_day' => $this->payment_start_day,
-
-            'payment_end_month' => $this->payment_end_month,
-            'payment_end_day' => $this->payment_end_day,
+            'annual_payment_due_date' => $this->annualPaymentDueDate(),
 
 
             /*
@@ -58,10 +60,17 @@ class RevenueSettingResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'assessment_auto_calculation' => $this->assessment_auto_calculation,
-            'assessment_allow_manual_adjustment' => $this->assessment_allow_manual_adjustment,
-            'assessment_requires_approval' => $this->assessment_requires_approval,
-            'assessment_reassessment_allowed' => $this->assessment_reassessment_allowed,
+            'assessment_auto_calculation' =>
+                $this->assessment_auto_calculation,
+
+            'assessment_allow_manual_adjustment' =>
+                $this->assessment_allow_manual_adjustment,
+
+            'assessment_requires_approval' =>
+                $this->assessment_requires_approval,
+
+            'assessment_reassessment_allowed' =>
+                $this->assessment_reassessment_allowed,
 
 
             /*
@@ -71,9 +80,14 @@ class RevenueSettingResource extends JsonResource
             */
 
             'invoice_auto_numbering' => $this->invoice_auto_numbering,
+
             'invoice_prefix' => $this->invoice_prefix,
-            'invoice_allow_overpayment' => $this->invoice_allow_overpayment,
-            'invoice_allow_overdue_payment' => $this->invoice_allow_overdue_payment,
+
+            'invoice_allow_overpayment' =>
+                $this->invoice_allow_overpayment,
+
+            'invoice_allow_overdue_payment' =>
+                $this->invoice_allow_overdue_payment,
 
 
             /*
@@ -82,10 +96,14 @@ class RevenueSettingResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'payment_confirmation_required' => $this->payment_confirmation_required,
-            'payment_auto_receipt' => $this->payment_auto_receipt,
+            'payment_confirmation_required' =>
+                $this->payment_confirmation_required,
 
-            'enabled_payment_methods' => $this->enabledPaymentMethods(),
+            'payment_auto_receipt' =>
+                $this->payment_auto_receipt,
+
+            'enabled_payment_methods' =>
+                $this->enabledPaymentMethods(),
 
 
             /*
@@ -94,9 +112,14 @@ class RevenueSettingResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'receipt_auto_numbering' => $this->receipt_auto_numbering,
-            'receipt_prefix' => $this->receipt_prefix,
-            'receipt_allow_reprint' => $this->receipt_allow_reprint,
+            'receipt_auto_numbering' =>
+                $this->receipt_auto_numbering,
+
+            'receipt_prefix' =>
+                $this->receipt_prefix,
+
+            'receipt_allow_reprint' =>
+                $this->receipt_allow_reprint,
 
 
             /*
@@ -115,6 +138,7 @@ class RevenueSettingResource extends JsonResource
             */
 
             'legal_reference' => $this->legal_reference,
+
             'description' => $this->description,
 
 
@@ -125,10 +149,15 @@ class RevenueSettingResource extends JsonResource
             */
 
             'created_by' => $this->created_by,
+
             'updated_by' => $this->updated_by,
 
-            'created_at' => $this->created_at?->toISOString(),
-            'updated_at' => $this->updated_at?->toISOString(),
+            'created_at' =>
+                $this->created_at?->toISOString(),
+
+            'updated_at' =>
+                $this->updated_at?->toISOString(),
         ];
     }
 }
+

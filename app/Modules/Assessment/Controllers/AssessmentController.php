@@ -33,6 +33,7 @@ use Illuminate\Http\Request;
 |
 | - Receive HTTP request
 | - Validate through FormRequest
+| - Authorize through AssessmentPolicy
 | - Delegate business logic
 | - Return API resources
 |
@@ -92,11 +93,21 @@ class AssessmentController extends Controller
     |
     | GET /api/v1/assessments
     |
+    | Permission:
+    |
+    |     assessment.read
+    |
+    | Policy:
+    |
+    |     viewAny()
+    |
     */
 
     public function index(
         Request $request
     ): JsonResponse {
+
+        $this->authorize('viewAny', \App\Models\Assessment::class);
 
         $result =
             $this->assessmentService
@@ -127,6 +138,14 @@ class AssessmentController extends Controller
     |
     | POST /api/v1/assessments
     |
+    | Permission:
+    |
+    |     assessment.create
+    |
+    | Policy:
+    |
+    |     create()
+    |
     | Supports:
     |
     | - DRAFT
@@ -139,6 +158,8 @@ class AssessmentController extends Controller
     public function store(
         StoreAssessmentRequest $request
     ): JsonResponse {
+
+        $this->authorize('create', \App\Models\Assessment::class);
 
         $assessment =
             $this->assessmentService
@@ -173,6 +194,14 @@ class AssessmentController extends Controller
     |
     | GET /api/v1/assessments/{assessment}
     |
+    | Permission:
+    |
+    |     assessment.read
+    |
+    | Policy:
+    |
+    |     view()
+    |
     */
 
     public function show(
@@ -184,6 +213,11 @@ class AssessmentController extends Controller
                 ->findOrFail(
                     $assessment
                 );
+
+        $this->authorize(
+            'view',
+            $model
+        );
 
         return response()->json([
             'success' => true,
@@ -210,6 +244,14 @@ class AssessmentController extends Controller
     |
     | PUT/PATCH /api/v1/assessments/{assessment}
     |
+    | Permission:
+    |
+    |     assessment.update
+    |
+    | Policy:
+    |
+    |     update()
+    |
     | Used primarily for:
     |
     | - DRAFT
@@ -224,6 +266,17 @@ class AssessmentController extends Controller
         UpdateAssessmentRequest $request,
         string $assessment
     ): JsonResponse {
+
+        $model =
+            $this->assessmentService
+                ->findOrFail(
+                    $assessment
+                );
+
+        $this->authorize(
+            'update',
+            $model
+        );
 
         $model =
             $this->assessmentService
@@ -259,6 +312,14 @@ class AssessmentController extends Controller
     |
     | DELETE /api/v1/assessments/{assessment}
     |
+    | Permission:
+    |
+    |     assessment.delete
+    |
+    | Policy:
+    |
+    |     delete()
+    |
     | The service determines whether deletion is allowed
     | for the current assessment state.
     |
@@ -267,6 +328,17 @@ class AssessmentController extends Controller
     public function destroy(
         string $assessment
     ): JsonResponse {
+
+        $model =
+            $this->assessmentService
+                ->findOrFail(
+                    $assessment
+                );
+
+        $this->authorize(
+            'delete',
+            $model
+        );
 
         $this->assessmentService
             ->delete(
@@ -295,6 +367,14 @@ class AssessmentController extends Controller
     |
     | PATCH /api/v1/assessments/{assessment}/approve
     |
+    | Permission:
+    |
+    |     assessment.approve
+    |
+    | Policy:
+    |
+    |     approve()
+    |
     | Business transition:
     |
     | PENDING_APPROVAL
@@ -308,27 +388,24 @@ class AssessmentController extends Controller
     | TAXPAYER NOTIFIED
     |
     | AssessmentApprovalService is responsible for the complete
-    | approval workflow:
-    |
-    | - validate assessment state
-    | - approve assessment
-    | - record approved_by
-    | - record approved_at
-    | - create invoice
-    | - create invoice items
-    | - aggregate invoice totals
-    | - issue invoice
-    | - record issued_by
-    | - record issued_at
-    | - trigger taxpayer notification
-    |
-    | The controller only delegates the operation.
+    | approval workflow.
     |
     */
 
     public function approve(
         string $assessment
     ): JsonResponse {
+
+        $model =
+            $this->assessmentService
+                ->findOrFail(
+                    $assessment
+                );
+
+        $this->authorize(
+            'approve',
+            $model
+        );
 
         $model =
             $this->approvalService
@@ -361,6 +438,14 @@ class AssessmentController extends Controller
     |
     | PATCH /api/v1/assessments/{assessment}/return
     |
+    | Permission:
+    |
+    |     assessment.return
+    |
+    | Policy:
+    |
+    |     returnAssessment()
+    |
     | Body:
     |
     | {
@@ -382,6 +467,17 @@ class AssessmentController extends Controller
         ReturnAssessmentRequest $request,
         string $assessment
     ): JsonResponse {
+
+        $model =
+            $this->assessmentService
+                ->findOrFail(
+                    $assessment
+                );
+
+        $this->authorize(
+            'returnAssessment',
+            $model
+        );
 
         $model =
             $this->assessmentService
@@ -415,6 +511,14 @@ class AssessmentController extends Controller
     |
     | PATCH /api/v1/assessments/{assessment}/cancel
     |
+    | Permission:
+    |
+    |     assessment.cancel
+    |
+    | Policy:
+    |
+    |     cancel()
+    |
     | Body:
     |
     | {
@@ -436,6 +540,17 @@ class AssessmentController extends Controller
         CancelAssessmentRequest $request,
         string $assessment
     ): JsonResponse {
+
+        $model =
+            $this->assessmentService
+                ->findOrFail(
+                    $assessment
+                );
+
+        $this->authorize(
+            'cancel',
+            $model
+        );
 
         $model =
             $this->assessmentService
@@ -469,11 +584,24 @@ class AssessmentController extends Controller
     |
     | GET /api/v1/assessments/summary
     |
+    | Permission:
+    |
+    |     assessment.read
+    |
+    | Policy:
+    |
+    |     viewAny()
+    |
     */
 
     public function summary(
         Request $request
     ): JsonResponse {
+
+        $this->authorize(
+            'viewAny',
+            \App\Models\Assessment::class
+        );
 
         $summary =
             $this->assessmentService
@@ -499,4 +627,84 @@ class AssessmentController extends Controller
             ],
         ]);
     }
+
+
+    /*
+|--------------------------------------------------------------------------
+| SUBMIT
+|--------------------------------------------------------------------------
+|
+| POST /api/v1/assessments/{assessment}/submit
+|
+| Permission:
+|
+|     assessment.submit
+|
+| Policy:
+|
+|     submit()
+|
+| Business transition:
+|
+| DRAFT
+|     ↓
+| PENDING_APPROVAL
+|
+| RETURNED
+|     ↓
+| PENDING_APPROVAL
+|
+| During submission:
+|
+| - Assessment is locked
+| - Status changes to PENDING_APPROVAL
+| - Financial calculation is performed
+| - Due date is resolved
+| - Penalty rule is resolved
+| - Interest rule is resolved
+|
+| Everything occurs inside one database transaction.
+|
+| If calculation fails:
+|
+|     Entire transaction rolls back.
+|
+*/
+public function submit(
+    string $assessment
+): JsonResponse {
+
+    $model =
+        $this->assessmentService
+            ->findOrFail(
+                $assessment
+            );
+
+    $this->authorize(
+        'submit',
+        $model
+    );
+
+    $model =
+        $this->assessmentService
+            ->submit(
+                $model
+            );
+
+    return response()->json([
+        'success' => true,
+
+        'message' =>
+            'Assessment submitted successfully for approval.',
+
+        'data' =>
+            new AssessmentResource(
+                $model
+            ),
+
+        'errors' => null,
+
+        'meta' => [],
+    ]);
+}
 }

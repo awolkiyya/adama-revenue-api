@@ -46,8 +46,8 @@ return new class extends Migration
             | 2. DIRECT COLLECTION
             |      assessment_service_id = NULL
             |
-            | The invoice item itself remains independent from the
-            | assessment after creation.
+            | The invoice item remains financially independent from the
+            | assessment after invoice creation.
             |
             */
 
@@ -65,7 +65,7 @@ return new class extends Migration
             | Every invoice item must identify the revenue service
             | being charged.
             |
-            | This is required for:
+            | Required for:
             |
             | - Assessment invoices
             | - Direct collection invoices
@@ -103,7 +103,7 @@ return new class extends Migration
             |
             | Human-readable description captured at invoice creation.
             |
-            | This should NOT depend on the current revenue service name
+            | This must not depend on the current revenue service name
             | after the invoice has been created.
             |
             */
@@ -173,8 +173,8 @@ return new class extends Migration
             | BASE AMOUNT
             |--------------------------------------------------------------------------
             |
-            | Authoritative amount produced by the Decision Provider /
-            | Tariff Engine.
+            | Authoritative principal amount produced by the Decision
+            | Provider / Tariff Engine during assessment calculation.
             |
             | InvoiceService MUST NOT recalculate this amount.
             |
@@ -191,6 +191,9 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | DISCOUNT
             |--------------------------------------------------------------------------
+            |
+            | Authorized reduction applied to the base amount.
+            |
             */
 
             $table->decimal(
@@ -204,6 +207,14 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | PENALTY
             |--------------------------------------------------------------------------
+            |
+            | Statutory penalty accrued against this invoice item.
+            |
+            | Initialized at zero during invoice creation.
+            |
+            | Calculated later by the penalty / outstanding-balance
+            | accrual layer when the legal conditions are satisfied.
+            |
             */
 
             $table->decimal(
@@ -215,18 +226,49 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
+            | INTEREST
+            |--------------------------------------------------------------------------
+            |
+            | Statutory overdue interest accrued against this invoice item.
+            |
+            | Initialized at zero during invoice creation.
+            |
+            | Calculated later by the interest / outstanding-balance
+            | accrual layer when the legal conditions are satisfied.
+            |
+            */
+
+            $table->decimal(
+                'interest_amount',
+                18,
+                4
+            )->default(0);
+
+
+            /*
+            |--------------------------------------------------------------------------
             | FINAL LINE TOTAL
             |--------------------------------------------------------------------------
             |
-            | Financial result represented by this invoice line.
+            | Current financial result represented by this invoice line.
             |
             | Conceptually:
             |
             | amount
             | - discount_amount
             | + penalty_amount
+            | + interest_amount
             |
-            | This value is finalized by backend/domain logic.
+            | Example:
+            |
+            | amount           = 5,000
+            | discount_amount  =   100
+            | penalty_amount   =   500
+            | interest_amount  =   100
+            |
+            | total_amount     = 5,500
+            |
+            | This value is maintained by backend/domain logic.
             |
             */
 
@@ -294,8 +336,8 @@ return new class extends Migration
             |     "5c37894c-ebc7-49aa-9e3c-7917e765c286": "RESIDENTIAL"
             | }
             |
-            | This is particularly important because dynamic service
-            | fields can change after the invoice has been generated.
+            | This is important because dynamic service fields can change
+            | after the invoice has been generated.
             |
             */
 
@@ -310,7 +352,7 @@ return new class extends Migration
             |
             | Immutable copy of the authoritative calculation metadata.
             |
-            | Example from your current Decision Provider:
+            | Example from the Decision Provider:
             |
             | {
             |     "tariff_version_id": "...",

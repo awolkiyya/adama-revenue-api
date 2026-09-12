@@ -51,8 +51,12 @@ class AssessmentService extends Model
 
         /*
         |--------------------------------------------------------------------------
-        | Decision Provider Output
+        | Calculation Output
         |--------------------------------------------------------------------------
+        |
+        | computed_amount represents the original principal amount
+        | calculated for this assessment service.
+        |
         */
 
         'computed_amount',
@@ -60,6 +64,33 @@ class AssessmentService extends Model
         'calculation_metadata',
         'calculation_error',
         'calculated_at',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Obligation
+        |--------------------------------------------------------------------------
+        */
+
+        'due_date',
+        'agreement_date',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Applied Financial Rules
+        |--------------------------------------------------------------------------
+        */
+
+        'penalty_rule_id',
+        'interest_rule_id',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Tracking
+        |--------------------------------------------------------------------------
+        */
+
+        'payment_status',
+        'paid_principal_amount',
     ];
 
     /*
@@ -73,11 +104,38 @@ class AssessmentService extends Model
         return [
             'service_order' => 'integer',
 
+            /*
+            |--------------------------------------------------------------------------
+            | Amounts
+            |--------------------------------------------------------------------------
+            */
+
             'computed_amount' => 'decimal:4',
+            'paid_principal_amount' => 'decimal:4',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Dates
+            |--------------------------------------------------------------------------
+            */
+
+            'due_date' => 'date',
+            'agreement_date' => 'date',
+            'calculated_at' => 'datetime',
+
+            /*
+            |--------------------------------------------------------------------------
+            | JSON
+            |--------------------------------------------------------------------------
+            */
 
             'calculation_metadata' => 'array',
 
-            'calculated_at' => 'datetime',
+            /*
+            |--------------------------------------------------------------------------
+            | Timestamps
+            |--------------------------------------------------------------------------
+            */
 
             'created_at' => 'datetime',
             'updated_at' => 'datetime',
@@ -128,6 +186,44 @@ class AssessmentService extends Model
         return $this->belongsTo(
             RevenueService::class,
             'service_id'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Penalty Rule
+    |--------------------------------------------------------------------------
+    |
+    | assessment_services.penalty_rule_id
+    |              ↓
+    | penalty_rules.id
+    |
+    */
+
+    public function penaltyRule(): BelongsTo
+    {
+        return $this->belongsTo(
+            PenaltyRule::class,
+            'penalty_rule_id'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Interest Rule
+    |--------------------------------------------------------------------------
+    |
+    | assessment_services.interest_rule_id
+    |              ↓
+    | interest_rules.id
+    |
+    */
+
+    public function interestRule(): BelongsTo
+    {
+        return $this->belongsTo(
+            InterestRule::class,
+            'interest_rule_id'
         );
     }
 
@@ -217,6 +313,48 @@ class AssessmentService extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | Payment Status Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    public function scopeUnpaid(
+        Builder $query
+    ): Builder {
+        return $query->where(
+            'payment_status',
+            'UNPAID'
+        );
+    }
+
+    public function scopePartiallyPaid(
+        Builder $query
+    ): Builder {
+        return $query->where(
+            'payment_status',
+            'PARTIALLY_PAID'
+        );
+    }
+
+    public function scopePaid(
+        Builder $query
+    ): Builder {
+        return $query->where(
+            'payment_status',
+            'PAID'
+        );
+    }
+
+    public function scopeWaived(
+        Builder $query
+    ): Builder {
+        return $query->where(
+            'payment_status',
+            'WAIVED'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Status Helpers
     |--------------------------------------------------------------------------
     */
@@ -244,5 +382,41 @@ class AssessmentService extends Model
     public function isCancelled(): bool
     {
         return $this->status === 'CANCELLED';
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    public function isUnpaid(): bool
+    {
+        return $this->payment_status === 'UNPAID';
+    }
+
+    public function isPartiallyPaid(): bool
+    {
+        return $this->payment_status === 'PARTIALLY_PAID';
+    }
+
+    public function isPaid(): bool
+    {
+        return $this->payment_status === 'PAID';
+    }
+
+    public function isWaived(): bool
+    {
+        return $this->payment_status === 'WAIVED';
+    }
+
+    public function hasPenaltyRule(): bool
+    {
+        return ! is_null($this->penalty_rule_id);
+    }
+
+    public function hasInterestRule(): bool
+    {
+        return ! is_null($this->interest_rule_id);
     }
 }

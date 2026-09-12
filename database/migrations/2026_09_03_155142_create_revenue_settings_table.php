@@ -24,12 +24,13 @@ return new class extends Migration
         | - Tariff rates/rules belong to tariff_rules.
         | - Penalty rates/rules belong to penalty_rules.
         | - Interest rates/rules belong to interest_rules.
-        | - Actual invoice due_date belongs to invoices.
+        | - Assessment obligation due_date belongs to assessment_services.
+        | - Invoice due_date belongs to invoices.
         | - Tariff calculation precision/rounding belongs to tariff_rules.
-        | - Service-specific configuration must not be stored here.
+        | - Service-specific configuration belongs to revenue services/fields.
         |
-        | This table contains only GLOBAL revenue-management behavior and
-        | operational configuration.
+        | This table contains only GLOBAL revenue-management behavior
+        | and operational configuration.
         |
         */
 
@@ -46,33 +47,37 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Global Payment Period
+            | Annual Payment Due Date
             |--------------------------------------------------------------------------
             |
-            | Optional global/default revenue payment period.
+            | Recurring annual payment deadline in the Ethiopian calendar.
             |
-            | NULL means no global payment period is configured.
+            | Stored as MM-DD.
             |
-            | Ethiopian Calendar:
+            | Examples:
             |
-            | Months 1-12 -> maximum 30 days
-            | Month 13    -> maximum 6 days
+            |     "03-30"
+            |     "12-30"
+            |     "13-06"
             |
-            | The application/calendar service is responsible for validating
-            | year-specific Pagume day 6 rules.
+            | The value represents:
+            |
+            |     Ethiopian month + Ethiopian day
+            |
+            | It is NOT a Gregorian date.
+            |
+            | The application/calendar service is responsible for converting
+            | this recurring Ethiopian-calendar date into the actual Gregorian
+            | date for the applicable Ethiopian year.
+            |
+            | NULL means that no annual payment deadline has been configured.
+            |
+            | Year-specific validation, especially Pagume day 6, belongs
+            | to the Ethiopian calendar service.
             |
             */
 
-            $table->unsignedTinyInteger('payment_start_month')
-                ->nullable();
-
-            $table->unsignedTinyInteger('payment_start_day')
-                ->nullable();
-
-            $table->unsignedTinyInteger('payment_end_month')
-                ->nullable();
-
-            $table->unsignedTinyInteger('payment_end_day')
+            $table->string('annual_payment_due_date', 5)
                 ->nullable();
 
 
@@ -140,8 +145,8 @@ return new class extends Migration
             /*
             | Partial payment is intentionally NOT stored globally.
             |
-            | If the municipality later requires partial-payment policy,
-            | it should be modeled at the appropriate invoice/service level.
+            | If the municipality later requires a partial-payment policy,
+            | it should be modeled at the appropriate invoice/payment level.
             */
 
             $table->boolean('invoice_allow_overpayment')
@@ -280,125 +285,40 @@ return new class extends Migration
 
         /*
         |--------------------------------------------------------------------------
-        | Payment Period - Month Constraints
+        | Annual Payment Due Date Format
         |--------------------------------------------------------------------------
         |
-        | Ethiopian calendar has 13 months.
+        | The value must be:
         |
-        | Months 1-13 are valid.
+        |     MM-DD
+        |
+        | Examples:
+        |
+        |     01-01
+        |     03-30
+        |     12-30
+        |     13-06
+        |
+        | NULL means no annual payment deadline is configured.
         |
         */
 
         DB::statement("
             ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_start_month_check
+            ADD CONSTRAINT revenue_settings_annual_payment_due_date_format_check
             CHECK (
-                payment_start_month IS NULL
-                OR payment_start_month BETWEEN 1 AND 13
-            )
-        ");
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_end_month_check
-            CHECK (
-                payment_end_month IS NULL
-                OR payment_end_month BETWEEN 1 AND 13
+                annual_payment_due_date IS NULL
+                OR annual_payment_due_date ~ '^(0[1-9]|1[0-3])-(0[1-9]|[12][0-9]|30)$'
             )
         ");
 
 
         /*
         |--------------------------------------------------------------------------
-        | Payment Period - Basic Day Constraints
+        | Ethiopian Calendar Annual Payment Due Date
         |--------------------------------------------------------------------------
         |
-        | Basic database-level protection.
-        |
-        | Calendar-specific limits are enforced below.
-        |
-        */
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_start_day_check
-            CHECK (
-                payment_start_day IS NULL
-                OR payment_start_day BETWEEN 1 AND 31
-            )
-        ");
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_end_day_check
-            CHECK (
-                payment_end_day IS NULL
-                OR payment_end_day BETWEEN 1 AND 31
-            )
-        ");
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Period Completeness
-        |--------------------------------------------------------------------------
-        |
-        | Month and day must either BOTH be NULL or BOTH be populated.
-        |
-        | Invalid:
-        |
-        | payment_start_month = 5
-        | payment_start_day   = NULL
-        |
-        | Valid:
-        |
-        | payment_start_month = NULL
-        | payment_start_day   = NULL
-        |
-        | OR
-        |
-        | payment_start_month = 5
-        | payment_start_day   = 1
-        |
-        */
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_start_complete_check
-            CHECK (
-                (
-                    payment_start_month IS NULL
-                    AND payment_start_day IS NULL
-                )
-                OR
-                (
-                    payment_start_month IS NOT NULL
-                    AND payment_start_day IS NOT NULL
-                )
-            )
-        ");
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_end_complete_check
-            CHECK (
-                (
-                    payment_end_month IS NULL
-                    AND payment_end_day IS NULL
-                )
-                OR
-                (
-                    payment_end_month IS NOT NULL
-                    AND payment_end_day IS NOT NULL
-                )
-            )
-        ");
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Ethiopian Calendar Payment Date Constraints
-        |--------------------------------------------------------------------------
+        | Ethiopian calendar rules:
         |
         | Months 1-12:
         |     Days 1-30
@@ -406,47 +326,34 @@ return new class extends Migration
         | Month 13 (Pagume):
         |     Days 1-6
         |
-        | The exact validity of Pagume day 6 depends on the Ethiopian year.
-        | Since this table stores only month/day, year-specific validation
-        | belongs to the application/calendar service.
+        | Because the value is stored as MM-DD, PostgreSQL can enforce
+        | the month/day relationship directly.
+        |
+        | The special year-specific validity of Pagume day 6 is handled
+        | by the application/calendar service.
         |
         */
 
         DB::statement("
             ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_start_ethiopian_date_check
+            ADD CONSTRAINT revenue_settings_annual_payment_due_date_ethiopian_check
             CHECK (
-                payment_start_month IS NULL
+                annual_payment_due_date IS NULL
                 OR
                 (
                     (
-                        payment_start_month BETWEEN 1 AND 12
-                        AND payment_start_day BETWEEN 1 AND 30
+                        substring(annual_payment_due_date, 1, 2)::integer
+                        BETWEEN 1 AND 12
+                        AND
+                        substring(annual_payment_due_date, 4, 2)::integer
+                        BETWEEN 1 AND 30
                     )
                     OR
                     (
-                        payment_start_month = 13
-                        AND payment_start_day BETWEEN 1 AND 6
-                    )
-                )
-            )
-        ");
-
-        DB::statement("
-            ALTER TABLE revenue_settings
-            ADD CONSTRAINT revenue_settings_payment_end_ethiopian_date_check
-            CHECK (
-                payment_end_month IS NULL
-                OR
-                (
-                    (
-                        payment_end_month BETWEEN 1 AND 12
-                        AND payment_end_day BETWEEN 1 AND 30
-                    )
-                    OR
-                    (
-                        payment_end_month = 13
-                        AND payment_end_day BETWEEN 1 AND 6
+                        substring(annual_payment_due_date, 1, 2)::integer = 13
+                        AND
+                        substring(annual_payment_due_date, 4, 2)::integer
+                        BETWEEN 1 AND 6
                     )
                 )
             )
@@ -493,7 +400,7 @@ return new class extends Migration
         |
         | The database guarantees that this field is an array.
         |
-        | The application/service layer should validate individual values
+        | The application/service layer validates individual values
         | against the supported payment-method enum.
         |
         */

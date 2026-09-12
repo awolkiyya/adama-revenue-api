@@ -921,6 +921,14 @@ class PermissionSeeder extends Seeder
             */
 
             [
+                'name' => 'assessment.read',
+                'label' => 'Read Assessments',
+                'module' => 'assessment',
+                'description' => 'Allows reading and viewing revenue assessment records.',
+                'is_system' => false,
+            ],
+
+            [
                 'name' => 'assessment.view',
                 'label' => 'View Assessments',
                 'module' => 'assessment',
@@ -953,6 +961,14 @@ class PermissionSeeder extends Seeder
             ],
 
             [
+                'name' => 'assessment.delete',
+                'label' => 'Delete Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows deleting eligible draft revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
                 'name' => 'assessment.submit',
                 'label' => 'Submit Assessment',
                 'module' => 'assessment',
@@ -977,10 +993,26 @@ class PermissionSeeder extends Seeder
             ],
 
             [
+                'name' => 'assessment.return',
+                'label' => 'Return Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows returning revenue assessments for correction.',
+                'is_system' => false,
+            ],
+
+            [
                 'name' => 'assessment.reject',
                 'label' => 'Reject Assessment',
                 'module' => 'assessment',
                 'description' => 'Allows rejecting submitted revenue assessments.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'assessment.cancel',
+                'label' => 'Cancel Assessment',
+                'module' => 'assessment',
+                'description' => 'Allows cancelling revenue assessments according to the assessment lifecycle rules.',
                 'is_system' => false,
             ],
 
@@ -991,6 +1023,8 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows viewing the history of revenue assessments and their decisions.',
                 'is_system' => false,
             ],
+
+
 
             /*
             |--------------------------------------------------------------------------
@@ -1051,6 +1085,68 @@ class PermissionSeeder extends Seeder
                 'label' => 'View Invoice History',
                 'module' => 'invoices',
                 'description' => 'Allows viewing the history of invoice creation, issuance, cancellation, voiding, and other recorded changes.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Penalty Discount Management
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'penalty_discount_requests.view',
+                'label' => 'View Penalty Discount Requests',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows accessing the penalty discount request management module and related screens.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_discount_requests.read',
+                'label' => 'Read Penalty Discount Requests',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows retrieving and viewing penalty discount request details, requested amounts, reasons, decisions, approved amounts, and application status.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_discount_requests.create',
+                'label' => 'Create Penalty Discount Request',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows creating a penalty discount request for an eligible invoice.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_discount_requests.submit',
+                'label' => 'Submit Penalty Discount Request',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows submitting a penalty discount request for administrative review and decision.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_discount_requests.decide',
+                'label' => 'Decide Penalty Discount Request',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows an authorized Revenue Tax Administrative Officer to approve or reject a penalty discount request and specify the approved discount amount.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_discount_requests.cancel',
+                'label' => 'Cancel Penalty Discount Request',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows cancelling an eligible penalty discount request before a final administrative decision is made.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'penalty_discount_requests.view_history',
+                'label' => 'View Penalty Discount Request History',
+                'module' => 'penalty_discount_requests',
+                'description' => 'Allows viewing the history of penalty discount requests, submissions, administrative decisions, and invoice application.',
                 'is_system' => false,
             ],
 

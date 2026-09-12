@@ -14,6 +14,8 @@ use App\Modules\Revenue\Controllers\TariffFormulaVariableController;
 use App\Modules\Revenue\Controllers\PenaltyRuleController;
 use App\Modules\Revenue\Controllers\RevenueSettingController;
 use App\Modules\Revenue\Controllers\InterestRuleController;
+use App\Http\Controllers\PenaltyDiscountRequestController;
+
 
 
 /*
@@ -534,6 +536,39 @@ Route::prefix('revenue')
         [RevenueSettingController::class, 'save']
     )
         ->name('revenue-settings.update');
+
+
+        Route::prefix('penalty-discount-requests')
+            ->controller(PenaltyDiscountRequestController::class)
+            ->group(function () {
+                Route::get('/', 'index');
+                Route::post('/', 'store');
+        
+                Route::get(
+                    '/{penaltyDiscountRequest}',
+                    'show'
+                );
+        
+                Route::post(
+                    '/{penaltyDiscountRequest}/submit',
+                    'submit'
+                );
+        
+                Route::post(
+                    '/{penaltyDiscountRequest}/decide',
+                    'decide'
+                );
+        
+                Route::post(
+                    '/{penaltyDiscountRequest}/cancel',
+                    'cancel'
+                );
+        
+                Route::get(
+                    '/{penaltyDiscountRequest}/history',
+                    'history'
+                );
+            });
 
 });
 

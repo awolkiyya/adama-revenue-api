@@ -46,14 +46,25 @@ class RevenueSetting extends Model
 
         /*
         |--------------------------------------------------------------------------
-        | Payment Period
+        | Annual Payment Due Date
         |--------------------------------------------------------------------------
+        |
+        | Stored as Ethiopian recurring month/day:
+        |
+        |     MM-DD
+        |
+        | Examples:
+        |
+        |     01-01
+        |     10-30
+        |     13-06
+        |
+        | The year is intentionally not stored because the deadline
+        | recurs every Ethiopian calendar year.
+        |
         */
 
-        'payment_start_month',
-        'payment_start_day',
-        'payment_end_month',
-        'payment_end_day',
+        'annual_payment_due_date',
 
         /*
         |--------------------------------------------------------------------------
@@ -150,14 +161,14 @@ class RevenueSetting extends Model
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Period
+            | Annual Payment Due Date
             |--------------------------------------------------------------------------
+            |
+            | Stored as a string in MM-DD format.
+            |
             */
 
-            'payment_start_month' => 'integer',
-            'payment_start_day' => 'integer',
-            'payment_end_month' => 'integer',
-            'payment_end_day' => 'integer',
+            'annual_payment_due_date' => 'string',
 
             /*
             |--------------------------------------------------------------------------
@@ -306,6 +317,45 @@ class RevenueSetting extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | Annual Payment Due Date
+    |--------------------------------------------------------------------------
+    */
+
+
+    /**
+     * Determine whether an annual payment due date is configured.
+     *
+     * The value is expected to be stored as MM-DD.
+     */
+    public function hasAnnualPaymentDueDate(): bool
+    {
+        return $this->annual_payment_due_date !== null
+            && trim($this->annual_payment_due_date) !== '';
+    }
+
+
+    /**
+     * Get the configured annual payment due date.
+     *
+     * Returns the persisted MM-DD value.
+     *
+     * Example:
+     *
+     *     "10-30"
+     *
+     */
+    public function annualPaymentDueDate(): ?string
+    {
+        if (! $this->hasAnnualPaymentDueDate()) {
+            return null;
+        }
+
+        return trim($this->annual_payment_due_date);
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
     | Payment Methods
     |--------------------------------------------------------------------------
     */
@@ -342,78 +392,6 @@ class RevenueSetting extends Model
                 $this->enabled_payment_methods ?? []
             )
         );
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Payment Period
-    |--------------------------------------------------------------------------
-    */
-
-
-    /**
-     * Determine whether a global payment period is configured.
-     */
-    public function hasPaymentPeriod(): bool
-    {
-        return
-            $this->payment_start_month !== null &&
-            $this->payment_start_day !== null &&
-            $this->payment_end_month !== null &&
-            $this->payment_end_day !== null;
-    }
-
-
-    /**
-     * Return the configured payment start period.
-     *
-     * Example:
-     *
-     * [
-     *     'month' => 1,
-     *     'day'   => 1,
-     * ]
-     */
-    public function paymentStartPeriod(): ?array
-    {
-        if (
-            $this->payment_start_month === null ||
-            $this->payment_start_day === null
-        ) {
-            return null;
-        }
-
-        return [
-            'month' => (int) $this->payment_start_month,
-            'day' => (int) $this->payment_start_day,
-        ];
-    }
-
-
-    /**
-     * Return the configured payment end period.
-     *
-     * Example:
-     *
-     * [
-     *     'month' => 13,
-     *     'day'   => 5,
-     * ]
-     */
-    public function paymentEndPeriod(): ?array
-    {
-        if (
-            $this->payment_end_month === null ||
-            $this->payment_end_day === null
-        ) {
-            return null;
-        }
-
-        return [
-            'month' => (int) $this->payment_end_month,
-            'day' => (int) $this->payment_end_day,
-        ];
     }
 
 

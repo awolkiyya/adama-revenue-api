@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Assessment;
 use App\Models\AssessmentService;
+use App\Models\PenaltyRule;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -13,6 +14,7 @@ class AssessmentCalculationService
     public function __construct(
         private readonly TariffResolver $resolver,
         private readonly TariffCalculator $calculator,
+        private readonly \App\Services\Financial\DueDateResolver $dueDateResolver,
     ) {
     }
 
@@ -25,7 +27,17 @@ class AssessmentCalculationService
      *
      * IMPORTANT:
      * ------------------------------------------------------------------------
-     * This service performs FINANCIAL CALCULATION ONLY.
+     * This service performs INITIAL FINANCIAL CALCULATION ONLY.
+     *
+     * It is responsible for:
+     *
+     * - resolving the applicable tariff version
+     * - resolving the applicable tariff rule
+     * - calculating the original principal amount
+     * - resolving the applicable penalty rule
+     * - resolving the applicable interest rule
+     * - resolving the payment due date
+     * - storing the initial financial result
      *
      * It does NOT:
      *
@@ -33,6 +45,12 @@ class AssessmentCalculationService
      * - reject the assessment
      * - create an invoice
      * - collect payment
+     * - calculate accrued penalty
+     * - calculate accrued interest
+     * - calculate outstanding balance
+     *
+     * Ongoing penalty, interest and outstanding-balance calculation
+     * belongs to the dedicated financial services used by the scheduler.
      *
      * Expected lifecycle:
      *
@@ -53,10 +71,10 @@ class AssessmentCalculationService
      *          +--------------------+
      *          |                    |
      *          v                    v
-     *       APPROVED             REJECTED
+     *       APPROVED             RETURNED
      *
-     * The decision maker sees the calculated amount while the
-     * assessment is still PENDING_APPROVAL.
+     * The decision maker sees the calculated principal amount while
+     * the assessment is still PENDING_APPROVAL.
      *
      * Approval does NOT trigger this calculation.
      */
@@ -68,9 +86,6 @@ class AssessmentCalculationService
         |--------------------------------------------------------------------------
         | Validate assessment state
         |--------------------------------------------------------------------------
-        |
-        | Calculation is intended to happen before the final decision.
-        |
         */
 
         if ($assessment->status !== 'PENDING_APPROVAL') {
@@ -83,15 +98,16 @@ class AssessmentCalculationService
             );
         }
 
-
         /*
         |--------------------------------------------------------------------------
         | Calculate inside one database transaction
         |--------------------------------------------------------------------------
         |
+        | The entire assessment calculation is atomic.
+        |
         | If any service fails:
         |
-        | - all successful calculations are rolled back
+        | - all calculations are rolled back
         | - the failure is recorded afterward
         |
         */
@@ -106,8 +122,7 @@ class AssessmentCalculationService
                     | Lock assessment
                     |--------------------------------------------------------------------------
                     |
-                    | Prevent two workers/officers from calculating the
-                    | same assessment simultaneously.
+                    | Prevent concurrent calculation of the same assessment.
                     |
                     */
 
@@ -117,7 +132,6 @@ class AssessmentCalculationService
                             ->lockForUpdate()
                             ->first();
 
-
                     if (!$lockedAssessment) {
                         throw new RuntimeException(
                             sprintf(
@@ -126,7 +140,6 @@ class AssessmentCalculationService
                             )
                         );
                     }
-
 
                     /*
                     |--------------------------------------------------------------------------
@@ -147,7 +160,6 @@ class AssessmentCalculationService
                         );
                     }
 
-
                     /*
                     |--------------------------------------------------------------------------
                     | Load calculation data
@@ -158,7 +170,6 @@ class AssessmentCalculationService
                         'services.values',
                         'services.service',
                     ]);
-
 
                     /*
                     |--------------------------------------------------------------------------
@@ -173,7 +184,6 @@ class AssessmentCalculationService
                             'Cannot calculate an assessment without revenue services.'
                         );
                     }
-
 
                     /*
                     |--------------------------------------------------------------------------
@@ -191,7 +201,6 @@ class AssessmentCalculationService
                         );
                     }
 
-
                     /*
                     |--------------------------------------------------------------------------
                     | Verify every service completed
@@ -208,33 +217,27 @@ class AssessmentCalculationService
                             )
                             ->exists();
 
-
                     if ($hasIncompleteServices) {
-
                         throw new RuntimeException(
                             'Assessment calculation failed because one or more services were not completed.'
                         );
                     }
-
 
                     /*
                     |--------------------------------------------------------------------------
                     | Keep assessment PENDING_APPROVAL
                     |--------------------------------------------------------------------------
                     |
-                    | IMPORTANT:
-                    |
                     | Calculation does NOT mean approval.
                     |
-                    | The calculated financial result is now ready
-                    | for the decision maker.
+                    | The calculated principal, due date and applicable
+                    | financial rules are now ready for the decision maker.
                     |
                     */
 
                     $lockedAssessment->update([
                         'status' => 'PENDING_APPROVAL',
                     ]);
-
 
                     /*
                     |--------------------------------------------------------------------------
@@ -245,6 +248,8 @@ class AssessmentCalculationService
                     return $lockedAssessment->fresh([
                         'services.values',
                         'services.service',
+                        'services.penaltyRule',
+                        'services.interestRule',
                     ]);
                 },
             );
@@ -256,11 +261,8 @@ class AssessmentCalculationService
             | Transaction has already rolled back
             |--------------------------------------------------------------------------
             |
-            | Successful calculations that happened before the failure
-            | have been rolled back.
-            |
-            | We now persist the error state separately so the failure
-            | is visible to the system/operator.
+            | Persist the failure separately so the operator can see
+            | that calculation failed.
             |
             */
 
@@ -269,16 +271,30 @@ class AssessmentCalculationService
                 $exception,
             );
 
-
             throw $exception;
         }
     }
-
 
     /**
      * ========================================================================
      * CALCULATE ONE ASSESSMENT SERVICE
      * ========================================================================
+     *
+     * Complete initial financial calculation:
+     *
+     *     Tariff Version
+     *          ↓
+     *     Tariff Rule
+     *          ↓
+     *     Principal
+     *          ↓
+     *     Penalty Rule
+     *          ↓
+     *     Interest Rule
+     *          ↓
+     *     Due Date
+     *          ↓
+     *     Persist
      */
     private function calculateService(
         AssessmentService $assessmentService,
@@ -288,6 +304,15 @@ class AssessmentCalculationService
         |--------------------------------------------------------------------------
         | Mark service as PROCESSING
         |--------------------------------------------------------------------------
+        |
+        | Reset previous calculation results.
+        |
+        | IMPORTANT:
+        |
+        | computed_amount is the ORIGINAL PRINCIPAL.
+        |
+        | Penalty and interest are NOT added to this field.
+        |
         */
 
         $assessmentService->update([
@@ -297,6 +322,12 @@ class AssessmentCalculationService
 
             'currency_code' => null,
 
+            'due_date' => null,
+
+            'penalty_rule_id' => null,
+
+            'interest_rule_id' => null,
+
             'calculation_metadata' => null,
 
             'calculation_error' => null,
@@ -304,15 +335,10 @@ class AssessmentCalculationService
             'calculated_at' => null,
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Resolve tariff version
         |--------------------------------------------------------------------------
-        |
-        | TariffResolver is responsible for determining the approved,
-        | active tariff version applicable to the assessment date.
-        |
         */
 
         $version =
@@ -321,15 +347,10 @@ class AssessmentCalculationService
                     $assessmentService,
                 );
 
-
         /*
         |--------------------------------------------------------------------------
         | Resolve tariff rule
         |--------------------------------------------------------------------------
-        |
-        | The resolver determines the rule applicable to this
-        | revenue service.
-        |
         */
 
         $rule =
@@ -339,20 +360,10 @@ class AssessmentCalculationService
                     $assessmentService,
                 );
 
-
         /*
         |--------------------------------------------------------------------------
-        | Execute tariff calculation
+        | Calculate original principal
         |--------------------------------------------------------------------------
-        |
-        | TariffCalculator receives:
-        |
-        | - tariff rule
-        | - assessment service
-        | - captured assessment values
-        |
-        | and returns the calculated financial result.
-        |
         */
 
         $result =
@@ -362,10 +373,9 @@ class AssessmentCalculationService
                     $assessmentService,
                 );
 
-
         /*
         |--------------------------------------------------------------------------
-        | Handle calculation failure
+        | Handle principal calculation failure
         |--------------------------------------------------------------------------
         */
 
@@ -381,27 +391,86 @@ class AssessmentCalculationService
             );
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Penalty Rule
+        |--------------------------------------------------------------------------
+        |
+        | TariffResolver is responsible for determining which penalty
+        | rule applies to this assessment service.
+        |
+        | The selected rule is then passed to DueDateResolver.
+        |
+        */
+
+        $penaltyRule =
+            $this->resolver
+                ->resolvePenaltyRule(
+                    $assessmentService,
+                );
+
+        if (!$penaltyRule instanceof PenaltyRule) {
+            throw new RuntimeException(
+                sprintf(
+                    'No valid penalty rule could be resolved for assessment service %s.',
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Interest Rule
+        |--------------------------------------------------------------------------
+        |
+        | Interest rule selection is kept separate from due-date
+        | calculation.
+        |
+        | The InterestRule is stored on assessment_services so that
+        | future calculations use the exact rule selected at the time
+        | of assessment calculation.
+        |
+        */
+
+        $interestRule =
+            $this->resolver
+                ->resolveInterestRule(
+                    $assessmentService,
+                );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Due Date
+        |--------------------------------------------------------------------------
+        |
+        | DueDateResolver receives the already-selected PenaltyRule.
+        |
+        | It determines the base date and applies the rule's
+        | configured due-date offset.
+        |
+        */
+
+        $dueDate =
+            $this->dueDateResolver
+                ->resolve(
+                    $assessmentService,
+                    $penaltyRule,
+                );
 
         /*
         |--------------------------------------------------------------------------
         | Build calculation metadata
         |--------------------------------------------------------------------------
         |
-        | IMPORTANT:
+        | tariff_version_id and tariff_rule_id are not dedicated columns
+        | on assessment_services.
         |
-        | Your assessment_services migration does not contain:
-        |
-        |     tariff_version_id
-        |     tariff_rule_id
-        |
-        | Therefore these values are stored inside calculation_metadata.
-        |
-        | This creates an audit snapshot of the calculation.
+        | They therefore remain in calculation_metadata as an audit
+        | snapshot of the calculation.
         |
         */
 
         $metadata = array_merge(
-
             [
                 'tariff_version_id' =>
                     $version->id,
@@ -412,22 +481,41 @@ class AssessmentCalculationService
                 'calculation_type' =>
                     $rule->calculation_type,
 
+                'penalty_rule_id' =>
+                    $penaltyRule->id,
+
+                'interest_rule_id' =>
+                    $interestRule?->id,
+
+                'due_date' =>
+                    $dueDate->toDateString(),
+
                 'calculated_at' =>
                     now()->toISOString(),
             ],
-
             $result->metadata ?? [],
         );
-
 
         /*
         |--------------------------------------------------------------------------
         | Persist successful calculation
         |--------------------------------------------------------------------------
+        |
+        | computed_amount:
+        |     Original principal only.
+        |
+        | due_date:
+        |     Final payment deadline.
+        |
+        | penalty_rule_id:
+        |     Exact penalty rule selected for this obligation.
+        |
+        | interest_rule_id:
+        |     Exact interest rule selected for this obligation.
+        |
         */
 
         $assessmentService->update([
-
             'status' =>
                 'COMPLETED',
 
@@ -440,6 +528,15 @@ class AssessmentCalculationService
                     $version
                 ),
 
+            'due_date' =>
+                $dueDate->toDateString(),
+
+            'penalty_rule_id' =>
+                $penaltyRule->id,
+
+            'interest_rule_id' =>
+                $interestRule?->id,
+
             'calculation_metadata' =>
                 $metadata,
 
@@ -448,19 +545,18 @@ class AssessmentCalculationService
 
             'calculated_at' =>
                 now(),
-
         ]);
     }
-
 
     /**
      * ========================================================================
      * RECORD CALCULATION FAILURE
      * ========================================================================
      *
-     * This method executes after the main transaction has rolled back.
+     * This method executes after the main calculation transaction has
+     * rolled back.
      *
-     * Therefore the error state is intentionally persisted separately.
+     * The error state is intentionally persisted separately.
      */
     private function recordCalculationFailure(
         Assessment $assessment,
@@ -477,7 +573,6 @@ class AssessmentCalculationService
             'services',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Determine error message
@@ -488,17 +583,13 @@ class AssessmentCalculationService
             $exception->getMessage()
             ?: 'Assessment calculation failed.';
 
-
         /*
         |--------------------------------------------------------------------------
         | Mark affected services as ERROR
         |--------------------------------------------------------------------------
         |
-        | Because the calculation transaction rolled back, services that
-        | were successfully calculated during that transaction are back
-        | to their previous state.
-        |
-        | We mark all non-COMPLETED services as ERROR.
+        | Clear all calculated financial data so an old calculation
+        | cannot remain visible together with ERROR.
         |
         */
 
@@ -514,13 +605,26 @@ class AssessmentCalculationService
                 continue;
             }
 
-
             $assessmentService->update([
-
                 'status' =>
                     'ERROR',
 
                 'computed_amount' =>
+                    null,
+
+                'currency_code' =>
+                    null,
+
+                'due_date' =>
+                    null,
+
+                'penalty_rule_id' =>
+                    null,
+
+                'interest_rule_id' =>
+                    null,
+
+                'calculation_metadata' =>
                     null,
 
                 'calculation_error' =>
@@ -528,22 +632,20 @@ class AssessmentCalculationService
 
                 'calculated_at' =>
                     now(),
-
             ]);
         }
     }
-
 
     /**
      * ========================================================================
      * RESOLVE CURRENCY
      * ========================================================================
      *
-     * Recommended future source:
+     * Recommended source:
      *
      *     tariff_versions.currency_code
      *
-     * If currency_code does not yet exist on tariff_versions,
+     * If currency_code does not exist on tariff_versions,
      * this safely returns null.
      */
     private function resolveCurrency(
@@ -553,3 +655,4 @@ class AssessmentCalculationService
         return $version->currency_code ?? null;
     }
 }
+

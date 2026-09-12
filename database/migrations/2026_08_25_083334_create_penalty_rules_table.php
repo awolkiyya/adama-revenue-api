@@ -27,46 +27,53 @@ return new class extends Migration
         | Penalty Rules
         |--------------------------------------------------------------------------
         |
-        | A penalty rule defines the legal/business policy used to determine
-        | penalties on overdue revenue assessments.
+        | A penalty rule defines the legal/business policy used to calculate
+        | penalties on overdue revenue obligations.
         |
         |--------------------------------------------------------------------------
         | IMPORTANT ARCHITECTURAL RULE
         |--------------------------------------------------------------------------
         |
-        | This table defines HOW penalty commencement is determined.
+        | This table defines:
         |
-        | It does NOT store the global payment-period dates.
+        |     1. How penalty rates are calculated.
+        |     2. When penalty commencement is determined.
+        |     3. Which calculation basis is used.
         |
-        | Global payment-period configuration belongs to:
+        | It does NOT store the municipality's global payment deadline.
+        |
+        | Global payment deadline configuration belongs to:
         |
         |     revenue_settings
         |
         | Specifically:
         |
-        |     payment_start_month
-        |     payment_start_day
-        |     payment_end_month
-        |     payment_end_day
+        |     annual_payment_due_date
+        |
+        | Example:
+        |
+        |     annual_payment_due_date = '09-30'
+        |
+        | This means the standard annual payment deadline is September 30.
         |
         |--------------------------------------------------------------------------
         | Penalty Commencement Types
         |--------------------------------------------------------------------------
         |
-        | FIXED_FISCAL_MONTH
-        |     Penalty commencement is determined from the global revenue
-        |     payment-period configuration in revenue_settings.
+        | FIXED_PAYMENT_DATE
+        |     Penalty commencement is determined using the municipality's
+        |     configured annual payment deadline from revenue_settings.
         |
         |     The calculation engine reads:
         |
-        |         revenue_settings.payment_start_month
-        |         revenue_settings.payment_start_day
+        |         revenue_settings.annual_payment_due_date
         |
-        |     Therefore, no fiscal month is duplicated in this table.
+        |     The actual year is resolved from the applicable assessment
+        |     or fiscal year.
         |
         | AGREEMENT_DATE
         |     Penalty commencement is determined from the applicable
-        |     agreement date.
+        |     agreement date stored in the assessment service values.
         |
         |--------------------------------------------------------------------------
         | Example
@@ -74,47 +81,62 @@ return new class extends Migration
         |
         | penalty_rules:
         |
-        |     start_type = FIXED_FISCAL_MONTH
+        |     start_type = FIXED_PAYMENT_DATE
         |
         | revenue_settings:
         |
-        |     payment_start_month = 2
-        |     payment_start_day   = 1
+        |     annual_payment_due_date = '09-30'
         |
-        | The penalty engine uses the configured Ethiopian fiscal
-        | payment-period start when determining commencement.
+        | For an assessment belonging to 2026:
+        |
+        |     payment deadline = 2026-09-30
+        |
+        | The resolved date is stored on the individual assessment service:
+        |
+        |     assessment_services.due_date = 2026-09-30
+        |
+        |--------------------------------------------------------------------------
+        | IMPORTANT
+        |--------------------------------------------------------------------------
+        |
+        | The resolved due date is persisted on assessment_services.
+        |
+        | Therefore, later changes to revenue_settings do not silently change
+        | the historical due date of an existing assessment.
         |
         |--------------------------------------------------------------------------
         | Active Rules
         |--------------------------------------------------------------------------
         |
-        | Multiple active rules are allowed only when their commencement
-        | strategies are different.
+        | Multiple active rules are allowed when their commencement strategies
+        | are different.
         |
         | Two ACTIVE rules using the SAME start_type may not have overlapping
         | effective periods.
         |
-        | Example:
+        |--------------------------------------------------------------------------
+        | Valid Example
+        |--------------------------------------------------------------------------
         |
-        |     FIXED_FISCAL_MONTH
-        |     2025-09-11 → NULL
+        | FIXED_PAYMENT_DATE
+        | 2025-09-11 → NULL
         |
-        |     AGREEMENT_DATE
-        |     2025-09-11 → NULL
+        | AGREEMENT_DATE
+        | 2025-09-11 → NULL
         |
         | VALID:
         |
-        | They represent different commencement strategies.
+        | They represent different penalty commencement strategies.
         |
         |--------------------------------------------------------------------------
         | Invalid Example
         |--------------------------------------------------------------------------
         |
-        |     AGREEMENT_DATE
-        |     2025-09-11 → NULL
+        | AGREEMENT_DATE
+        | 2025-09-11 → NULL
         |
-        |     AGREEMENT_DATE
-        |     2026-09-04 → NULL
+        | AGREEMENT_DATE
+        | 2026-09-04 → NULL
         |
         | INVALID:
         |
@@ -190,24 +212,24 @@ return new class extends Migration
             | Penalty Commencement Type
             |--------------------------------------------------------------------------
             |
-            | FIXED_FISCAL_MONTH
-            |     Uses the global payment-period configuration from
-            |     revenue_settings.
+            | FIXED_PAYMENT_DATE
+            |     Uses the municipality's global annual payment deadline
+            |     from revenue_settings.
             |
             | AGREEMENT_DATE
             |     Uses the applicable agreement date.
             |
             | IMPORTANT:
             |
-            | No payment month/day is stored here.
+            | No payment month/day is stored in this table.
             |
             | revenue_settings is the single source of truth for the
-            | global payment period.
+            | municipality-wide recurring payment deadline.
             |
             */
 
             $table->string('start_type', 30)
-                ->default('FIXED_FISCAL_MONTH');
+                ->default('FIXED_PAYMENT_DATE');
 
             /*
             |--------------------------------------------------------------------------
@@ -352,14 +374,14 @@ return new class extends Migration
         | Start Type Constraint
         |--------------------------------------------------------------------------
         |
-        | FIXED_FISCAL_MONTH:
+        | FIXED_PAYMENT_DATE:
         |
-        |     Uses revenue_settings.payment_start_month and
-        |     revenue_settings.payment_start_day.
+        |     Uses revenue_settings.annual_payment_due_date.
         |
         | AGREEMENT_DATE:
         |
-        |     Uses the applicable agreement date.
+        |     Uses the applicable agreement date stored in the
+        |     assessment service values.
         |
         */
 
@@ -368,7 +390,7 @@ return new class extends Migration
             ADD CONSTRAINT penalty_rules_start_type_check
             CHECK (
                 start_type IN (
-                    'FIXED_FISCAL_MONTH',
+                    'FIXED_PAYMENT_DATE',
                     'AGREEMENT_DATE'
                 )
             )
@@ -460,7 +482,7 @@ return new class extends Migration
         |
         | This means:
         |
-        |     FIXED_FISCAL_MONTH
+        |     FIXED_PAYMENT_DATE
         |
         | and:
         |
@@ -474,7 +496,7 @@ return new class extends Migration
         | Valid:
         |--------------------------------------------------------------------------
         |
-        | FIXED_FISCAL_MONTH
+        | FIXED_PAYMENT_DATE
         | 2025-09-11 → NULL
         |
         | AGREEMENT_DATE

@@ -5,6 +5,7 @@ namespace App\Modules\Invoice\Services;
 use App\Models\Assessment;
 use App\Models\Invoice;
 use App\Services\SmsService;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -56,6 +57,7 @@ class InvoiceIssuanceService
     | InvoiceIssuanceService
     |     - validates invoice state
     |     - locks invoice
+    |     - validates issue conditions
     |     - issues invoice
     |     - records issued_by
     |     - records issued_at
@@ -69,13 +71,31 @@ class InvoiceIssuanceService
     public function issueFromAssessment(
         Assessment $assessment
     ): Invoice {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. VALIDATE ASSESSMENT
+        |--------------------------------------------------------------------------
+        |
+        | Only approved assessments can produce an issued invoice.
+        |
+        */
+
+        if ($assessment->status !== 'APPROVED') {
+            throw ValidationException::withMessages([
+                'assessment' => [
+                    'Only approved assessments can generate an invoice.',
+                ],
+            ]);
+        }
 
         /*
         |--------------------------------------------------------------------------
-        | 1. CREATE INVOICE
+        | 2. CREATE INVOICE
         |--------------------------------------------------------------------------
         |
         | InvoiceService owns invoice construction.
+        |
+        | It creates the invoice in DRAFT state.
         |
         */
 
@@ -85,16 +105,10 @@ class InvoiceIssuanceService
 
         /*
         |--------------------------------------------------------------------------
-        | 2. ISSUE INVOICE
+        | 3. ISSUE INVOICE
         |--------------------------------------------------------------------------
         |
-        | Pass the Invoice MODEL.
-        |
-        | issue() explicitly supports:
-        |
-        |     Invoice|string
-        |
-        | and safely extracts the primary key.
+        | Pass the Invoice model.
         |
         */
 
@@ -120,19 +134,16 @@ class InvoiceIssuanceService
     public function issue(
         Invoice|string $invoice
     ): Invoice {
-
         /*
         |--------------------------------------------------------------------------
         | 1. NORMALIZE INVOICE ID
         |--------------------------------------------------------------------------
         |
-        | IMPORTANT:
-        |
-        | Never pass the complete Invoice model/object to:
+        | Never pass the complete Invoice model to:
         |
         |     where('id', ...)
         |
-        | PostgreSQL expects a UUID here.
+        | PostgreSQL expects the UUID value.
         |
         | Therefore:
         |
@@ -167,7 +178,7 @@ class InvoiceIssuanceService
         | 3. GET AUTHENTICATED USER
         |--------------------------------------------------------------------------
         |
-        | The authenticated officer becomes the issuer.
+        | The authenticated officer becomes the invoice issuer.
         |
         */
 
@@ -191,8 +202,8 @@ class InvoiceIssuanceService
         |
         */
 
-        $issuedInvoice = DB::transaction(
-            function () use ($invoiceId, $userId): Invoice {
+        $result = DB::transaction(
+            function () use ($invoiceId, $userId): array {
 
                 /*
                 |--------------------------------------------------------------------------
@@ -214,12 +225,16 @@ class InvoiceIssuanceService
                 | IDEMPOTENCY
                 |--------------------------------------------------------------------------
                 |
-                | If the invoice has already been issued, do not issue it again.
+                | If the invoice is already issued, return it without
+                | sending another notification.
                 |
                 */
 
                 if ($invoice->status === 'ISSUED') {
-                    return $invoice;
+                    return [
+                        'invoice' => $invoice,
+                        'should_notify' => false,
+                    ];
                 }
 
                 /*
@@ -232,23 +247,6 @@ class InvoiceIssuanceService
                     throw ValidationException::withMessages([
                         'status' => [
                             'Only draft invoices can be issued.',
-                        ],
-                    ]);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | VALIDATE TOTAL
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    $invoice->total_amount === null
-                    || (float) $invoice->total_amount <= 0
-                ) {
-                    throw ValidationException::withMessages([
-                        'invoice' => [
-                            'An invoice must have a positive total amount before it can be issued.',
                         ],
                     ]);
                 }
@@ -283,6 +281,157 @@ class InvoiceIssuanceService
 
                 /*
                 |--------------------------------------------------------------------------
+                | VALIDATE INVOICE ITEMS
+                |--------------------------------------------------------------------------
+                |
+                | An invoice without line items must never be issued.
+                |
+                */
+
+                if ($invoice->items->isEmpty()) {
+                    throw ValidationException::withMessages([
+                        'items' => [
+                            'An invoice must contain at least one item before it can be issued.',
+                        ],
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | VALIDATE INVOICE ITEMS
+                |--------------------------------------------------------------------------
+                */
+
+                foreach ($invoice->items as $item) {
+
+                    if (
+                        $item->amount === null
+                        || (float) $item->amount < 0
+                    ) {
+                        throw ValidationException::withMessages([
+                            'items' => [
+                                'Every invoice item must have a valid amount.',
+                            ],
+                        ]);
+                    }
+
+                    if (
+                        $item->total_amount === null
+                        || (float) $item->total_amount < 0
+                    ) {
+                        throw ValidationException::withMessages([
+                            'items' => [
+                                'Every invoice item must have a valid total amount.',
+                            ],
+                        ]);
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | VALIDATE TOTAL
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $invoice->total_amount === null
+                    || (float) $invoice->total_amount <= 0
+                ) {
+                    throw ValidationException::withMessages([
+                        'invoice' => [
+                            'An invoice must have a positive total amount before it can be issued.',
+                        ],
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | VALIDATE BALANCE
+                |--------------------------------------------------------------------------
+                |
+                | A newly issued invoice should have the full amount outstanding.
+                |
+                */
+
+                if (
+                    $invoice->paid_amount !== null
+                    && (float) $invoice->paid_amount < 0
+                ) {
+                    throw ValidationException::withMessages([
+                        'invoice' => [
+                            'Invoice paid amount cannot be negative.',
+                        ],
+                    ]);
+                }
+
+                if (
+                    $invoice->balance_due === null
+                    || (float) $invoice->balance_due <= 0
+                ) {
+                    throw ValidationException::withMessages([
+                        'invoice' => [
+                            'An invoice must have a positive outstanding balance before it can be issued.',
+                        ],
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | VALIDATE DUE DATE
+                |--------------------------------------------------------------------------
+                |
+                | The due date should already have been resolved by the
+                | assessment/calculation layer.
+                |
+                */
+
+                if (! $invoice->due_date) {
+                    throw ValidationException::withMessages([
+                        'due_date' => [
+                            'An invoice must have a due date before it can be issued.',
+                        ],
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | VALIDATE ASSESSMENT
+                |--------------------------------------------------------------------------
+                |
+                | Assessment-generated invoices must remain associated
+                | with an approved assessment.
+                |
+                */
+
+                if ($invoice->source_type === 'ASSESSMENT') {
+
+                    if (! $invoice->assessment_id) {
+                        throw ValidationException::withMessages([
+                            'assessment' => [
+                                'An assessment is required for an assessment invoice.',
+                            ],
+                        ]);
+                    }
+
+                    if (! $invoice->assessment) {
+                        throw ValidationException::withMessages([
+                            'assessment' => [
+                                'The assessment associated with this invoice could not be found.',
+                            ],
+                        ]);
+                    }
+
+                    if ($invoice->assessment->status !== 'APPROVED') {
+                        throw ValidationException::withMessages([
+                            'assessment' => [
+                                'Only invoices belonging to approved assessments can be issued.',
+                            ],
+                        ]);
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
                 | ISSUE INVOICE
                 |--------------------------------------------------------------------------
                 */
@@ -299,34 +448,41 @@ class InvoiceIssuanceService
                 |--------------------------------------------------------------------------
                 */
 
-                return $invoice->fresh([
+                $invoice = $invoice->fresh([
                     'items',
                     'assessment',
                     'citizen',
                 ]);
+
+                return [
+                    'invoice' => $invoice,
+                    'should_notify' => true,
+                ];
             }
         );
 
+        /** @var Invoice $issuedInvoice */
+        $issuedInvoice = $result['invoice'];
+
         /*
         |--------------------------------------------------------------------------
-        | 5. NOTIFY TAXPAYER
+        | 5. NOTIFY ONLY WHEN THIS REQUEST ACTUALLY ISSUED THE INVOICE
         |--------------------------------------------------------------------------
         |
         | IMPORTANT:
         |
-        | The database transaction has already committed.
+        | If another request already issued this invoice, the transaction
+        | returns should_notify = false.
         |
-        | Therefore SMS failure MUST NOT rollback:
-        |
-        |     ISSUED → DRAFT
-        |
-        | The invoice remains legally issued.
+        | Therefore this request will NOT send another SMS.
         |
         */
 
-        $this->sendInvoiceNotification(
-            $issuedInvoice
-        );
+        if ($result['should_notify']) {
+            $this->sendInvoiceNotification(
+                $issuedInvoice
+            );
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -342,12 +498,11 @@ class InvoiceIssuanceService
     | SEND INVOICE SMS
     |--------------------------------------------------------------------------
     |
-    | The SMS contains:
+    | IMPORTANT:
     |
-    | - taxpayer name
-    | - invoice number
-    | - amount due
-    | - mobile application URL
+    | This method runs AFTER the database transaction commits.
+    |
+    | SMS failure therefore cannot rollback invoice issuance.
     |
     |--------------------------------------------------------------------------
     */
@@ -355,7 +510,6 @@ class InvoiceIssuanceService
     protected function sendInvoiceNotification(
         Invoice $invoice
     ): void {
-
         try {
 
             /*
@@ -386,9 +540,11 @@ class InvoiceIssuanceService
             |--------------------------------------------------------------------------
             */
 
-            $phone = $citizen->phone;
+            $phone = trim(
+                (string) ($citizen->phone ?? '')
+            );
 
-            if (! $phone) {
+            if ($phone === '') {
 
                 Log::warning(
                     'Invoice issued but taxpayer has no phone number.',
@@ -404,7 +560,7 @@ class InvoiceIssuanceService
 
             /*
             |--------------------------------------------------------------------------
-            | 3. TAXPAYER NAME
+            | 3. GET TAXPAYER NAME
             |--------------------------------------------------------------------------
             */
 
@@ -419,7 +575,7 @@ class InvoiceIssuanceService
             */
 
             $amount = number_format(
-                (float) $invoice->total_amount,
+                (float) $invoice->balance_due,
                 2,
                 '.',
                 ','
@@ -427,37 +583,31 @@ class InvoiceIssuanceService
 
             /*
             |--------------------------------------------------------------------------
-            | 5. MOBILE APPLICATION URL
+            | 5. GET TAXPAYER APPLICATION URL
             |--------------------------------------------------------------------------
             |
-            | Configure this in .env:
+            | Configure:
             |
-            | TAXPAYER_APP_URL=https://your-domain.com/en
+            | config/app.php
             |
-            | For local development:
+            | 'taxpayer_app_url' => env(
+            |     'TAXPAYER_APP_URL',
+            |     'http://localhost:3000/en'
+            | ),
             |
-            | TAXPAYER_APP_URL=http://localhost:3000/en
-            |
-            | IMPORTANT:
-            |
-            | localhost only works from the same machine.
-            | It should NOT be used for real taxpayer SMS.
-            |
+            |--------------------------------------------------------------------------
             */
 
             $appUrl = trim(
                 (string) config(
                     'app.taxpayer_app_url',
-                    env(
-                        'TAXPAYER_APP_URL',
-                        'http://localhost:3000/en'
-                    )
+                    'http://localhost:3000/en'
                 )
             );
 
             /*
             |--------------------------------------------------------------------------
-            | 6. BUILD SMS
+            | 6. BUILD SMS MESSAGE
             |--------------------------------------------------------------------------
             */
 
@@ -488,7 +638,8 @@ class InvoiceIssuanceService
             */
 
             if (
-                ($response['status'] ?? null) !== 'success'
+                ! is_array($response)
+                || ($response['status'] ?? null) !== 'success'
             ) {
 
                 Log::error(
@@ -497,7 +648,6 @@ class InvoiceIssuanceService
                         'invoice_id' => $invoice->id,
                         'invoice_number' => $invoice->invoice_number,
                         'citizen_id' => $citizen->id,
-                        'phone' => $phone,
                         'sms_response' => $response,
                     ]
                 );
@@ -527,9 +677,9 @@ class InvoiceIssuanceService
             | IMPORTANT
             |--------------------------------------------------------------------------
             |
-            | SMS failure must NEVER affect invoice issuance.
+            | SMS failure MUST NEVER affect invoice issuance.
             |
-            | Invoice remains:
+            | The invoice remains:
             |
             |     ISSUED
             |
@@ -556,12 +706,11 @@ class InvoiceIssuanceService
     */
 
     protected function getTaxpayerName(
-        $citizen
+        Model $citizen
     ): string {
-
         /*
         |--------------------------------------------------------------------------
-        | 1. FIRST/MIDDLE/LAST NAME
+        | 1. FIRST / MIDDLE / LAST NAME
         |--------------------------------------------------------------------------
         */
 
@@ -580,11 +729,6 @@ class InvoiceIssuanceService
         |--------------------------------------------------------------------------
         | 2. FULL NAME FALLBACK
         |--------------------------------------------------------------------------
-        |
-        | Your current Citizen model contains:
-        |
-        |     full_name
-        |
         */
 
         if ($name === '') {
