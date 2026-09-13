@@ -59,7 +59,23 @@ class AssessmentServiceValue extends Model
     protected function casts(): array
     {
         return [
+            /*
+             * Field values can be:
+             *
+             * - string
+             * - integer
+             * - decimal
+             * - boolean
+             * - date string
+             * - SELECT value
+             * - checkbox array
+             * - file path / file metadata
+             */
             'value' => 'json',
+
+            /*
+             * Preserve field ordering as an integer.
+             */
             'sort_order' => 'integer',
         ];
     }
@@ -109,21 +125,6 @@ class AssessmentServiceValue extends Model
     /*
     |--------------------------------------------------------------------------
     | Files
-    |--------------------------------------------------------------------------
-    |
-    | A field value can have one or more attached files.
-    |
-    | Example:
-    |
-    | OWNERSHIP_DOCUMENT
-    |       |
-    |       └── File
-    |
-    | EVIDENCE
-    |       |
-    |       ├── File
-    |       └── File
-    |
     |--------------------------------------------------------------------------
     */
 

@@ -2,6 +2,7 @@
 
 namespace App\Modules\Assessment\Requests;
 
+use App\Models\RevenueService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -31,15 +32,6 @@ class StoreAssessmentRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Taxpayer / Citizen
             |--------------------------------------------------------------------------
-            |
-            | Frontend:
-            |
-            | taxpayerId
-            |
-            | Database:
-            |
-            | assessments.citizen_id
-            |
             */
 
             'taxpayerId' => [
@@ -72,9 +64,6 @@ class StoreAssessmentRequest extends FormRequest
             | DRAFT
             | PENDING_APPROVAL
             |
-            | Approval/rejection/cancellation are separate
-            | workflow operations.
-            |
             */
 
             'status' => [
@@ -90,9 +79,6 @@ class StoreAssessmentRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Services
             |--------------------------------------------------------------------------
-            |
-            | At least one revenue service must be selected.
-            |
             */
 
             'services' => [
@@ -120,10 +106,13 @@ class StoreAssessmentRequest extends FormRequest
             | Revenue Service Code
             |--------------------------------------------------------------------------
             |
-            | This is a snapshot sent by the frontend.
+            | The frontend sends:
             |
-            | The backend should still verify that it belongs
-            | to the selected service.
+            | serviceId
+            | serviceCode
+            |
+            | The backend verifies that the submitted serviceCode
+            | actually belongs to the selected serviceId.
             |
             */
 
@@ -131,6 +120,80 @@ class StoreAssessmentRequest extends FormRequest
                 'required',
                 'string',
                 'max:100',
+
+                function (
+                    string $attribute,
+                    mixed $value,
+                    \Closure $fail
+                ): void {
+
+                    /*
+                     * Example attribute:
+                     *
+                     * services.0.serviceCode
+                     *
+                     * Extract:
+                     *
+                     * 0
+                     */
+                    preg_match(
+                        '/services\.(\d+)\.serviceCode/',
+                        $attribute,
+                        $matches
+                    );
+
+
+                    if (! isset($matches[1])) {
+                        return;
+                    }
+
+
+                    $index = (int) $matches[1];
+
+
+                    /*
+                     * Get the service ID from the same service
+                     * object.
+                     */
+                    $serviceId = $this->input(
+                        "services.{$index}.serviceId"
+                    );
+
+
+                    if (! $serviceId) {
+                        return;
+                    }
+
+
+                    /*
+                     * Verify that this service ID has the
+                     * submitted revenue code.
+                     *
+                     * revenue_services.revenue_code_id
+                     *          ↓
+                     * revenue_codes.code
+                     */
+                    $matchesService = RevenueService::query()
+                        ->whereKey($serviceId)
+                        ->whereHas(
+                            'revenueCode',
+                            function ($query) use ($value) {
+                                $query->where(
+                                    'code',
+                                    $value
+                                );
+                            }
+                        )
+                        ->exists();
+
+
+                    if (! $matchesService) {
+
+                        $fail(
+                            "The serviceCode does not match serviceId [{$serviceId}]."
+                        );
+                    }
+                },
             ],
 
 
@@ -138,14 +201,6 @@ class StoreAssessmentRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Dynamic Fields
             |--------------------------------------------------------------------------
-            |
-            | Example:
-            |
-            | {
-            |     "LAND_AREA": "105",
-            |     "PROPERTY_TYPE": "RESIDENTIAL"
-            | }
-            |
             */
 
             'services.*.fields' => [
@@ -156,11 +211,10 @@ class StoreAssessmentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | File Validation
+            | Dynamic File Inputs
             |--------------------------------------------------------------------------
             |
-            | Dynamic file inputs are handled separately because
-            | their names are generated from:
+            | Files are validated separately because their names are:
             |
             | file__{serviceId}__{fieldCode}
             |
@@ -215,8 +269,6 @@ class StoreAssessmentRequest extends FormRequest
      * ----------------------------------------------------------------------
      * VALIDATED SERVICES
      * ----------------------------------------------------------------------
-     *
-     * Useful if the controller/service wants normalized data.
      */
     public function services(): array
     {

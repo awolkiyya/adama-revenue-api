@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Domain\Revenue\Calculations;
+namespace App\Services\Calculations;
 
 use App\Models\Assessment;
 use App\Models\AssessmentService;

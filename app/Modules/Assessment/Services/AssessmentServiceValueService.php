@@ -6,6 +6,8 @@ use App\Models\Assessment;
 use App\Models\AssessmentService as AssessmentServiceModel;
 use App\Models\AssessmentServiceValue;
 use App\Models\RevenueService;
+use Carbon\Carbon;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AssessmentServiceValueService
@@ -24,14 +26,17 @@ class AssessmentServiceValueService
     /**
      * Store assessment services and their dynamic values.
      *
-     * The service itself is responsible for:
+     * Responsibilities:
      *
-     * - Creating assessment_service records
-     * - Resolving service fields
-     * - Storing field snapshots
-     * - Normalizing submitted values
-     * - Generating display values
-     * - Delegating file handling
+     * - Resolve the configured revenue service
+     * - Create assessment_service
+     * - Store dynamic field values
+     * - Snapshot field configuration
+     * - Normalize submitted values
+     * - Generate display values
+     * - Delegate file handling
+     *
+     * This service does NOT calculate tariffs or assessment amounts.
      */
     public function storeServices(
         Assessment $assessment,
@@ -43,18 +48,31 @@ class AssessmentServiceValueService
             );
 
             $assessmentService = AssessmentServiceModel::create([
-                'id' => (string) \Illuminate\Support\Str::uuid(),
+                'id' => (string) Str::uuid(),
 
                 'assessment_id' => $assessment->id,
 
                 'service_id' => $service->id,
 
-                'service_code' => $service->code,
+                /*
+                 * RevenueService does not own the code directly.
+                 *
+                 * RevenueService
+                 *      ↓
+                 * revenueCode
+                 *      ↓
+                 * code
+                 */
+                'service_code' =>
+                    $service->revenueCode?->code,
 
                 'service_order' => $index + 1,
 
                 'status' => 'CAPTURED',
 
+                /*
+                 * Calculation is intentionally not performed here.
+                 */
                 'computed_amount' => null,
 
                 'currency_code' => null,
@@ -87,8 +105,13 @@ class AssessmentServiceValueService
         array $submittedFields
     ): void {
         $service = RevenueService::query()
-            ->with('fields.baseField')
-            ->findOrFail($assessmentService->service_id);
+            ->with([
+                'revenueCode',
+                'fields.baseField.options',
+            ])
+            ->findOrFail(
+                $assessmentService->service_id
+            );
 
         /*
         |--------------------------------------------------------------------------
@@ -104,7 +127,9 @@ class AssessmentServiceValueService
             })
             ->keyBy(function ($serviceField) {
                 return strtoupper(
-                    (string) $serviceField->baseField->code
+                    trim(
+                        (string) $serviceField->baseField->code
+                    )
                 );
             });
 
@@ -124,7 +149,7 @@ class AssessmentServiceValueService
             | Ignore Unknown Fields
             |--------------------------------------------------------------------------
             |
-            | The service configuration is authoritative.
+            | Revenue service configuration is authoritative.
             |
             */
 
@@ -132,13 +157,15 @@ class AssessmentServiceValueService
                 continue;
             }
 
-            $serviceField = $fields->get($normalizedCode);
+            $serviceField = $fields->get(
+                $normalizedCode
+            );
 
             $baseField = $serviceField->baseField;
 
             /*
             |--------------------------------------------------------------------------
-            | Resolve Types
+            | Resolve Effective Types
             |--------------------------------------------------------------------------
             */
 
@@ -152,11 +179,13 @@ class AssessmentServiceValueService
             |--------------------------------------------------------------------------
             */
 
-            if (in_array(
-                $types['input_type'],
-                ['FILE', 'MULTI_FILE'],
-                true
-            )) {
+            if (
+                in_array(
+                    $types['input_type'],
+                    ['FILE', 'MULTI_FILE'],
+                    true
+                )
+            ) {
                 $value = $this->fileService->storeUploadedFiles(
                     $assessmentService,
                     $serviceField,
@@ -170,34 +199,48 @@ class AssessmentServiceValueService
                     $serviceField
                 );
 
-                $assessmentServiceValue = AssessmentServiceValue::create([
-                    'id' => (string) \Illuminate\Support\Str::uuid(),
+                $assessmentServiceValue =
+                    AssessmentServiceValue::create([
+                        'id' => (string) Str::uuid(),
 
-                    'assessment_service_id' => $assessmentService->id,
+                        'assessment_service_id' =>
+                            $assessmentService->id,
 
-                    'revenue_service_field_id' => $serviceField->id,
+                        'revenue_service_field_id' =>
+                            $serviceField->id,
 
-                    'field_code' => $normalizedCode,
+                        'field_code' =>
+                            $normalizedCode,
 
-                    'field_label' => $serviceField->label
-                        ?: $baseField->label,
+                        'field_label' =>
+                            $serviceField->label
+                            ?: $baseField->label,
 
-                    'data_type' => $types['data_type'],
+                        'data_type' =>
+                            $types['data_type'],
 
-                    'input_type' => $types['input_type'],
+                        'input_type' =>
+                            $types['input_type'],
 
-                    'value' => $value,
+                        'value' =>
+                            $value,
 
-                    'display_value' => $displayValue,
+                        'display_value' =>
+                            $displayValue,
 
-                    'measurement_unit' => $serviceField->measurement_unit
-                        ?? $baseField->measurement_unit
-                        ?? null,
+                        /*
+                         * Correct database column.
+                         */
+                        'measurement_unit_id' =>
+                            $serviceField->measurement_unit_id
+                            ?? $baseField->measurement_unit_id
+                            ?? null,
 
-                    'sort_order' => $serviceField->sort_order
-                        ?? $baseField->sort_order
-                        ?? 0,
-                ]);
+                        'sort_order' =>
+                            $serviceField->sort_order
+                            ?? $baseField->sort_order
+                            ?? 0,
+                    ]);
 
                 $this->fileService->attachValueFiles(
                     $assessmentServiceValue,
@@ -234,35 +277,48 @@ class AssessmentServiceValueService
 
             /*
             |--------------------------------------------------------------------------
-            | Create Snapshot
+            | Create Value Snapshot
             |--------------------------------------------------------------------------
             */
 
             AssessmentServiceValue::create([
-                'id' => (string) \Illuminate\Support\Str::uuid(),
+                'id' => (string) Str::uuid(),
 
-                'assessment_service_id' => $assessmentService->id,
+                'assessment_service_id' =>
+                    $assessmentService->id,
 
-                'revenue_service_field_id' => $serviceField->id,
+                'revenue_service_field_id' =>
+                    $serviceField->id,
 
-                'field_code' => $normalizedCode,
+                'field_code' =>
+                    $normalizedCode,
 
-                'field_label' => $serviceField->label
+                'field_label' =>
+                    $serviceField->label
                     ?: $baseField->label,
 
-                'data_type' => $types['data_type'],
+                'data_type' =>
+                    $types['data_type'],
 
-                'input_type' => $types['input_type'],
+                'input_type' =>
+                    $types['input_type'],
 
-                'value' => $value,
+                'value' =>
+                    $value,
 
-                'display_value' => $displayValue,
+                'display_value' =>
+                    $displayValue,
 
-                'measurement_unit' => $serviceField->measurement_unit
-                    ?? $baseField->measurement_unit
+                /*
+                 * Correct database column.
+                 */
+                'measurement_unit_id' =>
+                    $serviceField->measurement_unit_id
+                    ?? $baseField->measurement_unit_id
                     ?? null,
 
-                'sort_order' => $serviceField->sort_order
+                'sort_order' =>
+                    $serviceField->sort_order
                     ?? $baseField->sort_order
                     ?? 0,
             ]);
@@ -279,7 +335,14 @@ class AssessmentServiceValueService
      * Resolve the revenue service using serviceId.
      *
      * serviceId is authoritative.
-     * serviceCode is only validated against the resolved service.
+     *
+     * serviceCode is only validated against:
+     *
+     * RevenueService
+     *      ↓
+     * RevenueCode
+     *      ↓
+     * code
      */
     protected function resolveRevenueService(
         array $serviceData
@@ -294,8 +357,17 @@ class AssessmentServiceValueService
             ]);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Load Revenue Service
+        |--------------------------------------------------------------------------
+        */
+
         $service = RevenueService::query()
-            ->with('fields.baseField')
+            ->with([
+                'revenueCode',
+                'fields.baseField.options',
+            ])
             ->find($serviceId);
 
         if (! $service) {
@@ -308,22 +380,47 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Validate Service Code
+        | Resolve Authoritative Revenue Code
+        |--------------------------------------------------------------------------
+        */
+
+        $expectedCode = $service->revenueCode?->code;
+
+        if ($expectedCode === null) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    "Revenue service [{$serviceId}] does not have a valid revenue code.",
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Submitted Service Code
         |--------------------------------------------------------------------------
         */
 
         $submittedCode = $serviceData['serviceCode'] ?? null;
 
-        if (
-            $submittedCode !== null
-            && strtoupper(trim((string) $submittedCode))
-                !== strtoupper((string) $service->code)
-        ) {
-            throw ValidationException::withMessages([
-                'services' => [
-                    "The serviceCode does not match serviceId [{$serviceId}].",
-                ],
-            ]);
+        if ($submittedCode !== null) {
+            $submittedCode = trim(
+                (string) $submittedCode
+            );
+
+            $expectedCode = trim(
+                (string) $expectedCode
+            );
+
+            if (
+                strtoupper($submittedCode)
+                !== strtoupper($expectedCode)
+            ) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        "The serviceCode does not match serviceId [{$serviceId}].",
+                    ],
+                ]);
+            }
         }
 
         return $service;
@@ -336,28 +433,81 @@ class AssessmentServiceValueService
      */
 
     /**
-     * Resolve the effective data and input types.
+     * Resolve effective data and input types.
+     *
+     * IMPORTANT:
+     *
+     * The current database schema uses SELECT as a data_type
+     * for fields such as PROPERTY_TYPE.
+     *
+     * Therefore SELECT must be supported as a data type.
      */
     protected function resolveFieldTypes(
         $serviceField
     ): array {
         $baseField = $serviceField->baseField;
 
+        if (! $baseField) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    'The configured service field does not have a base field.',
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Effective Data Type
+        |--------------------------------------------------------------------------
+        */
+
         $dataType = strtoupper(
-            (string) (
-                $serviceField->data_type
-                ?? $baseField->data_type
-                ?? 'TEXT'
+            trim(
+                (string) (
+                    $serviceField->data_type
+                    ?? $baseField->data_type
+                    ?? 'TEXT'
+                )
             )
         );
 
+        /*
+        |--------------------------------------------------------------------------
+        | Effective Input Type
+        |--------------------------------------------------------------------------
+        |
+        | Some current BaseFields may not have input_type configured.
+        |
+        | When input_type is missing, derive it from data_type.
+        |
+        */
+
         $inputType = strtoupper(
-            (string) (
-                $serviceField->input_type
-                ?? $baseField->input_type
-                ?? 'TEXT'
+            trim(
+                (string) (
+                    $serviceField->input_type
+                    ?? $baseField->input_type
+                    ?? ''
+                )
             )
         );
+
+        if ($inputType === '') {
+            $inputType = match ($dataType) {
+                'SELECT' => 'SELECT',
+                'BOOLEAN' => 'TEXT',
+                'NUMBER' => 'NUMBER',
+                'DECIMAL' => 'DECIMAL',
+                'DATE' => 'DATE',
+                default => 'TEXT',
+            };
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Supported Data Types
+        |--------------------------------------------------------------------------
+        */
 
         $allowedDataTypes = [
             'NUMBER',
@@ -365,7 +515,19 @@ class AssessmentServiceValueService
             'TEXT',
             'BOOLEAN',
             'DATE',
+
+            /*
+             * IMPORTANT:
+             * Your actual database uses SELECT here.
+             */
+            'SELECT',
         ];
+
+        /*
+        |--------------------------------------------------------------------------
+        | Supported Input Types
+        |--------------------------------------------------------------------------
+        */
 
         $allowedInputTypes = [
             'TEXT',
@@ -380,7 +542,17 @@ class AssessmentServiceValueService
             'MULTI_FILE',
         ];
 
-        if (! in_array($dataType, $allowedDataTypes, true)) {
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Data Type
+        |--------------------------------------------------------------------------
+        */
+
+        if (! in_array(
+            $dataType,
+            $allowedDataTypes,
+            true
+        )) {
             throw ValidationException::withMessages([
                 'services' => [
                     "Unsupported data type [{$dataType}].",
@@ -388,7 +560,17 @@ class AssessmentServiceValueService
             ]);
         }
 
-        if (! in_array($inputType, $allowedInputTypes, true)) {
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Input Type
+        |--------------------------------------------------------------------------
+        */
+
+        if (! in_array(
+            $inputType,
+            $allowedInputTypes,
+            true
+        )) {
             throw ValidationException::withMessages([
                 'services' => [
                     "Unsupported input type [{$inputType}].",
@@ -421,26 +603,260 @@ class AssessmentServiceValueService
             return null;
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | SELECT / RADIO
+        |--------------------------------------------------------------------------
+        |
+        | Validate against base_field_options.
+        |
+        */
+
+        if (
+            $dataType === 'SELECT'
+            || in_array(
+                $inputType,
+                ['SELECT', 'RADIO'],
+                true
+            )
+        ) {
+            return $this->normalizeOptionValue(
+                $value,
+                $serviceField
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | CHECKBOX
+        |--------------------------------------------------------------------------
+        */
+
+        if ($inputType === 'CHECKBOX') {
+            return $this->normalizeCheckboxValue(
+                $value,
+                $serviceField
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Standard Data Types
+        |--------------------------------------------------------------------------
+        */
+
         return match ($dataType) {
-            'NUMBER' => $this->normalizeNumber($value),
+            'NUMBER' =>
+                $this->normalizeNumber($value),
 
-            'DECIMAL' => $this->normalizeDecimal($value),
+            'DECIMAL' =>
+                $this->normalizeDecimal($value),
 
-            'BOOLEAN' => $this->normalizeBoolean($value),
+            'BOOLEAN' =>
+                $this->normalizeBoolean($value),
 
-            'DATE' => $this->normalizeDate($value),
+            'DATE' =>
+                $this->normalizeDate($value),
 
-            'TEXT' => $this->normalizeText($value),
+            'TEXT' =>
+                $this->normalizeText($value),
 
-            default => $value,
+            /*
+             * SELECT is handled above.
+             */
+            'SELECT' =>
+                $this->normalizeOptionValue(
+                    $value,
+                    $serviceField
+                ),
+
+            default =>
+                $value,
         };
     }
 
     /**
+     * ============================================================
+     * OPTION VALUES
+     * ============================================================
+     */
+
+    /**
+     * Validate and normalize SELECT / RADIO option values.
+     */
+    protected function normalizeOptionValue(
+        mixed $value,
+        $serviceField
+    ): string {
+        if (
+            is_array($value)
+            || is_object($value)
+        ) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    'The selected value must be a single option.',
+                ],
+            ]);
+        }
+
+        $submittedValue = trim(
+            (string) $value
+        );
+
+        if ($submittedValue === '') {
+            return '';
+        }
+
+        $baseField = $serviceField->baseField;
+
+        if (! $baseField) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    "The field [{$serviceField->id}] does not have a base field.",
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Base Field Options
+        |--------------------------------------------------------------------------
+        |
+        | This is an Eloquent Collection from:
+        |
+        | baseField->options
+        |
+        */
+
+        $options = $baseField->options;
+
+        $matchingOption = $options->first(
+            function ($option) use ($submittedValue) {
+                return strtoupper(
+                    trim((string) $option->value)
+                ) === strtoupper(
+                    $submittedValue
+                );
+            }
+        );
+
+        if (! $matchingOption) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    "Invalid option [{$submittedValue}] for field [{$baseField->code}].",
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Return Canonical Database Value
+        |--------------------------------------------------------------------------
+        */
+
+        return (string) $matchingOption->value;
+    }
+
+    /**
+     * ============================================================
+     * CHECKBOX
+     * ============================================================
+     */
+
+    /**
+     * Validate and normalize checkbox values.
+     */
+    protected function normalizeCheckboxValue(
+        mixed $value,
+        $serviceField
+    ): array {
+        if (! is_array($value)) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    'The checkbox value must be an array.',
+                ],
+            ]);
+        }
+
+        $baseField = $serviceField->baseField;
+
+        if (! $baseField) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    "The field [{$serviceField->id}] does not have a base field.",
+                ],
+            ]);
+        }
+
+        $options = $baseField->options;
+
+        $validValues = $options
+            ->map(
+                static fn ($option) => strtoupper(
+                    trim((string) $option->value)
+                )
+            )
+            ->all();
+
+        $normalizedValues = [];
+
+        foreach ($value as $item) {
+            if (
+                is_array($item)
+                || is_object($item)
+            ) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'Each checkbox value must be a scalar option.',
+                    ],
+                ]);
+            }
+
+            $normalizedItem = trim(
+                (string) $item
+            );
+
+            if ($normalizedItem === '') {
+                continue;
+            }
+
+            if (
+                ! in_array(
+                    strtoupper($normalizedItem),
+                    $validValues,
+                    true
+                )
+            ) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        "Invalid checkbox option [{$normalizedItem}] for field [{$baseField->code}].",
+                    ],
+                ]);
+            }
+
+            /*
+             * Store the submitted/canonical option value.
+             */
+            $normalizedValues[] = $normalizedItem;
+        }
+
+        return array_values(
+            array_unique($normalizedValues)
+        );
+    }
+
+    /**
+     * ============================================================
+     * NUMBER
+     * ============================================================
+     */
+
+    /**
      * Normalize integer-like values.
      */
-    protected function normalizeNumber(mixed $value): int
-    {
+    protected function normalizeNumber(
+        mixed $value
+    ): int {
         if (
             filter_var(
                 $value,
@@ -458,10 +874,17 @@ class AssessmentServiceValueService
     }
 
     /**
+     * ============================================================
+     * DECIMAL
+     * ============================================================
+     */
+
+    /**
      * Normalize decimal values.
      */
-    protected function normalizeDecimal(mixed $value): float
-    {
+    protected function normalizeDecimal(
+        mixed $value
+    ): float {
         if (! is_numeric($value)) {
             throw ValidationException::withMessages([
                 'services' => [
@@ -474,10 +897,17 @@ class AssessmentServiceValueService
     }
 
     /**
+     * ============================================================
+     * BOOLEAN
+     * ============================================================
+     */
+
+    /**
      * Normalize boolean values.
      */
-    protected function normalizeBoolean(mixed $value): bool
-    {
+    protected function normalizeBoolean(
+        mixed $value
+    ): bool {
         if (is_bool($value)) {
             return $value;
         }
@@ -508,12 +938,19 @@ class AssessmentServiceValueService
     }
 
     /**
+     * ============================================================
+     * DATE
+     * ============================================================
+     */
+
+    /**
      * Normalize date values.
      */
-    protected function normalizeDate(mixed $value): string
-    {
+    protected function normalizeDate(
+        mixed $value
+    ): string {
         try {
-            return \Carbon\Carbon::parse($value)
+            return Carbon::parse($value)
                 ->toDateString();
         } catch (\Throwable) {
             throw ValidationException::withMessages([
@@ -525,11 +962,21 @@ class AssessmentServiceValueService
     }
 
     /**
+     * ============================================================
+     * TEXT
+     * ============================================================
+     */
+
+    /**
      * Normalize text values.
      */
-    protected function normalizeText(mixed $value): string
-    {
-        if (is_array($value) || is_object($value)) {
+    protected function normalizeText(
+        mixed $value
+    ): string {
+        if (
+            is_array($value)
+            || is_object($value)
+        ) {
             throw ValidationException::withMessages([
                 'services' => [
                     'The submitted value must be text.',
@@ -558,70 +1005,96 @@ class AssessmentServiceValueService
             return null;
         }
 
-        if ($types['input_type'] === 'CHECKBOX') {
+        /*
+        |--------------------------------------------------------------------------
+        | CHECKBOX
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $types['input_type'] === 'CHECKBOX'
+        ) {
             if (! is_array($value)) {
                 return (string) $value;
             }
 
-            return implode(', ', array_map(
-                static fn ($item) => (string) $item,
-                $value
-            ));
+            $displayValues = [];
+
+            foreach ($value as $item) {
+                $displayValues[] = $this->resolveOptionLabel(
+                    $item,
+                    $serviceField
+                );
+            }
+
+            return implode(
+                ', ',
+                $displayValues
+            );
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | FILE
+        |--------------------------------------------------------------------------
+        */
 
         if (
             $types['input_type'] === 'FILE'
             || $types['input_type'] === 'MULTI_FILE'
         ) {
             if (is_array($value)) {
-                return implode(', ', array_map(
-                    static fn ($item) => (string) $item,
-                    $value
-                ));
+                return implode(
+                    ', ',
+                    array_map(
+                        static fn ($item) => (string) $item,
+                        $value
+                    )
+                );
             }
 
             return (string) $value;
         }
 
-        if ($types['data_type'] === 'BOOLEAN') {
-            return $value ? 'Yes' : 'No';
+        /*
+        |--------------------------------------------------------------------------
+        | BOOLEAN
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $types['data_type'] === 'BOOLEAN'
+        ) {
+            return $value
+                ? 'Yes'
+                : 'No';
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Select / Radio
+        | SELECT / RADIO
         |--------------------------------------------------------------------------
-        |
-        | Keep the submitted option value as the display value unless
-        | the field configuration provides a matching option label.
-        |
         */
 
-        if (in_array(
-            $types['input_type'],
-            ['SELECT', 'RADIO'],
-            true
-        )) {
-            $options = $serviceField->options ?? [];
-
-            if (is_array($options)) {
-                foreach ($options as $option) {
-                    if (! is_array($option)) {
-                        continue;
-                    }
-
-                    if (
-                        isset($option['value'])
-                        && (string) $option['value'] === (string) $value
-                    ) {
-                        return (string) (
-                            $option['label']
-                            ?? $option['value']
-                        );
-                    }
-                }
-            }
+        if (
+            $types['data_type'] === 'SELECT'
+            || in_array(
+                $types['input_type'],
+                ['SELECT', 'RADIO'],
+                true
+            )
+        ) {
+            return $this->resolveOptionLabel(
+                $value,
+                $serviceField
+            );
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Scalar / JSON
+        |--------------------------------------------------------------------------
+        */
 
         return is_scalar($value)
             ? (string) $value
@@ -629,5 +1102,52 @@ class AssessmentServiceValueService
                 $value,
                 JSON_UNESCAPED_UNICODE
             );
+    }
+
+    /**
+     * ============================================================
+     * OPTION LABEL
+     * ============================================================
+     */
+
+    /**
+     * Resolve configured option label.
+     */
+    protected function resolveOptionLabel(
+        mixed $value,
+        $serviceField
+    ): string {
+        $baseField = $serviceField->baseField;
+
+        if (! $baseField) {
+            return (string) $value;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Base Field Options
+        |--------------------------------------------------------------------------
+        */
+
+        $options = $baseField->options;
+
+        $matchingOption = $options->first(
+            function ($option) use ($value) {
+                return strtoupper(
+                    trim((string) $option->value)
+                ) === strtoupper(
+                    trim((string) $value)
+                );
+            }
+        );
+
+        if (! $matchingOption) {
+            return (string) $value;
+        }
+
+        return (string) (
+            $matchingOption->label
+            ?: $matchingOption->value
+        );
     }
 }

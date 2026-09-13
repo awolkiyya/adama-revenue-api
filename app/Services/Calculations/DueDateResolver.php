@@ -1,12 +1,15 @@
 <?php
 
-namespace App\Services\Financial;
+namespace App\Services\Calculations;
 
 use App\Models\AssessmentService;
 use App\Models\PenaltyRule;
 use App\Models\RevenueSetting;
 use Carbon\Carbon;
+use DateTimeZone;
 use InvalidArgumentException;
+use IntlCalendar;
+use IntlGregorianCalendar;
 
 class DueDateResolver
 {
@@ -44,7 +47,7 @@ class DueDateResolver
     |
     | Example:
     |
-    |     03-30
+    |     06-13
     |
     | The value represents an Ethiopian-calendar month/day.
     |
@@ -76,7 +79,6 @@ class DueDateResolver
         AssessmentService $assessmentService,
         PenaltyRule $penaltyRule,
     ): Carbon {
-
         /*
         |--------------------------------------------------------------------------
         | Validate Persisted Rule
@@ -99,7 +101,6 @@ class DueDateResolver
         */
 
         return match ($penaltyRule->start_type) {
-
             self::RULE_AGREEMENT_DATE =>
                 $this->resolveFromAgreementDate(
                     $assessmentService,
@@ -138,15 +139,11 @@ class DueDateResolver
     |     field_code = AGREEMENT_DATE
     |     value      = "2024-08-01"
     |
-    | No penalty-rule offset is applied here because penalty_rules
-    | do not contain due-date offset fields.
-    |
     */
 
     private function resolveFromAgreementDate(
         AssessmentService $assessmentService,
     ): Carbon {
-
         return $this->getAgreementDate(
             $assessmentService,
         );
@@ -164,7 +161,6 @@ class DueDateResolver
     private function getAgreementDate(
         AssessmentService $assessmentService,
     ): Carbon {
-
         /*
         |--------------------------------------------------------------------------
         | Find Dynamic Field
@@ -246,12 +242,6 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         | Parse Date
         |--------------------------------------------------------------------------
-        |
-        | AGREEMENT_DATE is expected to be stored as an actual date value
-        | such as:
-        |
-        |     2024-08-01
-        |
         */
 
         try {
@@ -260,7 +250,6 @@ class DueDateResolver
             )->startOfDay();
 
         } catch (\Throwable $e) {
-
             throw new InvalidArgumentException(
                 sprintf(
                     'Invalid AGREEMENT_DATE [%s] for assessment service [%s].',
@@ -283,19 +272,27 @@ class DueDateResolver
     |
     | Example:
     |
-    |     "03-30"
+    |     "13-06"
     |
     | This value represents an Ethiopian-calendar month/day.
     |
-    | The actual Gregorian date must be resolved for the Ethiopian
-    | year associated with the assessment.
+    | IMPORTANT:
+    |
+    |     13-06 is NOT a Gregorian date.
+    |
+    | It is a recurring Ethiopian-calendar date:
+    |
+    |     2019 EC → 13/06/2019
+    |     2020 EC → 13/06/2020
+    |     2021 EC → 13/06/2021
+    |
+    | The Ethiopian year is determined from the assessment date.
     |
     */
 
     private function resolveFromFixedPaymentDate(
         AssessmentService $assessmentService,
     ): Carbon {
-
         /*
         |--------------------------------------------------------------------------
         | Resolve Active Revenue Settings
@@ -321,8 +318,7 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         */
 
-        $annualPaymentDate =
-            $settings->annual_payment_due_date;
+        $annualPaymentDate = $settings->annual_payment_due_date;
 
         if (
             $annualPaymentDate === null ||
@@ -336,29 +332,39 @@ class DueDateResolver
             );
         }
 
+        $annualPaymentDate = trim(
+            (string) $annualPaymentDate,
+        );
+
         /*
         |--------------------------------------------------------------------------
         | Validate MM-DD Format
         |--------------------------------------------------------------------------
+        |
+        | Ethiopian calendar:
+        |
+        |     Months 1-12 → maximum 30 days
+        |     Month 13    → maximum 6 days
+        |
         */
 
         if (
             !preg_match(
                 '/^(0[1-9]|1[0-3])-(0[1-9]|[12][0-9]|30)$/',
-                (string) $annualPaymentDate,
+                $annualPaymentDate,
             )
         ) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Invalid annual payment due date [%s]. Expected Ethiopian MM-DD format.',
-                    (string) $annualPaymentDate,
+                    $annualPaymentDate,
                 )
             );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Validate Ethiopian Month/Day Combination
+        | Extract Ethiopian Month And Day
         |--------------------------------------------------------------------------
         */
 
@@ -370,29 +376,25 @@ class DueDateResolver
             ),
         );
 
-        if (
-            $month === 13 &&
-            $day > 6
-        ) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Invalid Ethiopian annual payment due date [%s]. Pagume supports days 1-6.',
-                    (string) $annualPaymentDate,
-                )
-            );
-        }
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Pagume
+        |--------------------------------------------------------------------------
+        |
+        | Ethiopian month 13 (Pagume) has:
+        |
+        |     5 days in a normal year
+        |     6 days in a leap year
+        |
+        | We cannot fully validate day 6 until the Ethiopian year is known,
+        | so this is checked after resolving the assessment's Ethiopian year.
+        |
+        */
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve Relevant Ethiopian Year
+        | Resolve Assessment
         |--------------------------------------------------------------------------
-        |
-        | The assessment date determines which Ethiopian year the recurring
-        | payment date belongs to.
-        |
-        | The actual conversion from Ethiopian calendar to Gregorian calendar
-        | should be performed by the application's Ethiopian calendar service.
-        |
         */
 
         $assessment = $assessmentService->assessment;
@@ -424,32 +426,18 @@ class DueDateResolver
             );
         }
 
+        $assessmentDate = Carbon::parse(
+            $assessmentDate,
+        )->startOfDay();
+
         /*
         |--------------------------------------------------------------------------
-        | IMPORTANT
+        | Resolve Ethiopian Annual Payment Date
         |--------------------------------------------------------------------------
-        |
-        | At this point the application must convert:
-        |
-        |     Ethiopian year + month + day
-        |
-        | into:
-        |
-        |     Gregorian Carbon date
-        |
-        | Do NOT use:
-        |
-        |     Carbon::createFromDate()
-        |
-        | because Carbon uses the Gregorian calendar.
-        |
-        | Replace the method below with the existing Ethiopian calendar
-        | service used by the application.
-        |
         */
 
         return $this->resolveEthiopianAnnualPaymentDate(
-            assessmentDate: Carbon::parse($assessmentDate)->startOfDay(),
+            assessmentDate: $assessmentDate,
             month: $month,
             day: $day,
             assessmentService: $assessmentService,
@@ -461,11 +449,32 @@ class DueDateResolver
     | Resolve Ethiopian Annual Payment Date
     |--------------------------------------------------------------------------
     |
-    | This method intentionally isolates calendar conversion from
-    | financial-rule resolution.
+    | Converts:
     |
-    | The implementation should delegate to the application's
-    | Ethiopian calendar service.
+    |     Gregorian assessment date
+    |              ↓
+    |     Ethiopian assessment year
+    |              ↓
+    |     Ethiopian year + configured month/day
+    |              ↓
+    |     Gregorian due date
+    |
+    | Example:
+    |
+    |     Assessment:
+    |         2026-09-12 Gregorian
+    |
+    |     Ethiopian:
+    |         2019 EC
+    |
+    |     Configuration:
+    |         06-13
+    |
+    |     Target:
+    |         13/06/2019 EC
+    |
+    |     Result:
+    |         Gregorian equivalent of 13/06/2019 EC
     |
     */
 
@@ -475,26 +484,285 @@ class DueDateResolver
         int $day,
         AssessmentService $assessmentService,
     ): Carbon {
+        /*
+        |--------------------------------------------------------------------------
+        | Verify PHP Intl Extension
+        |--------------------------------------------------------------------------
+        */
+
+        if (!class_exists(IntlCalendar::class)) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'PHP Intl extension is required to resolve Ethiopian annual payment date [%02d-%02d] for assessment service [%s]. Enable ext-intl.',
+                    $month,
+                    $day,
+                    $assessmentService->id,
+                )
+            );
+        }
 
         /*
         |--------------------------------------------------------------------------
-        | TODO: Replace With Existing Ethiopian Calendar Service
+        | Convert Assessment Gregorian Date → Ethiopian Date
+        |--------------------------------------------------------------------------
+        */
+
+        $assessmentTimezone = new DateTimeZone(
+            config('app.timezone', 'Africa/Addis_Ababa'),
+        );
+
+        $ethiopianCalendar = IntlCalendar::createInstance(
+            $assessmentTimezone,
+            'en_US@calendar=ethiopic',
+        );
+
+        if (!$ethiopianCalendar) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Unable to initialize Ethiopian calendar for assessment service [%s].',
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Set Assessment Date
+        |--------------------------------------------------------------------------
+        */
+
+        $ethiopianCalendar->setTime(
+            $assessmentDate
+                ->copy()
+                ->setTimezone($assessmentTimezone)
+                ->getTimestamp() * 1000,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Read Ethiopian Assessment Year
+        |--------------------------------------------------------------------------
+        */
+
+        $ethiopianYear = $ethiopianCalendar->get(
+            IntlCalendar::FIELD_YEAR,
+        );
+
+        if ($ethiopianYear <= 0) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Unable to determine Ethiopian year for assessment service [%s].',
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Ethiopian Month
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $month < 1 ||
+            $month > 13
+        ) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid Ethiopian month [%d] for assessment service [%s].',
+                    $month,
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Ethiopian Day
+        |--------------------------------------------------------------------------
+        */
+
+        if ($day < 1) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid Ethiopian day [%d] for assessment service [%s].',
+                    $day,
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | ICU MONTH IS ZERO-BASED
         |--------------------------------------------------------------------------
         |
-        | The application should have one authoritative Ethiopian calendar
-        | conversion service.
+        | Ethiopian:
         |
-        | Do not implement a second calendar algorithm here.
+        |     Month 1  → ICU month 0
+        |     Month 2  → ICU month 1
+        |     ...
+        |     Month 13 → ICU month 12
         |
         */
 
-        throw new InvalidArgumentException(
-            sprintf(
-                'Ethiopian calendar conversion is required to resolve annual payment date [%02d-%02d] for assessment service [%s]. Configure the application Ethiopian calendar service.',
-                $month,
-                $day,
-                $assessmentService->id,
-            )
+        $ethiopianMonth = $month - 1;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Create Target Ethiopian Date
+        |--------------------------------------------------------------------------
+        */
+
+        $targetEthiopianCalendar = IntlCalendar::createInstance(
+            $assessmentTimezone,
+            'en_US@calendar=ethiopic',
         );
+
+        if (!$targetEthiopianCalendar) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Unable to initialize Ethiopian target calendar for assessment service [%s].',
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Clear Calendar Before Setting Exact Date
+        |--------------------------------------------------------------------------
+        */
+
+        $targetEthiopianCalendar->clear();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Set Ethiopian Year / Month / Day
+        |--------------------------------------------------------------------------
+        */
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_YEAR,
+            $ethiopianYear,
+        );
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_MONTH,
+            $ethiopianMonth,
+        );
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_DAY_OF_MONTH,
+            $day,
+        );
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_HOUR_OF_DAY,
+            0,
+        );
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_MINUTE,
+            0,
+        );
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_SECOND,
+            0,
+        );
+
+        $targetEthiopianCalendar->set(
+            IntlCalendar::FIELD_MILLISECOND,
+            0,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Calendar Date
+        |--------------------------------------------------------------------------
+        */
+
+        $actualYear = $targetEthiopianCalendar->get(
+            IntlCalendar::FIELD_YEAR,
+        );
+
+        $actualMonth = $targetEthiopianCalendar->get(
+            IntlCalendar::FIELD_MONTH,
+        );
+
+        $actualDay = $targetEthiopianCalendar->get(
+            IntlCalendar::FIELD_DAY_OF_MONTH,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ensure ICU Did Not Normalize An Invalid Date
+        |--------------------------------------------------------------------------
+        |
+        | This is particularly important for:
+        |
+        |     Pagume day 6
+        |
+        | in a non-leap Ethiopian year.
+        |
+        */
+
+        if (
+            $actualYear !== $ethiopianYear ||
+            $actualMonth !== $ethiopianMonth ||
+            $actualDay !== $day
+        ) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid Ethiopian annual payment date [%02d-%02d] for Ethiopian year [%d] and assessment service [%s].',
+                    $month,
+                    $day,
+                    $ethiopianYear,
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Convert Ethiopian Calendar → Gregorian Timestamp
+        |--------------------------------------------------------------------------
+        */
+
+        $timestampMilliseconds = $targetEthiopianCalendar->getTime();
+
+        if ($timestampMilliseconds === false) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Unable to convert Ethiopian annual payment date [%02d-%02d/%d] to Gregorian date for assessment service [%s].',
+                    $month,
+                    $day,
+                    $ethiopianYear,
+                    $assessmentService->id,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Convert Timestamp → Carbon
+        |--------------------------------------------------------------------------
+        */
+
+        $timestampSeconds = $timestampMilliseconds / 1000;
+
+        $dueDate = Carbon::createFromTimestamp(
+            $timestampSeconds,
+            $assessmentTimezone,
+        )->startOfDay();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Return Gregorian Due Date
+        |--------------------------------------------------------------------------
+        */
+
+        return $dueDate;
     }
 }

@@ -2,8 +2,8 @@
 
 namespace App\Modules\Invoice\Services;
 
-use App\Domain\Revenue\Calculations\InterestCalculator;
-use App\Domain\Revenue\Calculations\PenaltyCalculator;
+use  App\Services\Calculations\InterestCalculator;
+use App\Services\Calculations\PenaltyCalculator;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use Carbon\Carbon;

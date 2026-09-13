@@ -6,7 +6,7 @@ use App\Models\Assessment;
 use App\Models\AssessmentService as AssessmentServiceModel;
 use App\Models\AssessmentServiceValue;
 use App\Models\File;
-use App\Services\StorageService;
+use App\Services\Storage\StorageService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;

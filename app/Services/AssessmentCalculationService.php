@@ -14,7 +14,7 @@ class AssessmentCalculationService
     public function __construct(
         private readonly TariffResolver $resolver,
         private readonly TariffCalculator $calculator,
-        private readonly \App\Services\Financial\DueDateResolver $dueDateResolver,
+        private readonly  \App\Services\Calculations\DueDateResolver $dueDateResolver,
     ) {
     }
 

@@ -2,9 +2,9 @@
 
 namespace App\Modules\Assessment\Requests;
 
+use App\Models\RevenueService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
-
 
 class UpdateAssessmentRequest extends FormRequest
 {
@@ -13,15 +13,13 @@ class UpdateAssessmentRequest extends FormRequest
         return true;
     }
 
-
     public function rules(): array
     {
         return [
-
             'taxpayerId' => [
                 'sometimes',
                 'required',
-                'string',
+                'uuid',
                 'exists:citizens,id',
             ],
 
@@ -48,7 +46,7 @@ class UpdateAssessmentRequest extends FormRequest
 
             'services.*.serviceId' => [
                 'required',
-                'string',
+                'uuid',
                 'exists:revenue_services,id',
             ],
 
@@ -56,6 +54,53 @@ class UpdateAssessmentRequest extends FormRequest
                 'required',
                 'string',
                 'max:100',
+
+                function (
+                    string $attribute,
+                    mixed $value,
+                    \Closure $fail
+                ): void {
+                    preg_match(
+                        '/services\.(\d+)\.serviceCode/',
+                        $attribute,
+                        $matches
+                    );
+
+                    if (! isset($matches[1])) {
+                        return;
+                    }
+
+                    $index = (int) $matches[1];
+
+                    $serviceId = $this->input(
+                        "services.{$index}.serviceId"
+                    );
+
+                    if (! $serviceId) {
+                        return;
+                    }
+
+                    $serviceCode = trim((string) $value);
+
+                    $matchesService = RevenueService::query()
+                        ->whereKey($serviceId)
+                        ->whereHas(
+                            'revenueCode',
+                            function ($query) use ($serviceCode) {
+                                $query->where(
+                                    'code',
+                                    $serviceCode
+                                );
+                            }
+                        )
+                        ->exists();
+
+                    if (! $matchesService) {
+                        $fail(
+                            "The serviceCode does not match serviceId [{$serviceId}]."
+                        );
+                    }
+                },
             ],
 
             'services.*.fields' => [
@@ -71,31 +116,33 @@ class UpdateAssessmentRequest extends FormRequest
         ];
     }
 
-
-    public function prepareForValidation(): void
+    protected function prepareForValidation(): void
     {
-        if (
-            is_string(
-                $this->input('services')
-            )
-        ) {
+        $services = $this->input('services');
 
-            $decoded =
-                json_decode(
-                    $this->input('services'),
-                    true
-                );
+        if (is_string($services)) {
+            $decoded = json_decode($services, true);
 
-            if (
-                json_last_error() ===
-                JSON_ERROR_NONE
-            ) {
-
+            if (json_last_error() === JSON_ERROR_NONE) {
                 $this->merge([
-                    'services' =>
-                        $decoded,
+                    'services' => $decoded,
                 ]);
             }
         }
+    }
+
+    public function services(): array
+    {
+        return $this->validated('services', []);
+    }
+
+    public function taxpayerId(): ?string
+    {
+        return $this->validated('taxpayerId');
+    }
+
+    public function status(): ?string
+    {
+        return $this->validated('status');
     }
 }

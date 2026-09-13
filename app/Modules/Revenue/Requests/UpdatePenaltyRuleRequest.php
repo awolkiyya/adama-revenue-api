@@ -51,24 +51,6 @@ class UpdatePenaltyRuleRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Progressive Penalty Rates
             |--------------------------------------------------------------------------
-            |
-            | Rates are stored as percentage points.
-            |
-            | Example:
-            |
-            |     initial_rate   = 5
-            |     increment_rate = 2
-            |     maximum_rate   = 25
-            |
-            | Result:
-            |
-            |     Month 1  = 5%
-            |     Month 2  = 7%
-            |     Month 3  = 9%
-            |     ...
-            |     Month 11 = 25%
-            |     Month 12+ = 25%
-            |
             */
 
             'initial_rate' => [
@@ -100,29 +82,22 @@ class UpdatePenaltyRuleRequest extends FormRequest
             | Penalty Commencement Type
             |--------------------------------------------------------------------------
             |
-            | FIXED_FISCAL_MONTH:
+            | FIXED_PAYMENT_DATE:
             |
-            |     The actual fiscal payment-period start is resolved
-            |     from Revenue General Settings:
-            |
-            |         payment_start_month
-            |         payment_start_day
+            |     Commencement is resolved from the configured
+            |     annual payment due date.
             |
             | AGREEMENT_DATE:
             |
-            |     The commencement date is resolved from the
-            |     applicable agreement date.
-            |
-            | IMPORTANT:
-            |
-            |     No fiscal month is stored on the penalty rule.
+            |     Commencement is resolved from the applicable
+            |     agreement date.
             |
             */
 
             'start_type' => [
                 'required',
                 Rule::in([
-                    PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
+                    PenaltyRule::START_TYPE_FIXED_PAYMENT_DATE,
                     PenaltyRule::START_TYPE_AGREEMENT_DATE,
                 ]),
             ],
@@ -131,9 +106,6 @@ class UpdatePenaltyRuleRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Increment Period
             |--------------------------------------------------------------------------
-            |
-            | MONTH is currently the only supported progression period.
-            |
             */
 
             'increment_period' => [
@@ -336,13 +308,12 @@ class UpdatePenaltyRuleRequest extends FormRequest
         |
         | MONTH is currently the only supported increment period.
         |
-        | The client does not need to control this value.
+        | The backend controls this value.
         |
         */
 
         $this->merge([
-            'increment_period' =>
-                PenaltyRule::INCREMENT_PERIOD_MONTH,
+            'increment_period' => PenaltyRule::INCREMENT_PERIOD_MONTH,
         ]);
     }
 
@@ -359,8 +330,7 @@ class UpdatePenaltyRuleRequest extends FormRequest
             |
             | maximum_rate must be greater than or equal to initial_rate.
             |
-            | BCMath is used instead of floating-point comparison because
-            | these values represent financial/legal percentage rates.
+            | BCMath avoids floating-point comparison issues.
             |
             */
 

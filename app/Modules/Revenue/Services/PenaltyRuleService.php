@@ -225,11 +225,6 @@ class PenaltyRuleService
             |--------------------------------------------------------------------------
             | Prepare Update
             |--------------------------------------------------------------------------
-            |
-            | Only canonical business fields may be updated.
-            |
-            | created_by is intentionally never modified.
-            |
             */
 
             $updateData = [];
@@ -290,10 +285,6 @@ class PenaltyRuleService
             |--------------------------------------------------------------------------
             | Audit UPDATE
             |--------------------------------------------------------------------------
-            |
-            | Do not create an audit entry when no business
-            | configuration actually changed.
-            |
             */
 
             if (
@@ -557,9 +548,6 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         | Increment Period
         |--------------------------------------------------------------------------
-        |
-        | MONTH is the only supported progression period.
-        |
         */
 
         $data['increment_period'] =
@@ -596,18 +584,14 @@ class PenaltyRuleService
         if (array_key_exists('legal_reference', $data)) {
             $data['legal_reference'] =
                 $data['legal_reference'] !== null
-                    ? trim(
-                        (string) $data['legal_reference']
-                    )
+                    ? trim((string) $data['legal_reference'])
                     : null;
         }
 
         if (array_key_exists('description', $data)) {
             $data['description'] =
                 $data['description'] !== null
-                    ? trim(
-                        (string) $data['description']
-                    )
+                    ? trim((string) $data['description'])
                     : null;
         }
 
@@ -615,10 +599,6 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         | Remove Stale / Unsupported Fields
         |--------------------------------------------------------------------------
-        |
-        | These fields are deliberately discarded so they cannot
-        | accidentally reach the model or audit payload.
-        |
         */
 
         unset(
@@ -753,7 +733,7 @@ class PenaltyRuleService
         if (!in_array(
             $startType,
             [
-                PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
+                PenaltyRule::START_TYPE_FIXED_PAYMENT_DATE,
                 PenaltyRule::START_TYPE_AGREEMENT_DATE,
             ],
             true
@@ -939,9 +919,7 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         */
 
-        if (
-            $penaltyRule->effective_from === null
-        ) {
+        if ($penaltyRule->effective_from === null) {
             throw ValidationException::withMessages([
                 'effective_from' =>
                     'The penalty rule must have an effective start date.',
@@ -950,8 +928,7 @@ class PenaltyRuleService
 
         if (
             $penaltyRule->effective_to !== null
-            &&
-            $penaltyRule->effective_to
+            && $penaltyRule->effective_to
                 ->lt($penaltyRule->effective_from)
         ) {
             throw ValidationException::withMessages([
@@ -969,7 +946,7 @@ class PenaltyRuleService
         if (!in_array(
             $penaltyRule->start_type,
             [
-                PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
+                PenaltyRule::START_TYPE_FIXED_PAYMENT_DATE,
                 PenaltyRule::START_TYPE_AGREEMENT_DATE,
             ],
             true
@@ -982,24 +959,24 @@ class PenaltyRuleService
 
         /*
         |--------------------------------------------------------------------------
-        | Fixed Fiscal Month
+        | Fixed Payment Date
         |--------------------------------------------------------------------------
         |
-        | No fiscal month is stored on the penalty rule.
+        | No payment date is stored on the penalty rule.
         |
-        | FIXED_FISCAL_MONTH resolves its actual commencement period
+        | FIXED_PAYMENT_DATE resolves its actual commencement date
         | from Revenue General Settings.
         |
         */
 
         if (
             $penaltyRule->start_type ===
-            PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH
+            PenaltyRule::START_TYPE_FIXED_PAYMENT_DATE
         ) {
             /*
              * No additional rule-level validation is required here.
              *
-             * The actual payment-period month/day belongs to
+             * The actual payment due date belongs to
              * Revenue General Settings.
              */
         }
@@ -1136,9 +1113,6 @@ class PenaltyRuleService
         |--------------------------------------------------------------------------
         | Existing End >= New Start
         |--------------------------------------------------------------------------
-        |
-        | NULL effective_to represents an open-ended period.
-        |
         */
 
         $query->where(function (

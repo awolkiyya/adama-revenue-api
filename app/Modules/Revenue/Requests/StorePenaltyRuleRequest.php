@@ -44,24 +44,6 @@ class StorePenaltyRuleRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Progressive Penalty Rates
             |--------------------------------------------------------------------------
-            |
-            | Rates are stored as percentage points.
-            |
-            | Example:
-            |
-            |     initial_rate   = 5
-            |     increment_rate = 2
-            |     maximum_rate   = 25
-            |
-            | Result:
-            |
-            |     Period 1 = 5%
-            |     Period 2 = 7%
-            |     Period 3 = 9%
-            |     ...
-            |     Period 11 = 25%
-            |     Period 12+ = 25%
-            |
             */
 
             'initial_rate' => [
@@ -93,26 +75,24 @@ class StorePenaltyRuleRequest extends FormRequest
             | Penalty Commencement Type
             |--------------------------------------------------------------------------
             |
-            | FIXED_FISCAL_MONTH:
-            |     The actual payment-period start is resolved from
-            |     Revenue General Settings:
+            | FIXED_PAYMENT_DATE:
             |
-            |         payment_start_month
-            |         payment_start_day
+            |     The commencement date is resolved from the configured
+            |     annual payment due date in Revenue Settings.
             |
             | AGREEMENT_DATE:
-            |     The penalty commencement date is resolved from the
-            |     relevant agreement date.
             |
-            | IMPORTANT:
-            |     No fiscal month is stored on the penalty rule itself.
+            |     The commencement date is resolved from the applicable
+            |     agreement date.
+            |
+            | No commencement date is stored directly on the penalty rule.
             |
             */
 
             'start_type' => [
                 'required',
                 Rule::in([
-                    PenaltyRule::START_TYPE_FIXED_FISCAL_MONTH,
+                    PenaltyRule::START_TYPE_FIXED_PAYMENT_DATE,
                     PenaltyRule::START_TYPE_AGREEMENT_DATE,
                 ]),
             ],
@@ -319,14 +299,12 @@ class StorePenaltyRuleRequest extends FormRequest
         |--------------------------------------------------------------------------
         |
         | MONTH is currently the only supported increment period.
-        |
-        | The client does not need to control this value.
+        | The backend controls this value.
         |
         */
 
         $this->merge([
-            'increment_period' =>
-                PenaltyRule::INCREMENT_PERIOD_MONTH,
+            'increment_period' => PenaltyRule::INCREMENT_PERIOD_MONTH,
         ]);
     }
 

@@ -23,17 +23,16 @@ class PenaltyRule extends Model
 
     /**
      * Penalty commencement is resolved from the global
-     * revenue payment-period configuration.
+     * revenue payment-date configuration.
      *
-     * Source:
-     * revenue_settings.payment_start_month
-     * revenue_settings.payment_start_day
+     * The actual payment date configuration is maintained
+     * by the revenue settings / fiscal configuration.
      */
-    public const START_TYPE_FIXED_FISCAL_MONTH = 'FIXED_FISCAL_MONTH';
+    public const START_TYPE_FIXED_PAYMENT_DATE = 'FIXED_PAYMENT_DATE';
 
     /**
      * Penalty commencement is resolved from the
-     * applicable agreement date.
+     * applicable agreement signing date.
      */
     public const START_TYPE_AGREEMENT_DATE = 'AGREEMENT_DATE';
 
@@ -236,13 +235,13 @@ class PenaltyRule extends Model
     }
 
     /**
-     * Rules using a fixed Ethiopian fiscal-month commencement.
+     * Rules using the global fixed payment date.
      */
-    public function scopeFixedFiscalMonth(Builder $query): Builder
+    public function scopeFixedPaymentDate(Builder $query): Builder
     {
         return $query->where(
             'start_type',
-            self::START_TYPE_FIXED_FISCAL_MONTH
+            self::START_TYPE_FIXED_PAYMENT_DATE
         );
     }
 
@@ -365,21 +364,15 @@ class PenaltyRule extends Model
 
     /**
      * Determine whether commencement uses the global
-     * Ethiopian fiscal payment-period configuration.
+     * fixed payment date configuration.
      *
-     * IMPORTANT:
-     *
-     * This model does NOT contain a fiscal month.
-     *
-     * The calculation/orchestration layer must read:
-     *
-     * revenue_settings.payment_start_month
-     * revenue_settings.payment_start_day
+     * The actual payment-date configuration is maintained
+     * outside this model.
      */
-    public function startsFromFiscalMonth(): bool
+    public function startsFromPaymentDate(): bool
     {
         return $this->start_type ===
-            self::START_TYPE_FIXED_FISCAL_MONTH;
+            self::START_TYPE_FIXED_PAYMENT_DATE;
     }
 
     /**
@@ -559,8 +552,8 @@ class PenaltyRule extends Model
     public function getStartTypeLabelAttribute(): string
     {
         return match ($this->start_type) {
-            self::START_TYPE_FIXED_FISCAL_MONTH =>
-                'Ethiopian Fiscal Month',
+            self::START_TYPE_FIXED_PAYMENT_DATE =>
+                'Fixed Payment Date',
 
             self::START_TYPE_AGREEMENT_DATE =>
                 'Agreement Date',
