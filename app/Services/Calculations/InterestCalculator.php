@@ -2,124 +2,254 @@
 
 namespace App\Services\Calculations;
 
-use App\Models\AssessmentItem;
+use App\Models\AssessmentService;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 class InterestCalculator
 {
     /**
-     * Calculate accrued interest for an assessment item.
-     *
-     * Interest starts after the item's due date.
-     *
-     * YEAR:
-     *     Annual rate is accrued based on completed months.
-     *
-     *     Example:
-     *         Principal = 100,000
-     *         Rate      = 24.725% / YEAR
-     *         Elapsed   = 3 months
-     *
-     *         Interest =
-     *             100,000 × 24.725% × (3 / 12)
-     *             = 6,181.25
-     *
-     * MONTH:
-     *     Monthly rate is accrued based on completed months.
-     *
-     * DAY:
-     *     Daily rate is accrued based on elapsed days.
+     * ================================================================
+     * CALCULATE INTEREST
+     * ================================================================
      */
     public function calculate(
-        AssessmentItem $item,
+        AssessmentService $item,
         CarbonInterface|string|null $asOfDate = null
     ): float {
+
         $asOfDate = $this->normalizeDate($asOfDate);
+
+        Log::info('Interest calculation started.', [
+            'assessment_service_id' => $item->getKey(),
+            'assessment_service_class' => $item::class,
+            'as_of_date' => $asOfDate->toDateString(),
+            'due_date' => $item->due_date,
+            'computed_amount' => $item->computed_amount ?? null,
+            'principal_amount' => $item->principal_amount ?? null,
+            'paid_principal_amount' => $item->paid_principal_amount ?? null,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 1. RESOLVE INTEREST RULE
+        |--------------------------------------------------------------------------
+        */
 
         $rule = $item->interestRule;
 
+        if (! $rule) {
+
+            Log::info(
+                'Interest calculation skipped: no interest rule.',
+                [
+                    'assessment_service_id' => $item->getKey(),
+                ]
+            );
+
+            return 0.0;
+        }
+
+        Log::info('Interest rule resolved.', [
+            'assessment_service_id' => $item->getKey(),
+            'interest_rule_id' => $rule->getKey(),
+            'is_active' => $rule->is_active,
+            'calculation_basis' => $rule->calculation_basis,
+            'calculation_method' => $rule->calculation_method,
+            'rate' => $rule->rate,
+            'rate_period' => $rule->rate_period,
+            'effective_from' => $rule->effective_from,
+            'effective_to' => $rule->effective_to,
+        ]);
+
         /*
-         * No interest rule means no interest.
-         */
-        if (!$rule) {
+        |--------------------------------------------------------------------------
+        | 2. ACTIVE CHECK
+        |--------------------------------------------------------------------------
+        */
+
+        if (! $rule->is_active) {
+
+            Log::info(
+                'Interest calculation skipped: interest rule inactive.',
+                [
+                    'assessment_service_id' => $item->getKey(),
+                    'interest_rule_id' => $rule->getKey(),
+                ]
+            );
+
             return 0.0;
         }
 
         /*
-         * Inactive rules must not be applied.
-         */
-        if (!$rule->is_active) {
-            return 0.0;
+        |--------------------------------------------------------------------------
+        | 3. EFFECTIVE DATE CHECK
+        |--------------------------------------------------------------------------
+        */
+
+        if ($rule->effective_from !== null) {
+
+            $effectiveFrom = Carbon::parse(
+                $rule->effective_from
+            )->startOfDay();
+
+            if ($asOfDate->lt($effectiveFrom)) {
+
+                Log::info(
+                    'Interest calculation skipped: before effective date.',
+                    [
+                        'assessment_service_id' => $item->getKey(),
+                        'interest_rule_id' => $rule->getKey(),
+                        'effective_from' => $effectiveFrom->toDateString(),
+                        'as_of_date' => $asOfDate->toDateString(),
+                    ]
+                );
+
+                return 0.0;
+            }
+        }
+
+        if ($rule->effective_to !== null) {
+
+            $effectiveTo = Carbon::parse(
+                $rule->effective_to
+            )->startOfDay();
+
+            if ($asOfDate->gt($effectiveTo)) {
+
+                Log::info(
+                    'Interest calculation skipped: after effective date.',
+                    [
+                        'assessment_service_id' => $item->getKey(),
+                        'interest_rule_id' => $rule->getKey(),
+                        'effective_to' => $effectiveTo->toDateString(),
+                        'as_of_date' => $asOfDate->toDateString(),
+                    ]
+                );
+
+                return 0.0;
+            }
         }
 
         /*
-         * Check legal effectiveness.
-         */
-        if (
-            $rule->effective_from !== null &&
-            $asOfDate->lt(
-                Carbon::parse($rule->effective_from)->startOfDay()
-            )
-        ) {
+        |--------------------------------------------------------------------------
+        | 4. DUE DATE
+        |--------------------------------------------------------------------------
+        */
+
+        if (! $item->due_date) {
+
+            Log::warning(
+                'Interest calculation skipped: assessment service has no due date.',
+                [
+                    'assessment_service_id' => $item->getKey(),
+                ]
+            );
+
             return 0.0;
         }
 
-        if (
-            $rule->effective_to !== null &&
-            $asOfDate->gt(
-                Carbon::parse($rule->effective_to)->startOfDay()
-            )
-        ) {
-            return 0.0;
-        }
+        $dueDate = Carbon::parse(
+            $item->due_date
+        )->startOfDay();
+
+        Log::info('Interest due date resolved.', [
+            'assessment_service_id' => $item->getKey(),
+            'due_date' => $dueDate->toDateString(),
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
 
         /*
-         * Interest requires a due date.
-         */
-        if (!$item->due_date) {
-            return 0.0;
-        }
+        |--------------------------------------------------------------------------
+        | 5. OVERDUE CHECK
+        |--------------------------------------------------------------------------
+        */
 
-        $dueDate = Carbon::parse($item->due_date)
-            ->startOfDay();
-
-        /*
-         * Interest does not accrue on or before the due date.
-         */
         if ($asOfDate->lte($dueDate)) {
+
+            Log::info(
+                'Interest calculation skipped: assessment service is not overdue.',
+                [
+                    'assessment_service_id' => $item->getKey(),
+                    'due_date' => $dueDate->toDateString(),
+                    'as_of_date' => $asOfDate->toDateString(),
+                ]
+            );
+
             return 0.0;
         }
 
         /*
-         * Determine the monetary basis.
-         */
+        |--------------------------------------------------------------------------
+        | 6. DETERMINE BASIS
+        |--------------------------------------------------------------------------
+        */
+
         $basis = $this->determineBasis(
-            $item,
-            $rule
+            item: $item,
+            rule: $rule,
         );
 
+        Log::info('Interest calculation basis resolved.', [
+            'assessment_service_id' => $item->getKey(),
+            'interest_rule_id' => $rule->getKey(),
+            'calculation_basis' => $rule->calculation_basis,
+            'basis_amount' => $basis,
+        ]);
+
         if ($basis <= 0) {
-            return 0.0;
-        }
 
-        $rate = (float) $rule->rate;
+            Log::info(
+                'Interest calculation skipped: calculation basis is zero.',
+                [
+                    'assessment_service_id' => $item->getKey(),
+                    'basis' => $basis,
+                ]
+            );
 
-        if ($rate <= 0) {
             return 0.0;
         }
 
         /*
-         * Calculate interest according to the configured method.
-         */
-        return match ($rule->calculation_method) {
+        |--------------------------------------------------------------------------
+        | 7. RATE
+        |--------------------------------------------------------------------------
+        */
+
+        $rate = max(
+            0.0,
+            (float) $rule->rate
+        );
+
+        if ($rate <= 0) {
+
+            Log::info(
+                'Interest calculation skipped: interest rate is zero.',
+                [
+                    'assessment_service_id' => $item->getKey(),
+                    'rate' => $rate,
+                ]
+            );
+
+            return 0.0;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 8. CALCULATE INTEREST
+        |--------------------------------------------------------------------------
+        */
+
+        $interest = match ($rule->calculation_method) {
+
             'SIMPLE' => $this->simpleInterest(
                 principal: $basis,
                 rate: $rate,
                 period: $rule->rate_period,
                 dueDate: $dueDate,
-                asOfDate: $asOfDate
+                asOfDate: $asOfDate,
             ),
 
             'COMPOUND' => $this->compoundInterest(
@@ -127,33 +257,34 @@ class InterestCalculator
                 rate: $rate,
                 period: $rule->rate_period,
                 dueDate: $dueDate,
-                asOfDate: $asOfDate
+                asOfDate: $asOfDate,
             ),
 
             default => throw new InvalidArgumentException(
                 "Unsupported interest calculation method: {$rule->calculation_method}"
             ),
         };
+
+        Log::info('Interest calculation completed.', [
+            'assessment_service_id' => $item->getKey(),
+            'interest_rule_id' => $rule->getKey(),
+            'calculation_method' => $rule->calculation_method,
+            'calculation_basis' => $rule->calculation_basis,
+            'basis' => $basis,
+            'rate' => $rate,
+            'rate_period' => $rule->rate_period,
+            'interest_amount' => $interest,
+            'due_date' => $dueDate->toDateString(),
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
+
+        return $interest;
     }
 
     /**
-     * Calculate simple interest.
-     *
-     * Formula:
-     *
-     *     I = P × r × t
-     *
-     * For YEAR:
-     *
-     *     t = completed months / 12
-     *
-     * For MONTH:
-     *
-     *     t = completed months
-     *
-     * For DAY:
-     *
-     *     t = elapsed days
+     * ================================================================
+     * SIMPLE INTEREST
+     * ================================================================
      */
     protected function simpleInterest(
         float $principal,
@@ -162,42 +293,26 @@ class InterestCalculator
         CarbonInterface $dueDate,
         CarbonInterface $asOfDate
     ): float {
+
         $time = $this->periodFraction(
             period: $period,
             dueDate: $dueDate,
-            asOfDate: $asOfDate
+            asOfDate: $asOfDate,
         );
 
         $interest = $principal
             * ($rate / 100)
             * $time;
 
-        return $this->roundMoney($interest);
+        return $this->roundMoney(
+            $interest
+        );
     }
 
     /**
-     * Calculate compound interest.
-     *
-     * IMPORTANT:
-     *
-     * Compound interest requires a periodic compounding convention.
-     *
-     * This implementation uses:
-     *
-     * YEAR:
-     *     Annual rate converted to a monthly rate:
-     *
-     *         monthlyRate = annualRate / 12
-     *
-     *     Compounding occurs for every completed month.
-     *
-     * MONTH:
-     *     Configured rate is the monthly rate.
-     *
-     * DAY:
-     *     Configured rate is the daily rate.
-     *
-     * Partial periods do not create an additional compound period.
+     * ================================================================
+     * COMPOUND INTEREST
+     * ================================================================
      */
     protected function compoundInterest(
         float $principal,
@@ -206,10 +321,11 @@ class InterestCalculator
         CarbonInterface $dueDate,
         CarbonInterface $asOfDate
     ): float {
+
         $periods = $this->completedPeriods(
             period: $period,
             dueDate: $dueDate,
-            asOfDate: $asOfDate
+            asOfDate: $asOfDate,
         );
 
         if ($periods <= 0) {
@@ -217,33 +333,43 @@ class InterestCalculator
         }
 
         /*
-         * Determine the periodic rate used for compounding.
-         */
+        |--------------------------------------------------------------------------
+        | Convert annual rate to monthly rate.
+        |--------------------------------------------------------------------------
+        |
+        | For MONTH:
+        |     supplied rate is monthly.
+        |
+        | For DAY:
+        |     supplied rate is daily.
+        |
+        | For YEAR:
+        |     supplied rate is annual and is compounded monthly.
+        |
+        */
+
         $periodRate = match ($period) {
-            /*
-             * Annual rate compounded monthly.
-             *
-             * Example:
-             *
-             * 24.725% / 12
-             * = 2.0604166667% per month
-             */
-            'YEAR' => ($rate / 100) / 12,
 
-            /*
-             * Monthly rate.
-             */
-            'MONTH' => $rate / 100,
+            'YEAR' =>
+                ($rate / 100) / 12,
 
-            /*
-             * Daily rate.
-             */
-            'DAY' => $rate / 100,
+            'MONTH' =>
+                $rate / 100,
 
-            default => throw new InvalidArgumentException(
-                "Unsupported interest rate period: {$period}"
-            ),
+            'DAY' =>
+                $rate / 100,
+
+            default =>
+                throw new InvalidArgumentException(
+                    "Unsupported interest rate period: {$period}"
+                ),
         };
+
+        /*
+        |--------------------------------------------------------------------------
+        | YEAR is represented by completed months.
+        |--------------------------------------------------------------------------
+        */
 
         $amount = $principal
             * pow(
@@ -253,169 +379,142 @@ class InterestCalculator
 
         $interest = $amount - $principal;
 
-        return $this->roundMoney($interest);
+        return $this->roundMoney(
+            $interest
+        );
     }
 
     /**
-     * Convert elapsed time into the configured interest period.
-     *
-     * YEAR:
-     *     Annual rate accrued according to completed months.
-     *
-     *     Example:
-     *
-     *     3 months / 12 = 0.25 year
-     *
-     * MONTH:
-     *     Number of completed months.
-     *
-     * DAY:
-     *     Number of elapsed days.
+     * ================================================================
+     * SIMPLE INTEREST PERIOD FRACTION
+     * ================================================================
      */
     protected function periodFraction(
         string $period,
         CarbonInterface $dueDate,
         CarbonInterface $asOfDate
     ): float {
+
         return match ($period) {
-            /*
-             * Annual rate applied according to completed months.
-             *
-             * 3 months  = 3 / 12
-             * 6 months  = 6 / 12
-             * 12 months = 12 / 12
-             */
-            'YEAR' => $this->completedMonths(
-                dueDate: $dueDate,
-                asOfDate: $asOfDate
-            ) / 12,
 
-            /*
-             * Monthly rate.
-             *
-             * 3 completed months = 3 periods.
-             */
-            'MONTH' => $this->completedMonths(
-                dueDate: $dueDate,
-                asOfDate: $asOfDate
-            ),
+            'YEAR' =>
+                $this->completedMonths(
+                    dueDate: $dueDate,
+                    asOfDate: $asOfDate
+                ) / 12,
 
-            /*
-             * Daily rate.
-             */
-            'DAY' => $dueDate->diffInDays($asOfDate),
+            'MONTH' =>
+                $this->completedMonths(
+                    dueDate: $dueDate,
+                    asOfDate: $asOfDate
+                ),
 
-            default => throw new InvalidArgumentException(
-                "Unsupported interest rate period: {$period}"
-            ),
+            'DAY' =>
+                $dueDate->diffInDays($asOfDate),
+
+            default =>
+                throw new InvalidArgumentException(
+                    "Unsupported interest rate period: {$period}"
+                ),
         };
     }
 
     /**
-     * Determine the number of completed interest periods.
-     *
-     * YEAR:
-     *     Compounds monthly.
-     *
-     * MONTH:
-     *     One period per completed month.
-     *
-     * DAY:
-     *     One period per elapsed day.
+     * ================================================================
+     * COMPLETED INTEREST PERIODS
+     * ================================================================
      */
     protected function completedPeriods(
         string $period,
         CarbonInterface $dueDate,
         CarbonInterface $asOfDate
     ): int {
+
         return match ($period) {
+
             'YEAR',
-            'MONTH' => $this->completedMonths(
-                dueDate: $dueDate,
-                asOfDate: $asOfDate
-            ),
+            'MONTH' =>
+                $this->completedMonths(
+                    dueDate: $dueDate,
+                    asOfDate: $asOfDate
+                ),
 
-            'DAY' => $dueDate->diffInDays($asOfDate),
+            'DAY' =>
+                $dueDate->diffInDays($asOfDate),
 
-            default => throw new InvalidArgumentException(
-                "Unsupported interest rate period: {$period}"
-            ),
+            default =>
+                throw new InvalidArgumentException(
+                    "Unsupported interest rate period: {$period}"
+                ),
         };
     }
 
     /**
-     * Calculate completed calendar months.
-     *
-     * Example:
-     *
-     * Due date:
-     *     2026-01-10
-     *
-     * As of:
-     *     2026-04-09
-     *
-     * Completed months:
-     *     2
-     *
-     * As of:
-     *     2026-04-10
-     *
-     * Completed months:
-     *     3
+     * ================================================================
+     * COMPLETED MONTHS
+     * ================================================================
      */
     protected function completedMonths(
         CarbonInterface $dueDate,
         CarbonInterface $asOfDate
     ): int {
+
         if ($asOfDate->lte($dueDate)) {
             return 0;
         }
 
-        /*
-         * diffInMonths() gives the number of completed calendar
-         * month boundaries between the two dates.
-         */
-        return $dueDate->diffInMonths($asOfDate);
+        return $dueDate->diffInMonths(
+            $asOfDate
+        );
     }
 
     /**
-     * Determine the monetary basis.
-     *
-     * PRINCIPAL:
-     *     Interest is calculated against the original principal.
-     *
-     * OUTSTANDING:
-     *     Interest is calculated against the unpaid principal.
+     * ================================================================
+     * DETERMINE INTEREST BASIS
+     * ================================================================
      */
     protected function determineBasis(
-        AssessmentItem $item,
+        AssessmentService $item,
         object $rule
     ): float {
+
+        $computedAmount = max(
+            0.0,
+            (float) ($item->computed_amount ?? 0)
+        );
+
+        $paidPrincipalAmount = max(
+            0.0,
+            (float) ($item->paid_principal_amount ?? 0)
+        );
+
         return match ($rule->calculation_basis) {
-            'PRINCIPAL' => max(
-                0,
-                (float) $item->principal_amount
-            ),
 
-            'OUTSTANDING' => max(
-                0,
-                (float) $item->principal_amount
-                -
-                (float) ($item->paid_principal_amount ?? 0)
-            ),
+            'PRINCIPAL' =>
+                $computedAmount,
 
-            default => throw new InvalidArgumentException(
-                "Unsupported interest calculation basis: {$rule->calculation_basis}"
-            ),
+            'OUTSTANDING' =>
+                max(
+                    0.0,
+                    $computedAmount - $paidPrincipalAmount
+                ),
+
+            default =>
+                throw new InvalidArgumentException(
+                    "Unsupported interest calculation basis: {$rule->calculation_basis}"
+                ),
         };
     }
 
     /**
-     * Normalize date input.
+     * ================================================================
+     * NORMALIZE DATE
+     * ================================================================
      */
     protected function normalizeDate(
         CarbonInterface|string|null $date
     ): CarbonInterface {
+
         if ($date instanceof CarbonInterface) {
             return $date->copy()->startOfDay();
         }
@@ -426,10 +525,16 @@ class InterestCalculator
     }
 
     /**
-     * Round monetary values to two decimal places.
+     * ================================================================
+     * ROUND MONEY
+     * ================================================================
      */
-    protected function roundMoney(float $amount): float
-    {
-        return round($amount, 2);
+    protected function roundMoney(
+        float $amount
+    ): float {
+        return round(
+            $amount,
+            2
+        );
     }
 }

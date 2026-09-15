@@ -59,9 +59,6 @@ class RevenueSetting extends Model
         |     10-30
         |     13-06
         |
-        | The year is intentionally not stored because the deadline
-        | recurs every Ethiopian calendar year.
-        |
         */
 
         'annual_payment_due_date',
@@ -74,6 +71,25 @@ class RevenueSetting extends Model
 
         'penalty_enabled',
         'interest_enabled',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Lizz
+        |--------------------------------------------------------------------------
+        |
+        | Global Lizz policy configuration.
+        |
+        | This percentage is used when an assessment specifies:
+        |
+        |     first_installment_required = true
+        |
+        | Example:
+        |
+        |     10.00 = 10%
+        |
+        */
+
+        'lizz_first_installment_percentage',
 
         /*
         |--------------------------------------------------------------------------
@@ -163,9 +179,6 @@ class RevenueSetting extends Model
             |--------------------------------------------------------------------------
             | Annual Payment Due Date
             |--------------------------------------------------------------------------
-            |
-            | Stored as a string in MM-DD format.
-            |
             */
 
             'annual_payment_due_date' => 'string',
@@ -178,6 +191,14 @@ class RevenueSetting extends Model
 
             'penalty_enabled' => 'boolean',
             'interest_enabled' => 'boolean',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Lizz
+            |--------------------------------------------------------------------------
+            */
+
+            'lizz_first_installment_percentage' => 'decimal:2',
 
             /*
             |--------------------------------------------------------------------------
@@ -338,11 +359,6 @@ class RevenueSetting extends Model
      * Get the configured annual payment due date.
      *
      * Returns the persisted MM-DD value.
-     *
-     * Example:
-     *
-     *     "10-30"
-     *
      */
     public function annualPaymentDueDate(): ?string
     {
@@ -351,6 +367,42 @@ class RevenueSetting extends Model
         }
 
         return trim($this->annual_payment_due_date);
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Lizz
+    |--------------------------------------------------------------------------
+    */
+
+
+    /**
+     * Determine whether a Lizz first-installment percentage is configured.
+     */
+    public function hasLizzFirstInstallmentPercentage(): bool
+    {
+        return $this->lizz_first_installment_percentage !== null
+            && (float) $this->lizz_first_installment_percentage > 0;
+    }
+
+
+    /**
+     * Get the configured Lizz first-installment percentage.
+     *
+     * Example:
+     *
+     *     10.00
+     *
+     * means 10% of the calculated Lizz total.
+     */
+    public function lizzFirstInstallmentPercentage(): ?float
+    {
+        if (! $this->hasLizzFirstInstallmentPercentage()) {
+            return null;
+        }
+
+        return (float) $this->lizz_first_installment_percentage;
     }
 
 

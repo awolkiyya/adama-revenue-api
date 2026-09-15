@@ -51,7 +51,33 @@ class RevenueSettingResource extends JsonResource
             */
 
             'penalty_enabled' => $this->penalty_enabled,
+
             'interest_enabled' => $this->interest_enabled,
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Lizz Policy
+            |--------------------------------------------------------------------------
+            |
+            | Global policy used when an assessment has:
+            |
+            |     first_installment_required = true
+            |
+            | Example:
+            |
+            |     total Lizz amount = 44,400 ETB
+            |     percentage = 30%
+            |     first installment = 13,320 ETB
+            |
+            | This is a global reusable setting.
+            |
+            */
+
+            'lizz_first_installment_percentage' =>
+                $this->lizz_first_installment_percentage !== null
+                    ? (float) $this->lizz_first_installment_percentage
+                    : null,
 
 
             /*

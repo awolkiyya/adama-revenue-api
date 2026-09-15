@@ -37,15 +37,6 @@ class RevenueSettingRequest extends FormRequest
             | Months 1-12 = days 1-30
             | Month 13    = days 1-6 (Pagume)
             |
-            | Examples:
-            |
-            |     01-01
-            |     10-30
-            |     13-06
-            |
-            | The year is intentionally not stored because the date
-            | recurs every Ethiopian calendar year.
-            |
             */
 
             'annual_payment_due_date' => [
@@ -69,6 +60,34 @@ class RevenueSettingRequest extends FormRequest
             'interest_enabled' => [
                 'required',
                 'boolean',
+            ],
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Lizz
+            |--------------------------------------------------------------------------
+            |
+            | Global Lizz first-installment policy.
+            |
+            | Example:
+            |
+            |     10.00 = 10%
+            |
+            | This percentage is used when:
+            |
+            |     first_installment_required = true
+            |
+            | The requirement itself belongs to the assessment/form.
+            | This setting only defines the percentage used for calculation.
+            |
+            */
+
+            'lizz_first_installment_percentage' => [
+                'nullable',
+                'numeric',
+                'gt:0',
+                'lte:100',
             ],
 
 
@@ -216,6 +235,21 @@ class RevenueSettingRequest extends FormRequest
                 'annual_payment_due_date' => $this->annual_payment_due_date !== null
                     ? trim((string) $this->annual_payment_due_date)
                     : null,
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Lizz First Installment Percentage
+        |--------------------------------------------------------------------------
+        */
+
+        if ($this->has('lizz_first_installment_percentage')) {
+            $this->merge([
+                'lizz_first_installment_percentage' =>
+                    $this->lizz_first_installment_percentage !== null
+                        ? trim((string) $this->lizz_first_installment_percentage)
+                        : null,
             ]);
         }
 

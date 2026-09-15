@@ -64,6 +64,8 @@ class InvoiceItem extends Model
 
         'penalty_amount',
 
+        'interest_amount',
+
         'total_amount',
 
         'currency',
@@ -96,6 +98,8 @@ class InvoiceItem extends Model
             'discount_amount' => 'decimal:4',
 
             'penalty_amount' => 'decimal:4',
+
+            'interest_amount' => 'decimal:4',
 
             'total_amount' => 'decimal:4',
 

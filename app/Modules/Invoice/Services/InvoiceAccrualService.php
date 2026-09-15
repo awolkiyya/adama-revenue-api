@@ -2,17 +2,28 @@
 
 namespace App\Modules\Invoice\Services;
 
-use  App\Services\Calculations\InterestCalculator;
-use App\Services\Calculations\PenaltyCalculator;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Services\Calculations\InterestCalculator;
+use App\Services\Calculations\PenaltyCalculator;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class InvoiceAccrualService
 {
+    /**
+     * Invoice statuses that are not eligible for accrual.
+     */
+    private const NON_ACCRUABLE_STATUSES = [
+        'DRAFT',
+        'CANCELLED',
+        'VOID',
+    ];
+
     public function __construct(
         protected PenaltyCalculator $penaltyCalculator,
         protected InterestCalculator $interestCalculator,
@@ -24,56 +35,10 @@ class InvoiceAccrualService
      * ACCRUE CURRENT PENALTY AND INTEREST
      * ================================================================
      *
-     * Recalculate the current penalty and interest for an issued
-     * invoice and persist the resulting financial state.
+     * This method is intentionally idempotent.
      *
-     * Responsibilities:
-     *
-     * - Lock the invoice
-     * - Validate invoice state
-     * - Determine the calculation date
-     * - Calculate penalty per invoice item
-     * - Calculate interest per invoice item
-     * - Update invoice item totals
-     * - Aggregate invoice totals
-     * - Recalculate balance_due
-     * - Update invoice status
-     *
-     * This service DOES NOT:
-     *
-     * - recalculate the original assessment principal
-     * - recalculate tariffs
-     * - modify assessment_services.computed_amount
-     * - change invoice.due_date
-     * - issue invoices
-     * - send SMS
-     * - record payments
-     *
-     * IMPORTANT:
-     *
-     * Accrual is idempotent.
-     *
-     * The service replaces the current penalty/interest values with
-     * the amounts applicable as of $asOfDate instead of blindly adding
-     * another amount every time the scheduler runs.
-     *
-     * Example:
-     *
-     * Day 1:
-     *     penalty = 100
-     *     interest = 20
-     *
-     * Day 2:
-     *     penalty = 100
-     *     interest = 25
-     *
-     * The second execution updates interest from 20 to 25.
-     *
-     * It does NOT create:
-     *
-     *     20 + 25 = 45
-     *
-     * ================================================================
+     * Running it multiple times for the same invoice and as-of date
+     * recalculates penalty and interest instead of adding them again.
      */
     public function accrue(
         Invoice|string $invoice,
@@ -83,7 +48,24 @@ class InvoiceAccrualService
             ? $invoice->getKey()
             : $invoice;
 
+        Log::info('Invoice accrual request started.', [
+            'invoice_id' => $invoiceId,
+            'as_of_date_input' => $asOfDate instanceof CarbonInterface
+                ? $asOfDate->toDateTimeString()
+                : $asOfDate,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate invoice ID
+        |--------------------------------------------------------------------------
+        */
+
         if (! is_string($invoiceId) || trim($invoiceId) === '') {
+            Log::error('Invoice accrual rejected: invalid invoice ID.', [
+                'invoice_id' => $invoiceId,
+            ]);
+
             throw ValidationException::withMessages([
                 'invoice' => [
                     'A valid invoice ID is required.',
@@ -91,302 +73,328 @@ class InvoiceAccrualService
             ]);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize calculation date
+        |--------------------------------------------------------------------------
+        */
+
         $asOfDate = $this->normalizeDate($asOfDate);
 
-        return DB::transaction(
-            function () use ($invoiceId, $asOfDate): Invoice {
+        Log::info('Invoice accrual date normalized.', [
+            'invoice_id' => $invoiceId,
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
 
-                /*
-                |--------------------------------------------------------------------------
-                | 1. LOCK INVOICE
-                |--------------------------------------------------------------------------
-                |
-                | Prevent concurrent accrual processes from modifying the
-                | same invoice at the same time.
-                |
-                */
+        try {
+            return DB::transaction(
+                function () use ($invoiceId, $asOfDate): Invoice {
 
-                $invoice = Invoice::query()
-                    ->with([
-                        'items.assessmentService.penaltyRule',
-                        'items.assessmentService.interestRule',
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 1. LOAD AND LOCK INVOICE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    Log::info('Loading invoice for accrual.', [
+                        'invoice_id' => $invoiceId,
+                        'as_of_date' => $asOfDate->toDateString(),
+                    ]);
+
+                    $invoice = Invoice::query()
+                        ->with([
+                            'items.assessmentService.penaltyRule',
+                            'items.assessmentService.interestRule',
+                            'assessment',
+                            'citizen',
+                        ])
+                        ->lockForUpdate()
+                        ->findOrFail($invoiceId);
+
+                    Log::info(
+                        'Invoice loaded and locked for accrual.',
+                        [
+                            'invoice_id' => $invoice->id,
+                            'status' => $invoice->status,
+                            'due_date' => $invoice->due_date?->toDateString(),
+                            'items_count' => $invoice->items->count(),
+                            'paid_amount' => $invoice->paid_amount,
+                            'current_total_amount' => $invoice->total_amount,
+                            'current_balance_due' => $invoice->balance_due,
+                        ]
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 2. VALIDATE INVOICE STATUS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $this->validateInvoiceStatus($invoice);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 3. VALIDATE INVOICE ITEMS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $this->validateInvoiceItems($invoice);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 4. PROCESS EACH INVOICE ITEM
+                    |--------------------------------------------------------------------------
+                    */
+
+                    foreach ($invoice->items as $invoiceItem) {
+
+                        Log::info('Starting invoice item accrual.', [
+                            'invoice_id' => $invoice->id,
+                            'invoice_item_id' => $invoiceItem->id,
+                            'invoice_item_class' => $invoiceItem::class,
+                            'amount' => $invoiceItem->amount,
+                            'discount_amount' => $invoiceItem->discount_amount,
+                            'penalty_amount_before' => $invoiceItem->penalty_amount,
+                            'interest_amount_before' => $invoiceItem->interest_amount,
+                            'total_amount_before' => $invoiceItem->total_amount,
+                        ]);
+
+                        $this->accrueItem(
+                            invoiceItem: $invoiceItem,
+                            asOfDate: $asOfDate,
+                        );
+
+                        Log::info('Invoice item accrual completed.', [
+                            'invoice_id' => $invoice->id,
+                            'invoice_item_id' => $invoiceItem->id,
+                            'penalty_amount_after' => $invoiceItem->penalty_amount,
+                            'interest_amount_after' => $invoiceItem->interest_amount,
+                            'total_amount_after' => $invoiceItem->total_amount,
+                        ]);
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 5. AGGREGATE INVOICE TOTALS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $totals = $this->aggregateInvoiceTotals(
+                        invoiceId: $invoice->id,
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 6. RESOLVE PAID AMOUNT
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $paidAmount = $this->resolvePaidAmount($invoice);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 7. CALCULATE BALANCE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $totalAmount = max(
+                        0.0,
+                        $this->roundMoney(
+                            (float) $totals->total_amount
+                        )
+                    );
+
+                    $balanceDue = max(
+                        0.0,
+                        $this->roundMoney(
+                            $totalAmount - $paidAmount
+                        )
+                    );
+
+                    Log::info('Invoice balance calculated.', [
+                        'invoice_id' => $invoice->id,
+                        'total_amount' => $totalAmount,
+                        'paid_amount' => $paidAmount,
+                        'balance_due' => $balanceDue,
+                    ]);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 8. RESOLVE STATUS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $status = $this->resolveStatus(
+                        invoice: $invoice,
+                        paidAmount: $paidAmount,
+                        balanceDue: $balanceDue,
+                        asOfDate: $asOfDate,
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 9. UPDATE INVOICE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $this->updateInvoiceFinancialValues(
+                        invoice: $invoice,
+                        totals: $totals,
+                        totalAmount: $totalAmount,
+                        paidAmount: $paidAmount,
+                        balanceDue: $balanceDue,
+                        status: $status,
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 10. COMPLETE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    Log::info(
+                        'Invoice accrual completed successfully.',
+                        [
+                            'invoice_id' => $invoice->id,
+                            'as_of_date' => $asOfDate->toDateString(),
+                            'subtotal' => $this->roundMoney(
+                                (float) $totals->subtotal
+                            ),
+                            'discount_amount' => $this->roundMoney(
+                                (float) $totals->discount_amount
+                            ),
+                            'penalty_amount' => $this->roundMoney(
+                                (float) $totals->penalty_amount
+                            ),
+                            'interest_amount' => $this->roundMoney(
+                                (float) $totals->interest_amount
+                            ),
+                            'total_amount' => $totalAmount,
+                            'paid_amount' => $paidAmount,
+                            'balance_due' => $balanceDue,
+                            'status' => $status,
+                        ]
+                    );
+
+                    return $invoice->fresh([
+                        'items',
                         'assessment',
                         'citizen',
-                    ])
-                    ->lockForUpdate()
-                    ->findOrFail($invoiceId);
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 2. VALIDATE INVOICE STATUS
-                |--------------------------------------------------------------------------
-                |
-                | Accrual only applies to active issued receivables.
-                |
-                | DRAFT invoices must not accrue statutory charges.
-                |
-                | CANCELLED / VOID invoices must not accrue charges.
-                |
-                */
-
-                if (in_array(
-                    $invoice->status,
-                    [
-                        'DRAFT',
-                        'CANCELLED',
-                        'VOID',
-                    ],
-                    true
-                )) {
-                    throw ValidationException::withMessages([
-                        'invoice' => [
-                            'Penalty and interest cannot be accrued for this invoice status.',
-                        ],
                     ]);
                 }
+            );
+        } catch (Throwable $exception) {
 
+            Log::error('Invoice accrual failed.', [
+                'invoice_id' => $invoiceId,
+                'as_of_date' => $asOfDate->toDateString(),
+                'exception_class' => $exception::class,
+                'exception_message' => $exception->getMessage(),
+            ]);
 
-                /*
-                |--------------------------------------------------------------------------
-                | 3. VALIDATE INVOICE ITEMS
-                |--------------------------------------------------------------------------
-                */
-
-                if ($invoice->items->isEmpty()) {
-                    throw ValidationException::withMessages([
-                        'invoice' => [
-                            'An invoice must contain at least one item before accrual can be calculated.',
-                        ],
-                    ]);
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 4. PROCESS EACH INVOICE ITEM
-                |--------------------------------------------------------------------------
-                */
-
-                foreach ($invoice->items as $invoiceItem) {
-
-                    $this->accrueItem(
-                        $invoiceItem,
-                        $asOfDate
-                    );
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 5. AGGREGATE INVOICE TOTALS
-                |--------------------------------------------------------------------------
-                |
-                | Invoice totals are always derived from invoice items.
-                |
-                | This prevents invoice-level totals from drifting away
-                | from their underlying financial lines.
-                |
-                */
-
-                $totals = InvoiceItem::query()
-                    ->where('invoice_id', $invoice->id)
-
-                    ->selectRaw(
-                        'COALESCE(SUM(amount), 0) as subtotal'
-                    )
-
-                    ->selectRaw(
-                        'COALESCE(SUM(discount_amount), 0) as discount_amount'
-                    )
-
-                    ->selectRaw(
-                        'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
-                    )
-
-                    ->selectRaw(
-                        'COALESCE(SUM(interest_amount), 0) as interest_amount'
-                    )
-
-                    ->selectRaw(
-                        'COALESCE(SUM(total_amount), 0) as total_amount'
-                    )
-
-                    ->first();
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 6. RESOLVE PAID AMOUNT
-                |--------------------------------------------------------------------------
-                |
-                | Payment allocation should be the authoritative source
-                | for paid_amount.
-                |
-                | This service does not invent or modify payment records.
-                |
-                | Until the payment allocation service is integrated,
-                | the existing invoice paid_amount is preserved.
-                |
-                */
-
-                $paidAmount = max(
-                    0.0,
-                    (float) ($invoice->paid_amount ?? 0)
-                );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 7. CALCULATE CURRENT BALANCE
-                |--------------------------------------------------------------------------
-                */
-
-                $totalAmount = max(
-                    0.0,
-                    (float) $totals->total_amount
-                );
-
-                $balanceDue = max(
-                    0.0,
-                    $totalAmount - $paidAmount
-                );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 8. DETERMINE INVOICE STATUS
-                |--------------------------------------------------------------------------
-                |
-                | Status reflects the current financial position.
-                |
-                | ISSUED:
-                |     Nothing has been paid.
-                |
-                | PARTIALLY_PAID:
-                |     Some amount has been paid but a balance remains.
-                |
-                | PAID:
-                |     Entire current invoice amount has been paid.
-                |
-                | OVERDUE:
-                |     Balance remains and the invoice due date has passed.
-                |
-                */
-
-                $status = $this->resolveStatus(
-                    invoice: $invoice,
-                    paidAmount: $paidAmount,
-                    balanceDue: $balanceDue,
-                    asOfDate: $asOfDate,
-                );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 9. UPDATE INVOICE
-                |--------------------------------------------------------------------------
-                */
-
-                $invoice->update([
-                    'subtotal' =>
-                        $this->roundMoney(
-                            (float) $totals->subtotal
-                        ),
-
-                    'discount_amount' =>
-                        $this->roundMoney(
-                            (float) $totals->discount_amount
-                        ),
-
-                    'penalty_amount' =>
-                        $this->roundMoney(
-                            (float) $totals->penalty_amount
-                        ),
-
-                    'interest_amount' =>
-                        $this->roundMoney(
-                            (float) $totals->interest_amount
-                        ),
-
-                    'total_amount' =>
-                        $this->roundMoney(
-                            $totalAmount
-                        ),
-
-                    'paid_amount' =>
-                        $this->roundMoney(
-                            $paidAmount
-                        ),
-
-                    'balance_due' =>
-                        $this->roundMoney(
-                            $balanceDue
-                        ),
-
-                    'status' =>
-                        $status,
-
-                    'paid_at' =>
-                        $status === 'PAID'
-                            ? ($invoice->paid_at ?? now())
-                            : null,
-                ]);
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | 10. RETURN FRESH INVOICE
-                |--------------------------------------------------------------------------
-                */
-
-                return $invoice->fresh([
-                    'items',
-                    'assessment',
-                    'citizen',
-                ]);
-            }
-        );
+            throw $exception;
+        }
     }
 
+    /**
+     * ================================================================
+     * VALIDATE INVOICE STATUS
+     * ================================================================
+     */
+    protected function validateInvoiceStatus(
+        Invoice $invoice
+    ): void {
+        if (
+            in_array(
+                $invoice->status,
+                self::NON_ACCRUABLE_STATUSES,
+                true
+            )
+        ) {
+            Log::warning(
+                'Invoice accrual rejected: invoice status does not allow accrual.',
+                [
+                    'invoice_id' => $invoice->id,
+                    'status' => $invoice->status,
+                ]
+            );
+
+            throw ValidationException::withMessages([
+                'invoice' => [
+                    'Penalty and interest cannot be accrued for this invoice status.',
+                ],
+            ]);
+        }
+
+        Log::info('Invoice status accepted for accrual.', [
+            'invoice_id' => $invoice->id,
+            'status' => $invoice->status,
+        ]);
+    }
+
+    /**
+     * ================================================================
+     * VALIDATE INVOICE ITEMS
+     * ================================================================
+     */
+    protected function validateInvoiceItems(
+        Invoice $invoice
+    ): void {
+        if ($invoice->items->isEmpty()) {
+            Log::warning(
+                'Invoice accrual stopped: invoice has no items.',
+                [
+                    'invoice_id' => $invoice->id,
+                ]
+            );
+
+            throw ValidationException::withMessages([
+                'invoice' => [
+                    'An invoice must contain at least one item before accrual can be calculated.',
+                ],
+            ]);
+        }
+
+        Log::info('Invoice items found for accrual.', [
+            'invoice_id' => $invoice->id,
+            'items_count' => $invoice->items->count(),
+        ]);
+    }
 
     /**
      * ================================================================
      * ACCRUE SINGLE INVOICE ITEM
      * ================================================================
-     *
-     * Calculates and persists the current penalty and interest for
-     * one invoice item.
-     *
-     * The invoice item must originate from an assessment service when
-     * statutory penalty / interest rules are required.
      */
     protected function accrueItem(
         InvoiceItem $invoiceItem,
         CarbonInterface $asOfDate
     ): void {
 
+        Log::info('Invoice item accrual entered.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'invoice_item_class' => $invoiceItem::class,
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
+
         /*
         |--------------------------------------------------------------------------
-        | DIRECT COLLECTION
+        | 1. RESOLVE ASSESSMENT SERVICE
         |--------------------------------------------------------------------------
-        |
-        | Direct collection items may not have an assessment service,
-        | therefore there may be no assessment-level penalty or
-        | interest rules available.
-        |
-        | In that case:
-        |
-        | penalty  = 0
-        | interest = 0
-        |
         */
 
-        $assessmentService =
-            $invoiceItem->assessmentService;
-
+        $assessmentService = $invoiceItem->assessmentService;
 
         if (! $assessmentService) {
+
+            Log::warning(
+                'Invoice item accrual stopped: assessment service not found.',
+                [
+                    'invoice_id' => $invoiceItem->invoice_id,
+                    'invoice_item_id' => $invoiceItem->id,
+                ]
+            );
 
             $this->updateItemAmounts(
                 invoiceItem: $invoiceItem,
@@ -397,35 +405,57 @@ class InvoiceAccrualService
             return;
         }
 
+        Log::info('Assessment service resolved.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'assessment_service_id' => $assessmentService->id ?? null,
+            'assessment_service_class' => $assessmentService::class,
+            'due_date' => $assessmentService->due_date,
+            'agreement_date' => $assessmentService->agreement_date ?? null,
+            'principal_amount' => $assessmentService->principal_amount ?? null,
+            'computed_amount' => $assessmentService->computed_amount ?? null,
+            'paid_principal_amount' => $assessmentService->paid_principal_amount ?? null,
+            'has_penalty_rule' => (bool) $assessmentService->penaltyRule,
+            'has_interest_rule' => (bool) $assessmentService->interestRule,
+        ]);
 
         /*
         |--------------------------------------------------------------------------
-        | PRINCIPAL
+        | 2. RESOLVE INVOICED PRINCIPAL
         |--------------------------------------------------------------------------
         |
-        | The invoice item amount is the authoritative invoiced principal.
+        | The invoice item amount is the principal actually invoiced.
         |
-        | We do NOT replace it with a newly calculated assessment amount.
+        | This is intentionally kept separate from AssessmentService's
+        | computed_amount because the invoice is the financial document
+        | being accrued.
         |
         */
 
         $principal = max(
             0.0,
-            (float) $invoiceItem->amount
+            $this->roundMoney(
+                (float) $invoiceItem->amount
+            )
         );
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | IF NO PRINCIPAL EXISTS
-        |--------------------------------------------------------------------------
-        |
-        | There is nothing against which penalty or interest should
-        | currently accrue.
-        |
-        */
+        Log::info('Invoice item principal resolved.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'invoice_item_amount' => $invoiceItem->amount,
+            'principal_used_for_accrual' => $principal,
+        ]);
 
         if ($principal <= 0) {
+
+            Log::warning(
+                'Invoice item accrual stopped: principal is zero or negative.',
+                [
+                    'invoice_id' => $invoiceItem->invoice_id,
+                    'invoice_item_id' => $invoiceItem->id,
+                    'principal' => $principal,
+                ]
+            );
 
             $this->updateItemAmounts(
                 invoiceItem: $invoiceItem,
@@ -436,18 +466,23 @@ class InvoiceAccrualService
             return;
         }
 
-
         /*
         |--------------------------------------------------------------------------
-        | DUE DATE
+        | 3. RESOLVE DUE DATE
         |--------------------------------------------------------------------------
-        |
-        | No due date means no overdue accrual.
-        |
         */
 
         if (! $assessmentService->due_date) {
 
+            Log::warning(
+                'Invoice item accrual stopped: assessment service has no due date.',
+                [
+                    'invoice_id' => $invoiceItem->invoice_id,
+                    'invoice_item_id' => $invoiceItem->id,
+                    'assessment_service_id' => $assessmentService->id ?? null,
+                ]
+            );
+
             $this->updateItemAmounts(
                 invoiceItem: $invoiceItem,
                 penalty: 0.0,
@@ -456,23 +491,35 @@ class InvoiceAccrualService
 
             return;
         }
-
 
         $dueDate = Carbon::parse(
             $assessmentService->due_date
         )->startOfDay();
 
+        Log::info('Invoice item due date resolved.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'due_date' => $dueDate->toDateString(),
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
 
         /*
         |--------------------------------------------------------------------------
-        | NOT YET OVERDUE
+        | 4. OVERDUE CHECK
         |--------------------------------------------------------------------------
-        |
-        | If the due date has not passed, penalty and interest remain zero.
-        |
         */
 
         if (! $asOfDate->gt($dueDate)) {
+
+            Log::info(
+                'Invoice item accrual stopped: item is not overdue.',
+                [
+                    'invoice_id' => $invoiceItem->invoice_id,
+                    'invoice_item_id' => $invoiceItem->id,
+                    'due_date' => $dueDate->toDateString(),
+                    'as_of_date' => $asOfDate->toDateString(),
+                ]
+            );
 
             $this->updateItemAmounts(
                 invoiceItem: $invoiceItem,
@@ -483,51 +530,94 @@ class InvoiceAccrualService
             return;
         }
 
+        Log::info('Invoice item is overdue and will be accrued.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'due_date' => $dueDate->toDateString(),
+            'as_of_date' => $asOfDate->toDateString(),
+            'overdue_days' => $dueDate->diffInDays($asOfDate),
+        ]);
 
         /*
         |--------------------------------------------------------------------------
-        | CALCULATE PENALTY
+        | 5. PENALTY
         |--------------------------------------------------------------------------
         */
+
+        Log::info('Calling PenaltyCalculator.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'assessment_service_id' => $assessmentService->id ?? null,
+            'calculator_class' => $this->penaltyCalculator::class,
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
 
         $penalty = $this->penaltyCalculator->calculate(
             $assessmentService,
             $asOfDate
         );
 
+        Log::info('PenaltyCalculator returned result.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'penalty_amount' => $penalty,
+        ]);
 
         /*
         |--------------------------------------------------------------------------
-        | CALCULATE INTEREST
+        | 6. INTEREST
         |--------------------------------------------------------------------------
         */
+
+        Log::info('Calling InterestCalculator.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'assessment_service_id' => $assessmentService->id ?? null,
+            'calculator_class' => $this->interestCalculator::class,
+            'as_of_date' => $asOfDate->toDateString(),
+        ]);
 
         $interest = $this->interestCalculator->calculate(
             $assessmentService,
             $asOfDate
         );
 
+        Log::info('InterestCalculator returned result.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'interest_amount' => $interest,
+        ]);
 
         /*
         |--------------------------------------------------------------------------
-        | PROTECT AGAINST INVALID CALCULATOR RESULTS
+        | 7. SANITIZE CALCULATOR RESULTS
         |--------------------------------------------------------------------------
         */
 
         $penalty = max(
             0.0,
-            (float) $penalty
+            $this->roundMoney(
+                (float) $penalty
+            )
         );
 
         $interest = max(
             0.0,
-            (float) $interest
+            $this->roundMoney(
+                (float) $interest
+            )
         );
 
+        Log::info('Accrual calculator results normalized.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'penalty_amount' => $penalty,
+            'interest_amount' => $interest,
+        ]);
 
         /*
         |--------------------------------------------------------------------------
-        | UPDATE ITEM
+        | 8. UPDATE ITEM
         |--------------------------------------------------------------------------
         */
 
@@ -538,19 +628,14 @@ class InvoiceAccrualService
         );
     }
 
-
     /**
      * ================================================================
      * UPDATE INVOICE ITEM FINANCIAL VALUES
      * ================================================================
      *
-     * Formula:
+     * Replaces the current penalty and interest values.
      *
-     * total_amount =
-     *     amount
-     *     - discount_amount
-     *     + penalty_amount
-     *     + interest_amount
+     * This makes the operation idempotent.
      */
     protected function updateItemAmounts(
         InvoiceItem $invoiceItem,
@@ -560,51 +645,207 @@ class InvoiceAccrualService
 
         $amount = max(
             0.0,
-            (float) $invoiceItem->amount
+            $this->roundMoney(
+                (float) $invoiceItem->amount
+            )
         );
 
         $discount = max(
             0.0,
-            (float) ($invoiceItem->discount_amount ?? 0)
+            $this->roundMoney(
+                (float) ($invoiceItem->discount_amount ?? 0)
+            )
         );
 
         $penalty = max(
             0.0,
-            $penalty
+            $this->roundMoney($penalty)
         );
 
         $interest = max(
             0.0,
-            $interest
+            $this->roundMoney($interest)
         );
 
         $total = max(
             0.0,
-            $amount
-            - $discount
-            + $penalty
-            + $interest
+            $this->roundMoney(
+                $amount
+                - $discount
+                + $penalty
+                + $interest
+            )
         );
 
+        Log::info('Updating invoice item amounts.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'amount' => $amount,
+            'discount_amount' => $discount,
+            'penalty_amount' => $penalty,
+            'interest_amount' => $interest,
+            'calculated_total_amount' => $total,
+        ]);
 
         $invoiceItem->update([
-            'penalty_amount' =>
-                $this->roundMoney(
-                    $penalty
-                ),
+            'penalty_amount' => $penalty,
+            'interest_amount' => $interest,
+            'total_amount' => $total,
+        ]);
 
-            'interest_amount' =>
-                $this->roundMoney(
-                    $interest
-                ),
+        /*
+        |--------------------------------------------------------------------------
+        | Keep the in-memory model synchronized.
+        |--------------------------------------------------------------------------
+        */
 
-            'total_amount' =>
-                $this->roundMoney(
-                    $total
-                ),
+        $invoiceItem->penalty_amount = $penalty;
+        $invoiceItem->interest_amount = $interest;
+        $invoiceItem->total_amount = $total;
+
+        Log::info('Invoice item amounts updated.', [
+            'invoice_id' => $invoiceItem->invoice_id,
+            'invoice_item_id' => $invoiceItem->id,
+            'penalty_amount' => $penalty,
+            'interest_amount' => $interest,
+            'total_amount' => $total,
         ]);
     }
 
+    /**
+     * ================================================================
+     * AGGREGATE INVOICE TOTALS
+     * ================================================================
+     */
+    protected function aggregateInvoiceTotals(
+        string $invoiceId
+    ): object {
+        Log::info('Aggregating invoice item totals.', [
+            'invoice_id' => $invoiceId,
+        ]);
+
+        $totals = InvoiceItem::query()
+            ->where('invoice_id', $invoiceId)
+            ->selectRaw(
+                'COALESCE(SUM(amount), 0) as subtotal'
+            )
+            ->selectRaw(
+                'COALESCE(SUM(discount_amount), 0) as discount_amount'
+            )
+            ->selectRaw(
+                'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
+            )
+            ->selectRaw(
+                'COALESCE(SUM(interest_amount), 0) as interest_amount'
+            )
+            ->selectRaw(
+                'COALESCE(SUM(total_amount), 0) as total_amount'
+            )
+            ->first();
+
+        Log::info('Invoice totals aggregated.', [
+            'invoice_id' => $invoiceId,
+            'subtotal' => $totals->subtotal,
+            'discount_amount' => $totals->discount_amount,
+            'penalty_amount' => $totals->penalty_amount,
+            'interest_amount' => $totals->interest_amount,
+            'total_amount' => $totals->total_amount,
+        ]);
+
+        return $totals;
+    }
+
+    /**
+     * ================================================================
+     * RESOLVE PAID AMOUNT
+     * ================================================================
+     */
+    protected function resolvePaidAmount(
+        Invoice $invoice
+    ): float {
+        $paidAmount = max(
+            0.0,
+            $this->roundMoney(
+                (float) ($invoice->paid_amount ?? 0)
+            )
+        );
+
+        Log::info('Invoice paid amount resolved.', [
+            'invoice_id' => $invoice->id,
+            'paid_amount' => $paidAmount,
+        ]);
+
+        return $paidAmount;
+    }
+
+    /**
+     * ================================================================
+     * UPDATE INVOICE FINANCIAL VALUES
+     * ================================================================
+     */
+    protected function updateInvoiceFinancialValues(
+        Invoice $invoice,
+        object $totals,
+        float $totalAmount,
+        float $paidAmount,
+        float $balanceDue,
+        string $status
+    ): void {
+
+        $subtotal = $this->roundMoney(
+            (float) $totals->subtotal
+        );
+
+        $discountAmount = $this->roundMoney(
+            (float) $totals->discount_amount
+        );
+
+        $penaltyAmount = $this->roundMoney(
+            (float) $totals->penalty_amount
+        );
+
+        $interestAmount = $this->roundMoney(
+            (float) $totals->interest_amount
+        );
+
+        Log::info('Updating invoice financial values.', [
+            'invoice_id' => $invoice->id,
+            'subtotal' => $subtotal,
+            'discount_amount' => $discountAmount,
+            'penalty_amount' => $penaltyAmount,
+            'interest_amount' => $interestAmount,
+            'total_amount' => $totalAmount,
+            'paid_amount' => $paidAmount,
+            'balance_due' => $balanceDue,
+            'status' => $status,
+        ]);
+
+        $invoice->update([
+            'subtotal' => $subtotal,
+            'discount_amount' => $discountAmount,
+            'penalty_amount' => $penaltyAmount,
+            'interest_amount' => $interestAmount,
+            'total_amount' => $totalAmount,
+            'paid_amount' => $paidAmount,
+            'balance_due' => $balanceDue,
+            'status' => $status,
+            'paid_at' => $status === 'PAID'
+                ? ($invoice->paid_at ?? now())
+                : null,
+        ]);
+
+        Log::info('Invoice financial values updated.', [
+            'invoice_id' => $invoice->id,
+            'subtotal' => $subtotal,
+            'discount_amount' => $discountAmount,
+            'penalty_amount' => $penaltyAmount,
+            'interest_amount' => $interestAmount,
+            'total_amount' => $totalAmount,
+            'paid_amount' => $paidAmount,
+            'balance_due' => $balanceDue,
+            'status' => $status,
+        ]);
+    }
 
     /**
      * ================================================================
@@ -620,14 +861,19 @@ class InvoiceAccrualService
 
         /*
         |--------------------------------------------------------------------------
-        | FULLY PAID
+        | PAID
         |--------------------------------------------------------------------------
         */
 
         if ($balanceDue <= 0) {
+
+            Log::info('Invoice status resolved as PAID.', [
+                'invoice_id' => $invoice->id,
+                'balance_due' => $balanceDue,
+            ]);
+
             return 'PAID';
         }
-
 
         /*
         |--------------------------------------------------------------------------
@@ -636,47 +882,59 @@ class InvoiceAccrualService
         */
 
         if ($paidAmount > 0) {
+
+            Log::info(
+                'Invoice status resolved as PARTIALLY_PAID.',
+                [
+                    'invoice_id' => $invoice->id,
+                    'paid_amount' => $paidAmount,
+                    'balance_due' => $balanceDue,
+                ]
+            );
+
             return 'PARTIALLY_PAID';
         }
-
 
         /*
         |--------------------------------------------------------------------------
         | OVERDUE
         |--------------------------------------------------------------------------
-        |
-        | Due date remains immutable.
-        |
-        | The invoice becomes overdue when:
-        |
-        |     due_date < asOfDate
-        |     AND
-        |     balance_due > 0
-        |
         */
 
-        if (
-            $invoice->due_date
-            &&
-            $asOfDate->gt(
-                Carbon::parse(
-                    $invoice->due_date
-                )->startOfDay()
-            )
-        ) {
-            return 'OVERDUE';
-        }
+        if ($invoice->due_date) {
 
+            $invoiceDueDate = Carbon::parse(
+                $invoice->due_date
+            )->startOfDay();
+
+            if ($asOfDate->gt($invoiceDueDate)) {
+
+                Log::info('Invoice status resolved as OVERDUE.', [
+                    'invoice_id' => $invoice->id,
+                    'due_date' => $invoiceDueDate->toDateString(),
+                    'as_of_date' => $asOfDate->toDateString(),
+                    'balance_due' => $balanceDue,
+                ]);
+
+                return 'OVERDUE';
+            }
+        }
 
         /*
         |--------------------------------------------------------------------------
-        | STILL ISSUED
+        | ISSUED
         |--------------------------------------------------------------------------
         */
 
+        Log::info('Invoice status resolved as ISSUED.', [
+            'invoice_id' => $invoice->id,
+            'due_date' => $invoice->due_date?->toDateString(),
+            'as_of_date' => $asOfDate->toDateString(),
+            'balance_due' => $balanceDue,
+        ]);
+
         return 'ISSUED';
     }
-
 
     /**
      * ================================================================
@@ -696,7 +954,6 @@ class InvoiceAccrualService
             : now()->startOfDay();
     }
 
-
     /**
      * ================================================================
      * ROUND MONEY
@@ -705,9 +962,6 @@ class InvoiceAccrualService
     protected function roundMoney(
         float $amount
     ): float {
-        return round(
-            $amount,
-            2
-        );
+        return round($amount, 2);
     }
 }

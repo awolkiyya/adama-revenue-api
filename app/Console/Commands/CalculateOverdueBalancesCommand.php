@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\CalculateAssessmentOverdueBalanceJob;
-use App\Models\Assessment;
+use App\Jobs\CalculateInvoiceOverdueBalanceJob;
+use App\Models\Invoice;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Command;
@@ -23,18 +23,18 @@ class CalculateOverdueBalancesCommand extends Command
      * php artisan revenue:calculate-overdue-balances
      *
      * php artisan revenue:calculate-overdue-balances \
-     *     --date=2026-09-12
+     *     --date=2026-09-15
      *
      * php artisan revenue:calculate-overdue-balances \
-     *     --assessment=UUID
+     *     --invoice=UUID
      *
      * php artisan revenue:calculate-overdue-balances \
-     *     --assessment=UUID \
-     *     --date=2026-09-12
+     *     --invoice=UUID \
+     *     --date=2026-09-15
      */
     protected $signature = 'revenue:calculate-overdue-balances
                             {--date= : Calculate balances as of a specific date (Y-m-d)}
-                            {--assessment= : Dispatch only one assessment UUID}';
+                            {--invoice= : Dispatch only one invoice UUID}';
 
     /**
      * ============================================================
@@ -42,7 +42,7 @@ class CalculateOverdueBalancesCommand extends Command
      * ============================================================
      */
     protected $description =
-        'Dispatch jobs to calculate current outstanding balances for overdue revenue assessments';
+        'Dispatch jobs to calculate overdue balances for eligible invoices';
 
     /**
      * ============================================================
@@ -56,7 +56,7 @@ class CalculateOverdueBalancesCommand extends Command
 
             $this->info(
                 sprintf(
-                    'Finding overdue assessments as of %s...',
+                    'Finding overdue invoices as of %s...',
                     $asOfDate->toDateString(),
                 )
             );
@@ -65,13 +65,13 @@ class CalculateOverdueBalancesCommand extends Command
 
             /*
              * ----------------------------------------------------
-             * OPTIONAL SINGLE-ASSESSMENT FILTER
+             * OPTIONAL SINGLE-INVOICE FILTER
              * ----------------------------------------------------
              */
-            $assessmentId = $this->option('assessment');
+            $invoiceId = $this->option('invoice');
 
-            if ($assessmentId !== null) {
-                $query->whereKey($assessmentId);
+            if ($invoiceId !== null) {
+                $query->whereKey($invoiceId);
             }
 
             $dispatched = 0;
@@ -81,23 +81,23 @@ class CalculateOverdueBalancesCommand extends Command
              * PROCESS IN CHUNKS
              * ----------------------------------------------------
              *
-             * We do not load the entire assessment table into memory.
+             * We do not load the entire invoice table into memory.
              */
             $query->chunkById(
                 100,
-                function ($assessments) use (
+                function ($invoices) use (
                     $asOfDate,
                     &$dispatched,
                 ): void {
-                    foreach ($assessments as $assessment) {
+                    foreach ($invoices as $invoice) {
                         try {
                             /*
                              * ------------------------------------------------
-                             * DISPATCH FINANCIAL CALCULATION JOB
+                             * DISPATCH INVOICE ACCRUAL JOB
                              * ------------------------------------------------
                              */
-                            CalculateAssessmentOverdueBalanceJob::dispatch(
-                                assessmentId: $assessment->id,
+                            CalculateInvoiceOverdueBalanceJob::dispatch(
+                                invoiceId: $invoice->id,
                                 asOfDate: $asOfDate->toDateString(),
                             );
 
@@ -105,8 +105,8 @@ class CalculateOverdueBalancesCommand extends Command
 
                             $this->line(
                                 sprintf(
-                                    '[%s] Overdue balance job dispatched.',
-                                    $assessment->id,
+                                    '[%s] Invoice overdue balance job dispatched.',
+                                    $invoice->id,
                                 )
                             );
                         } catch (Throwable $exception) {
@@ -117,9 +117,9 @@ class CalculateOverdueBalancesCommand extends Command
                              * --------------------------------------------
                              */
                             Log::error(
-                                'Failed to dispatch revenue overdue balance job.',
+                                'Failed to dispatch invoice overdue balance job.',
                                 [
-                                    'assessment_id' => $assessment->id,
+                                    'invoice_id' => $invoice->id,
                                     'as_of_date' => $asOfDate->toDateString(),
                                     'exception' => $exception::class,
                                     'message' => $exception->getMessage(),
@@ -129,7 +129,7 @@ class CalculateOverdueBalancesCommand extends Command
                             $this->error(
                                 sprintf(
                                     '[%s] Failed to dispatch job: %s',
-                                    $assessment->id,
+                                    $invoice->id,
                                     $exception->getMessage(),
                                 )
                             );
@@ -144,7 +144,7 @@ class CalculateOverdueBalancesCommand extends Command
 
             $this->info(
                 sprintf(
-                    'Overdue balance jobs dispatched successfully. Total: %d.',
+                    'Invoice overdue balance jobs dispatched successfully. Total: %d.',
                     $dispatched,
                 )
             );
@@ -152,7 +152,7 @@ class CalculateOverdueBalancesCommand extends Command
             return self::SUCCESS;
         } catch (Throwable $exception) {
             Log::error(
-                'Revenue overdue balance command failed.',
+                'Invoice overdue balance command failed.',
                 [
                     'exception' => $exception::class,
                     'message' => $exception->getMessage(),
@@ -172,41 +172,39 @@ class CalculateOverdueBalancesCommand extends Command
 
     /**
      * ============================================================
-     * BUILD ELIGIBLE ASSESSMENT QUERY
+     * BUILD ELIGIBLE INVOICE QUERY
      * ============================================================
      *
-     * Only assessments that:
+     * Only invoices that:
      *
      * - are financially active
-     * - have completed assessment services
-     * - have a principal amount
      * - have a persisted due date
      * - are already past the due date
+     * - contain at least one invoice item
+     * - contain an invoice item with a positive amount
      *
      * are dispatched.
      */
     protected function buildQuery(
         CarbonInterface $asOfDate,
     ): Builder {
-        return Assessment::query()
+        return Invoice::query()
             ->whereIn('status', [
-                'APPROVED',
-                'INVOICE',
                 'ISSUED',
+                'PARTIALLY_PAID',
+                'OVERDUE',
             ])
+            ->whereNotNull('due_date')
+            ->whereDate(
+                'due_date',
+                '<',
+                $asOfDate->toDateString(),
+            )
             ->whereHas(
-                'services',
-                function (Builder $query) use ($asOfDate): void {
+                'items',
+                function (Builder $query): void {
                     $query
-                        ->where('status', 'COMPLETED')
-                        ->whereNotNull('computed_amount')
-                        ->where('computed_amount', '>', 0)
-                        ->whereNotNull('due_date')
-                        ->whereDate(
-                            'due_date',
-                            '<',
-                            $asOfDate->toDateString(),
-                        );
+                        ->where('amount', '>', 0);
                 }
             )
             ->orderBy('id');
@@ -222,9 +220,11 @@ class CalculateOverdueBalancesCommand extends Command
         $date = $this->option('date');
 
         /*
+         * --------------------------------------------------------
          * No date supplied:
          *
          * Use today's application date.
+         * --------------------------------------------------------
          */
         if ($date === null) {
             return now()->startOfDay();

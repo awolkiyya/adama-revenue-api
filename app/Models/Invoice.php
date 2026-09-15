@@ -63,6 +63,8 @@ class Invoice extends Model
 
         'penalty_amount',
 
+        'interest_amount',
+
         'total_amount',
 
         'paid_amount',
@@ -111,6 +113,8 @@ class Invoice extends Model
             'discount_amount' => 'decimal:4',
 
             'penalty_amount' => 'decimal:4',
+
+            'interest_amount' => 'decimal:4',
 
             'total_amount' => 'decimal:4',
 
@@ -170,7 +174,7 @@ class Invoice extends Model
     public function administrativeUnit(): BelongsTo
     {
         return $this->belongsTo(
-            \App\Models\AdministrativeUnit::class,
+            AdministrativeUnit::class,
             'administrative_unit_id'
         );
     }
