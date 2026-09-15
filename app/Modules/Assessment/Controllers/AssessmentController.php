@@ -266,44 +266,78 @@ class AssessmentController extends Controller
         UpdateAssessmentRequest $request,
         string $assessment
     ): JsonResponse {
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Assessment Model
+        |--------------------------------------------------------------------------
+        */
+    
         $model =
             $this->assessmentService
                 ->findOrFail(
                     $assessment
                 );
-
+    
+    
+        /*
+        |--------------------------------------------------------------------------
+        | Authorization
+        |--------------------------------------------------------------------------
+        */
+    
         $this->authorize(
             'update',
             $model
         );
-
+    
+    
+        /*
+        |--------------------------------------------------------------------------
+        | Update Assessment
+        |--------------------------------------------------------------------------
+        |
+        | AssessmentService::update() expects:
+        |
+        |     Assessment $assessment
+        |
+        | Therefore we MUST pass $model, not the
+        | original UUID string $assessment.
+        |
+        */
+    
         $model =
             $this->assessmentService
                 ->update(
-                    $assessment,
+                    $model,
                     $request
                 );
-
+    
+    
+        /*
+        |--------------------------------------------------------------------------
+        | Response
+        |--------------------------------------------------------------------------
+        */
+    
         return response()->json([
             'success' => true,
-
+    
             'message' =>
                 $model->status === 'DRAFT'
                     ? 'Assessment draft updated successfully.'
                     : 'Assessment updated successfully.',
-
+    
             'data' =>
                 new AssessmentResource(
                     $model
                 ),
-
+    
             'errors' => null,
-
+    
             'meta' => [],
         ]);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -462,43 +496,42 @@ class AssessmentController extends Controller
     | and submitted again.
     |
     */
-
-    public function returnAssessment(
+    public function return(
         ReturnAssessmentRequest $request,
         string $assessment
     ): JsonResponse {
-
+    
         $model =
             $this->assessmentService
                 ->findOrFail(
                     $assessment
                 );
-
+    
         $this->authorize(
             'returnAssessment',
             $model
         );
-
+    
         $model =
             $this->assessmentService
                 ->returnAssessment(
-                    $assessment,
-                    $request->validated('reason')
+                    $model,
+                    $request
                 );
-
+    
         return response()->json([
             'success' => true,
-
+    
             'message' =>
                 'Assessment returned for correction.',
-
+    
             'data' =>
                 new AssessmentResource(
                     $model
                 ),
-
+    
             'errors' => null,
-
+    
             'meta' => [],
         ]);
     }

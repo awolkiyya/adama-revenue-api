@@ -21,14 +21,13 @@ class AssessmentServiceValueService
      * ============================================================
      * STORE SERVICES
      * ============================================================
-     */
-
-    /**
-     * Store assessment services and their dynamic values.
+     *
+     * Store assessment services and their dynamic field values.
      *
      * Responsibilities:
      *
      * - Resolve the configured revenue service
+     * - Validate serviceCode against serviceId
      * - Create assessment_service
      * - Store dynamic field values
      * - Snapshot field configuration
@@ -43,6 +42,14 @@ class AssessmentServiceValueService
         array $services
     ): void {
         foreach ($services as $index => $serviceData) {
+            if (! is_array($serviceData)) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'Each assessment service must be a valid object.',
+                    ],
+                ]);
+            }
+
             $service = $this->resolveRevenueService(
                 $serviceData
             );
@@ -55,8 +62,6 @@ class AssessmentServiceValueService
                 'service_id' => $service->id,
 
                 /*
-                 * RevenueService does not own the code directly.
-                 *
                  * RevenueService
                  *      ↓
                  * revenueCode
@@ -95,9 +100,7 @@ class AssessmentServiceValueService
      * ============================================================
      * STORE VALUES
      * ============================================================
-     */
-
-    /**
+     *
      * Store dynamic values for one assessment service.
      */
     public function storeServiceValues(
@@ -109,9 +112,15 @@ class AssessmentServiceValueService
                 'revenueCode',
                 'fields.baseField.options',
             ])
-            ->findOrFail(
-                $assessmentService->service_id
-            );
+            ->find($assessmentService->service_id);
+
+        if (! $service) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    "Revenue service [{$assessmentService->service_id}] was not found.",
+                ],
+            ]);
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -175,7 +184,7 @@ class AssessmentServiceValueService
 
             /*
             |--------------------------------------------------------------------------
-            | File Fields
+            | FILE / MULTI_FILE
             |--------------------------------------------------------------------------
             */
 
@@ -216,6 +225,13 @@ class AssessmentServiceValueService
                             $serviceField->label
                             ?: $baseField->label,
 
+                        /*
+                         * FILE is an input type.
+                         *
+                         * The underlying data type remains
+                         * TEXT unless the service field explicitly
+                         * defines another supported data type.
+                         */
                         'data_type' =>
                             $types['data_type'],
 
@@ -228,9 +244,6 @@ class AssessmentServiceValueService
                         'display_value' =>
                             $displayValue,
 
-                        /*
-                         * Correct database column.
-                         */
                         'measurement_unit_id' =>
                             $serviceField->measurement_unit_id
                             ?? $baseField->measurement_unit_id
@@ -242,6 +255,9 @@ class AssessmentServiceValueService
                             ?? 0,
                     ]);
 
+                /*
+                 * Attach uploaded files to the value record.
+                 */
                 $this->fileService->attachValueFiles(
                     $assessmentServiceValue,
                     $value
@@ -252,7 +268,7 @@ class AssessmentServiceValueService
 
             /*
             |--------------------------------------------------------------------------
-            | Normalize Value
+            | NORMAL VALUES
             |--------------------------------------------------------------------------
             */
 
@@ -263,12 +279,6 @@ class AssessmentServiceValueService
                 $serviceField
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Display Value
-            |--------------------------------------------------------------------------
-            */
-
             $displayValue = $this->makeDisplayValue(
                 $value,
                 $types,
@@ -277,7 +287,7 @@ class AssessmentServiceValueService
 
             /*
             |--------------------------------------------------------------------------
-            | Create Value Snapshot
+            | CREATE VALUE SNAPSHOT
             |--------------------------------------------------------------------------
             */
 
@@ -309,9 +319,6 @@ class AssessmentServiceValueService
                 'display_value' =>
                     $displayValue,
 
-                /*
-                 * Correct database column.
-                 */
                 'measurement_unit_id' =>
                     $serviceField->measurement_unit_id
                     ?? $baseField->measurement_unit_id
@@ -336,7 +343,7 @@ class AssessmentServiceValueService
      *
      * serviceId is authoritative.
      *
-     * serviceCode is only validated against:
+     * serviceCode is validated against:
      *
      * RevenueService
      *      ↓
@@ -380,7 +387,7 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve Authoritative Revenue Code
+        | Authoritative Revenue Code
         |--------------------------------------------------------------------------
         */
 
@@ -430,17 +437,34 @@ class AssessmentServiceValueService
      * ============================================================
      * FIELD TYPES
      * ============================================================
-     */
-
-    /**
-     * Resolve effective data and input types.
      *
-     * IMPORTANT:
+     * Resolve effective data_type and input_type.
      *
-     * The current database schema uses SELECT as a data_type
-     * for fields such as PROPERTY_TYPE.
+     * Architecture:
      *
-     * Therefore SELECT must be supported as a data type.
+     * data_type
+     * ----------
+     * TEXT
+     * NUMBER
+     * DECIMAL
+     * BOOLEAN
+     * DATE
+     * SELECT
+     *
+     * input_type
+     * ----------
+     * TEXT
+     * NUMBER
+     * DECIMAL
+     * SELECT
+     * RADIO
+     * CHECKBOX
+     * DATE
+     * TEXTAREA
+     * FILE
+     * MULTI_FILE
+     *
+     * FILE is therefore an input type, not a data type.
      */
     protected function resolveFieldTypes(
         $serviceField
@@ -475,11 +499,6 @@ class AssessmentServiceValueService
         |--------------------------------------------------------------------------
         | Effective Input Type
         |--------------------------------------------------------------------------
-        |
-        | Some current BaseFields may not have input_type configured.
-        |
-        | When input_type is missing, derive it from data_type.
-        |
         */
 
         $inputType = strtoupper(
@@ -491,6 +510,15 @@ class AssessmentServiceValueService
                 )
             )
         );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Backward Compatibility
+        |--------------------------------------------------------------------------
+        |
+        | If input_type is not configured, derive it from data_type.
+        |
+        */
 
         if ($inputType === '') {
             $inputType = match ($dataType) {
@@ -505,6 +533,38 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
+        | IMPORTANT FILE COMPATIBILITY
+        |--------------------------------------------------------------------------
+        |
+        | Older configuration may have FILE stored in data_type.
+        |
+        | Treat that as a legacy configuration and normalize it to:
+        |
+        |     data_type  = TEXT
+        |     input_type = FILE
+        |
+        | This prevents:
+        |
+        |     Unsupported data type [FILE]
+        |
+        | while preserving file upload behavior.
+        |
+        */
+
+        if (
+            in_array(
+                $dataType,
+                ['FILE', 'MULTI_FILE'],
+                true
+            )
+        ) {
+            $inputType = $dataType;
+
+            $dataType = 'TEXT';
+        }
+
+        /*
+        |--------------------------------------------------------------------------
         | Supported Data Types
         |--------------------------------------------------------------------------
         */
@@ -515,11 +575,6 @@ class AssessmentServiceValueService
             'TEXT',
             'BOOLEAN',
             'DATE',
-
-            /*
-             * IMPORTANT:
-             * Your actual database uses SELECT here.
-             */
             'SELECT',
         ];
 
@@ -590,9 +645,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Normalize a submitted dynamic field value.
-     */
     protected function normalizeFieldValue(
         mixed $value,
         string $dataType,
@@ -607,9 +659,6 @@ class AssessmentServiceValueService
         |--------------------------------------------------------------------------
         | SELECT / RADIO
         |--------------------------------------------------------------------------
-        |
-        | Validate against base_field_options.
-        |
         */
 
         if (
@@ -641,7 +690,7 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Standard Data Types
+        | STANDARD DATA TYPES
         |--------------------------------------------------------------------------
         */
 
@@ -661,9 +710,6 @@ class AssessmentServiceValueService
             'TEXT' =>
                 $this->normalizeText($value),
 
-            /*
-             * SELECT is handled above.
-             */
             'SELECT' =>
                 $this->normalizeOptionValue(
                     $value,
@@ -681,9 +727,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Validate and normalize SELECT / RADIO option values.
-     */
     protected function normalizeOptionValue(
         mixed $value,
         $serviceField
@@ -717,17 +760,6 @@ class AssessmentServiceValueService
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Base Field Options
-        |--------------------------------------------------------------------------
-        |
-        | This is an Eloquent Collection from:
-        |
-        | baseField->options
-        |
-        */
-
         $options = $baseField->options;
 
         $matchingOption = $options->first(
@@ -748,12 +780,6 @@ class AssessmentServiceValueService
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Return Canonical Database Value
-        |--------------------------------------------------------------------------
-        */
-
         return (string) $matchingOption->value;
     }
 
@@ -763,9 +789,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Validate and normalize checkbox values.
-     */
     protected function normalizeCheckboxValue(
         mixed $value,
         $serviceField
@@ -834,9 +857,6 @@ class AssessmentServiceValueService
                 ]);
             }
 
-            /*
-             * Store the submitted/canonical option value.
-             */
             $normalizedValues[] = $normalizedItem;
         }
 
@@ -851,9 +871,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Normalize integer-like values.
-     */
     protected function normalizeNumber(
         mixed $value
     ): int {
@@ -879,9 +896,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Normalize decimal values.
-     */
     protected function normalizeDecimal(
         mixed $value
     ): float {
@@ -902,9 +916,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Normalize boolean values.
-     */
     protected function normalizeBoolean(
         mixed $value
     ): bool {
@@ -943,9 +954,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Normalize date values.
-     */
     protected function normalizeDate(
         mixed $value
     ): string {
@@ -967,9 +975,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Normalize text values.
-     */
     protected function normalizeText(
         mixed $value
     ): string {
@@ -993,9 +998,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Generate human-readable display value.
-     */
     protected function makeDisplayValue(
         mixed $value,
         array $types,
@@ -1011,9 +1013,7 @@ class AssessmentServiceValueService
         |--------------------------------------------------------------------------
         */
 
-        if (
-            $types['input_type'] === 'CHECKBOX'
-        ) {
+        if ($types['input_type'] === 'CHECKBOX') {
             if (! is_array($value)) {
                 return (string) $value;
             }
@@ -1035,13 +1035,16 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | FILE
+        | FILE / MULTI_FILE
         |--------------------------------------------------------------------------
         */
 
         if (
-            $types['input_type'] === 'FILE'
-            || $types['input_type'] === 'MULTI_FILE'
+            in_array(
+                $types['input_type'],
+                ['FILE', 'MULTI_FILE'],
+                true
+            )
         ) {
             if (is_array($value)) {
                 return implode(
@@ -1062,9 +1065,7 @@ class AssessmentServiceValueService
         |--------------------------------------------------------------------------
         */
 
-        if (
-            $types['data_type'] === 'BOOLEAN'
-        ) {
+        if ($types['data_type'] === 'BOOLEAN') {
             return $value
                 ? 'Yes'
                 : 'No';
@@ -1092,7 +1093,7 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Scalar / JSON
+        | SCALAR / JSON
         |--------------------------------------------------------------------------
         */
 
@@ -1110,9 +1111,6 @@ class AssessmentServiceValueService
      * ============================================================
      */
 
-    /**
-     * Resolve configured option label.
-     */
     protected function resolveOptionLabel(
         mixed $value,
         $serviceField
@@ -1122,12 +1120,6 @@ class AssessmentServiceValueService
         if (! $baseField) {
             return (string) $value;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Base Field Options
-        |--------------------------------------------------------------------------
-        */
 
         $options = $baseField->options;
 

@@ -1026,7 +1026,7 @@ class PermissionSeeder extends Seeder
 
 
 
-            /*
+           /*
             |--------------------------------------------------------------------------
             | Invoice Management
             |--------------------------------------------------------------------------
@@ -1149,6 +1149,62 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows viewing the history of penalty discount requests, submissions, administrative decisions, and invoice application.',
                 'is_system' => false,
             ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payments Management
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'payments.view',
+                'label' => 'View Payments',
+                'module' => 'payments',
+                'description' => 'Allows accessing the payment collection and payment management module and related screens.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payments.read',
+                'label' => 'Read Payments',
+                'module' => 'payments',
+                'description' => 'Allows retrieving and viewing payment records, payment amounts, payment methods, transaction references, and payment status.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payments.collect',
+                'label' => 'Collect Payment',
+                'module' => 'payments',
+                'description' => 'Allows collecting payments against eligible invoices using authorized payment methods such as cash or bank transfer.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payments.cancel',
+                'label' => 'Cancel Payment',
+                'module' => 'payments',
+                'description' => 'Allows cancelling an eligible payment according to payment lifecycle and financial control rules.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payments.reverse',
+                'label' => 'Reverse Payment',
+                'module' => 'payments',
+                'description' => 'Allows reversing a completed payment according to authorized financial reversal procedures.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payments.view_history',
+                'label' => 'View Payment History',
+                'module' => 'payments',
+                'description' => 'Allows viewing the history of payment collection, cancellation, reversal, and other recorded payment changes.',
+                'is_system' => false,
+            ],
+
+
 
 
 
