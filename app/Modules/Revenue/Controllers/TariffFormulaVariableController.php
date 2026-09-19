@@ -1,13 +1,12 @@
 <?php
 
 namespace App\Modules\Revenue\Controllers;
+
 use App\Http\Controllers\Controller;
-
-
-use App\Modules\Revenue\Requests\TariffFormulaVariableRequest;
-use App\Modules\Revenue\Resources\TariffFormulaVariableResource;
 use App\Models\TariffFormulaVariable;
 use App\Models\TariffRule;
+use App\Modules\Revenue\Requests\TariffFormulaVariableRequest;
+use App\Modules\Revenue\Resources\TariffFormulaVariableResource;
 use App\Modules\Revenue\Services\TariffFormulaVariableService;
 use Illuminate\Http\JsonResponse;
 
@@ -20,10 +19,18 @@ class TariffFormulaVariableController extends Controller
 
     /**
      * List formula variables.
+     *
+     * Permission:
+     *     tariff_formula.view
      */
     public function index(
         TariffRule $tariffRule
     ): JsonResponse {
+        $this->authorize(
+            'viewAny',
+            TariffFormulaVariable::class
+        );
+
         $variables = $this->service->index($tariffRule);
 
         return response()->json([
@@ -37,11 +44,19 @@ class TariffFormulaVariableController extends Controller
 
     /**
      * Show formula variable.
+     *
+     * Permission:
+     *     tariff_formula.view
      */
     public function show(
         TariffRule $tariffRule,
         TariffFormulaVariable $formulaVariable
     ): JsonResponse {
+        $this->authorize(
+            'view',
+            $formulaVariable
+        );
+
         $variable = $this->service->show(
             $tariffRule,
             $formulaVariable
@@ -58,11 +73,19 @@ class TariffFormulaVariableController extends Controller
 
     /**
      * Create formula variable.
+     *
+     * Permission:
+     *     tariff_formula.create
      */
     public function store(
         TariffFormulaVariableRequest $request,
         TariffRule $tariffRule
     ): JsonResponse {
+        $this->authorize(
+            'create',
+            TariffFormulaVariable::class
+        );
+
         $variable = $this->service->store(
             $tariffRule,
             $request->validated()
@@ -79,12 +102,20 @@ class TariffFormulaVariableController extends Controller
 
     /**
      * Update formula variable.
+     *
+     * Permission:
+     *     tariff_formula.update
      */
     public function update(
         TariffFormulaVariableRequest $request,
         TariffRule $tariffRule,
         TariffFormulaVariable $formulaVariable
     ): JsonResponse {
+        $this->authorize(
+            'update',
+            $formulaVariable
+        );
+
         $variable = $this->service->update(
             $tariffRule,
             $formulaVariable,
@@ -102,11 +133,19 @@ class TariffFormulaVariableController extends Controller
 
     /**
      * Delete formula variable.
+     *
+     * Permission:
+     *     tariff_formula.delete
      */
     public function destroy(
         TariffRule $tariffRule,
         TariffFormulaVariable $formulaVariable
     ): JsonResponse {
+        $this->authorize(
+            'delete',
+            $formulaVariable
+        );
+
         $this->service->destroy(
             $tariffRule,
             $formulaVariable

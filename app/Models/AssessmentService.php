@@ -53,10 +53,6 @@ class AssessmentService extends Model
         |--------------------------------------------------------------------------
         | Calculation Output
         |--------------------------------------------------------------------------
-        |
-        | computed_amount represents the original principal amount
-        | calculated for this assessment service.
-        |
         */
 
         'computed_amount',
@@ -174,11 +170,6 @@ class AssessmentService extends Model
     |--------------------------------------------------------------------------
     | Revenue Service
     |--------------------------------------------------------------------------
-    |
-    | assessment_services.service_id
-    |              ↓
-    | revenue_services.id
-    |
     */
 
     public function service(): BelongsTo
@@ -193,11 +184,6 @@ class AssessmentService extends Model
     |--------------------------------------------------------------------------
     | Penalty Rule
     |--------------------------------------------------------------------------
-    |
-    | assessment_services.penalty_rule_id
-    |              ↓
-    | penalty_rules.id
-    |
     */
 
     public function penaltyRule(): BelongsTo
@@ -212,11 +198,6 @@ class AssessmentService extends Model
     |--------------------------------------------------------------------------
     | Interest Rule
     |--------------------------------------------------------------------------
-    |
-    | assessment_services.interest_rule_id
-    |              ↓
-    | interest_rules.id
-    |
     */
 
     public function interestRule(): BelongsTo
@@ -231,11 +212,6 @@ class AssessmentService extends Model
     |--------------------------------------------------------------------------
     | Captured Field Values
     |--------------------------------------------------------------------------
-    |
-    | assessment_services.id
-    |              ↓
-    | assessment_service_values.assessment_service_id
-    |
     */
 
     public function values(): HasMany
@@ -244,6 +220,28 @@ class AssessmentService extends Model
             AssessmentServiceValue::class,
             'assessment_service_id'
         )->orderBy('sort_order');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Schedules
+    |--------------------------------------------------------------------------
+    |
+    | assessment_services.id
+    |              ↓
+    | payment_schedules.assessment_service_id
+    |
+    | One assessment service can have multiple
+    | installment payment schedules.
+    |
+    */
+
+    public function paymentSchedules(): HasMany
+    {
+        return $this->hasMany(
+            PaymentSchedule::class,
+            'assessment_service_id'
+        )->orderBy('installment_number');
     }
 
     /*

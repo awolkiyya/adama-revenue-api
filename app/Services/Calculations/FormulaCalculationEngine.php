@@ -4,30 +4,47 @@ namespace App\Services\Calculations;
 
 use App\Models\TariffFormulaVariable;
 use App\Models\TariffRule;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use RuntimeException;
+use Throwable;
 
 class FormulaCalculationEngine
 {
     /*
     |--------------------------------------------------------------------------
-    | Public API
+    | Formula Calculation Engine
     |--------------------------------------------------------------------------
     |
-    | Calculates a FORMULA tariff rule using:
-    |
-    |     1. TariffRule::formula
-    |     2. tariff_formula_variables
-    |     3. AssessmentService values resolved by BaseField UUID
+    | Safely evaluates FORMULA tariff rules without eval().
     |
     | Example:
     |
-    |     LAND_AREA * 3.70 * LIZZ_PERIOD
+    |     LAND_AREA * RATE * LIZZ_PERIOD
     |
+    | Where:
+    |
+    |     LAND_AREA  -> BASE_FIELD
+    |     RATE       -> CONSTANT (e.g. 3.70)
+    |     LIZZ_PERIOD -> BASE_FIELD
+    |
+    | The engine is intentionally restricted to arithmetic expressions:
+    |
+    |     +  -  *  /
+    |     (  )
+    |     unary + / -
+    |     numbers
+    |     configured variables
+    |
+    | No PHP execution, functions, method calls, assignments, strings,
+    | arrays, or eval() are allowed.
+    |--------------------------------------------------------------------------
     */
 
+    private const LOG_CHANNEL = 'stack';
+
     /**
-     * Calculate a formula tariff.
+     * Calculate a FORMULA tariff rule.
      *
      * @param  TariffRule  $rule
      * @param  array<string, mixed>  $values
@@ -36,59 +53,118 @@ class FormulaCalculationEngine
         TariffRule $rule,
         array $values
     ): float {
-        if ($rule->calculation_type !== 'FORMULA') {
-            throw new InvalidArgumentException(
-                "Tariff rule {$rule->id} is not a FORMULA rule."
-            );
-        }
-
+        $ruleId = (string) $rule->id;
         $formula = trim((string) $rule->formula);
 
-        if ($formula === '') {
-            throw new RuntimeException(
-                "FORMULA tariff rule {$rule->id} requires a formula."
+        Log::debug('Starting tariff formula calculation.', [
+            'channel' => self::LOG_CHANNEL,
+            'rule_id' => $ruleId,
+            'calculation_type' => $rule->calculation_type,
+            'formula' => $formula,
+            'input_value_count' => count($values),
+        ]);
+
+        try {
+            /*
+             * Formula engine must only process FORMULA rules.
+             */
+            if ($rule->calculation_type !== 'FORMULA') {
+                throw new InvalidArgumentException(
+                    "Tariff rule {$ruleId} is not a FORMULA rule."
+                );
+            }
+
+            /*
+             * Formula is mandatory for FORMULA rules.
+             */
+            if ($formula === '') {
+                throw new RuntimeException(
+                    "FORMULA tariff rule {$ruleId} requires a formula."
+                );
+            }
+
+            /*
+             * Ensure formula variables are available.
+             */
+            $rule->loadMissing('formulaVariables');
+
+            $formulaVariables = $rule->formulaVariables;
+
+            Log::debug('Tariff formula variables loaded.', [
+                'rule_id' => $ruleId,
+                'variable_count' => $formulaVariables->count(),
+                'variables' => $formulaVariables
+                    ->map(
+                        fn (TariffFormulaVariable $variable): string =>
+                            strtoupper(
+                                trim((string) $variable->variable_name)
+                            )
+                    )
+                    ->values()
+                    ->all(),
+            ]);
+
+            /*
+             * Resolve configured variables.
+             *
+             * Example result:
+             *
+             * [
+             *     'LAND_AREA'   => 500.0,
+             *     'RATE'        => 3.70,
+             *     'LIZZ_PERIOD' => 12.0,
+             * ]
+             */
+            $variables = $this->resolveVariables(
+                $formulaVariables,
+                $values,
+                $ruleId,
             );
-        }
 
-        /*
-         * Ensure formula variables are available.
-         */
-        $rule->loadMissing('formulaVariables');
-
-        $variables = $this->resolveVariables(
-            $rule->formulaVariables,
-            $values
-        );
-
-        /*
-         * Evaluate the formula using our restricted parser.
-         *
-         * No eval().
-         * No PHP execution.
-         * No arbitrary function calls.
-         */
-        $result = $this->evaluate(
-            formula: $formula,
-            variables: $variables,
-        );
-
-        if (!is_finite($result)) {
-            throw new RuntimeException(
-                "Formula for tariff rule {$rule->id} produced a non-finite result."
+            /*
+             * Evaluate formula using the restricted parser.
+             */
+            $result = $this->evaluate(
+                formula: $formula,
+                variables: $variables,
             );
-        }
 
-        return $result;
+            if (!is_finite($result)) {
+                throw new RuntimeException(
+                    "Formula for tariff rule {$ruleId} produced a non-finite result."
+                );
+            }
+
+            Log::info('Tariff formula calculation completed successfully.', [
+                'rule_id' => $ruleId,
+                'formula' => $formula,
+                'result' => $result,
+                'variable_count' => count($variables),
+            ]);
+
+            return $result;
+        } catch (Throwable $exception) {
+            /*
+             * Do not swallow calculation errors.
+             *
+             * The exception is logged with context and then re-thrown so
+             * AssessmentCalculationService can mark the assessment service
+             * as ERROR and expose the proper application-level failure.
+             */
+            Log::error('Tariff formula calculation failed.', [
+                'rule_id' => $ruleId,
+                'formula' => $formula,
+                'exception_class' => $exception::class,
+                'exception_message' => $exception->getMessage(),
+                'input_value_count' => count($values),
+            ]);
+
+            throw $exception;
+        }
     }
 
     /**
-     * Resolve formula variables into:
-     *
-     * [
-     *     'LAND_AREA' => 1000,
-     *     'LIZZ_PERIOD' => 12,
-     *     'RATE' => 3.70,
-     * ]
+     * Resolve all configured formula variables.
      *
      * @param  iterable<TariffFormulaVariable>  $formulaVariables
      * @param  array<string, mixed>  $values
@@ -96,7 +172,8 @@ class FormulaCalculationEngine
      */
     private function resolveVariables(
         iterable $formulaVariables,
-        array $values
+        array $values,
+        string $ruleId,
     ): array {
         $resolved = [];
 
@@ -116,13 +193,13 @@ class FormulaCalculationEngine
             }
 
             /*
-             * Variable names are case-insensitive.
+             * Formula variables are case-insensitive.
              *
              * LAND_AREA
              * land_area
              * Land_Area
              *
-             * are treated as the same formula variable.
+             * all resolve to LAND_AREA.
              */
             $normalizedName = strtoupper($name);
 
@@ -133,10 +210,20 @@ class FormulaCalculationEngine
             }
 
             $resolved[$normalizedName] = $this->resolveVariableValue(
-                $variable,
-                $values
+                variable: $variable,
+                values: $values,
             );
         }
+
+        /*
+         * This log intentionally does not expose the actual assessment
+         * values. It records only the resolved variable names and source
+         * types, which is sufficient for diagnostics.
+         */
+        Log::debug('Tariff formula variables resolved.', [
+            'rule_id' => $ruleId,
+            'variables' => array_keys($resolved),
+        ]);
 
         return $resolved;
     }
@@ -145,10 +232,10 @@ class FormulaCalculationEngine
      * Resolve one formula variable.
      *
      * BASE_FIELD:
-     *     Resolve value from assessment values using base_field_id.
+     *     Resolve from assessment/base-field values.
      *
      * CONSTANT:
-     *     Resolve value from default_value.
+     *     Resolve from default_value.
      */
     private function resolveVariableValue(
         TariffFormulaVariable $variable,
@@ -160,12 +247,12 @@ class FormulaCalculationEngine
 
         return match ($sourceType) {
             'BASE_FIELD' => $this->resolveBaseFieldVariable(
-                $variable,
-                $values
+                variable: $variable,
+                values: $values,
             ),
 
             'CONSTANT' => $this->resolveConstantVariable(
-                $variable
+                variable: $variable,
             ),
 
             default => throw new RuntimeException(
@@ -176,13 +263,21 @@ class FormulaCalculationEngine
     }
 
     /**
-     * Resolve BASE_FIELD variable.
+     * Resolve a BASE_FIELD variable.
+     *
+     * Assessment values are expected to be indexed by BaseField UUID:
+     *
+     * [
+     *     '<base_field_uuid>' => value
+     * ]
      */
     private function resolveBaseFieldVariable(
         TariffFormulaVariable $variable,
         array $values
     ): float {
-        $variableName = (string) $variable->variable_name;
+        $variableName = trim(
+            (string) $variable->variable_name
+        );
 
         if (!$variable->base_field_id) {
             throw new RuntimeException(
@@ -194,36 +289,64 @@ class FormulaCalculationEngine
         $baseFieldId = (string) $variable->base_field_id;
 
         /*
-         * Assessment values are already normalized by
-         * TariffCalculator::buildValueMap().
-         *
-         * Therefore the expected structure is:
-         *
-         * [
-         *     '<base_field_uuid>' => value
-         * ]
+         * Primary resolution:
+         * use the actual assessment value.
          */
         if (array_key_exists($baseFieldId, $values)) {
-            return $this->normalizeNumericValue(
-                $values[$baseFieldId],
-                $variableName
+            $resolvedValue = $this->normalizeNumericValue(
+                value: $values[$baseFieldId],
+                variableName: $variableName,
             );
+
+            Log::debug('BASE_FIELD formula variable resolved.', [
+                'variable' => $variableName,
+                'source_type' => 'BASE_FIELD',
+                'base_field_id' => $baseFieldId,
+                'resolution' => 'assessment_value',
+            ]);
+
+            return $resolvedValue;
         }
 
         /*
-         * Optional variable with a configured default.
+         * Optional BASE_FIELD variable with default value.
          */
-        if (!$variable->is_required && $variable->default_value !== null) {
-            return $this->normalizeNumericValue(
-                $variable->default_value,
-                $variableName
+        if (
+            !$variable->is_required &&
+            $variable->default_value !== null
+        ) {
+            $resolvedValue = $this->normalizeNumericValue(
+                value: $variable->default_value,
+                variableName: $variableName,
             );
+
+            Log::debug('Optional BASE_FIELD formula variable resolved using default.', [
+                'variable' => $variableName,
+                'source_type' => 'BASE_FIELD',
+                'base_field_id' => $baseFieldId,
+                'resolution' => 'default_value',
+            ]);
+
+            return $resolvedValue;
         }
 
+        /*
+         * Optional missing variable defaults to zero.
+         */
         if (!$variable->is_required) {
+            Log::debug('Optional BASE_FIELD formula variable defaulted to zero.', [
+                'variable' => $variableName,
+                'source_type' => 'BASE_FIELD',
+                'base_field_id' => $baseFieldId,
+                'resolution' => 'zero',
+            ]);
+
             return 0.0;
         }
 
+        /*
+         * Required value was not supplied.
+         */
         throw new RuntimeException(
             "Required formula variable '{$variableName}' " .
             "could not be resolved from base field '{$baseFieldId}'."
@@ -231,15 +354,29 @@ class FormulaCalculationEngine
     }
 
     /**
-     * Resolve CONSTANT variable.
+     * Resolve a CONSTANT formula variable.
+     *
+     * Example:
+     *
+     *     RATE
+     *     source_type = CONSTANT
+     *     default_value = 3.70
      */
     private function resolveConstantVariable(
         TariffFormulaVariable $variable
     ): float {
-        $variableName = (string) $variable->variable_name;
+        $variableName = trim(
+            (string) $variable->variable_name
+        );
 
         if ($variable->default_value === null) {
             if (!$variable->is_required) {
+                Log::debug('Optional CONSTANT formula variable defaulted to zero.', [
+                    'variable' => $variableName,
+                    'source_type' => 'CONSTANT',
+                    'resolution' => 'zero',
+                ]);
+
                 return 0.0;
             }
 
@@ -249,26 +386,35 @@ class FormulaCalculationEngine
             );
         }
 
-        return $this->normalizeNumericValue(
-            $variable->default_value,
-            $variableName
+        $resolvedValue = $this->normalizeNumericValue(
+            value: $variable->default_value,
+            variableName: $variableName,
         );
+
+        Log::debug('CONSTANT formula variable resolved.', [
+            'variable' => $variableName,
+            'source_type' => 'CONSTANT',
+            'resolution' => 'default_value',
+        ]);
+
+        return $resolvedValue;
     }
 
     /**
-     * Convert a resolved value to a numeric value.
+     * Normalize a value into a finite float.
      */
     private function normalizeNumericValue(
         mixed $value,
         string $variableName
     ): float {
         if (is_bool($value)) {
-            return $value ? 1.0 : 0.0;
-        }
-
-        if (is_int($value) || is_float($value)) {
+            $numeric = $value ? 1.0 : 0.0;
+        } elseif (is_int($value) || is_float($value)) {
             $numeric = (float) $value;
-        } elseif (is_string($value) && is_numeric(trim($value))) {
+        } elseif (
+            is_string($value) &&
+            is_numeric(trim($value))
+        ) {
             $numeric = (float) trim($value);
         } else {
             throw new RuntimeException(
@@ -294,6 +440,7 @@ class FormulaCalculationEngine
     |
     |     10
     |     10.50
+    |     .5
     |     LAND_AREA
     |     LAND_AREA * RATE
     |     LAND_AREA + EXTRA
@@ -306,15 +453,18 @@ class FormulaCalculationEngine
     |
     |     PHP functions
     |     method calls
-    |     variables outside configured variables
+    |     property access
+    |     assignments
     |     strings
     |     arrays
-    |     assignments
+    |     arbitrary PHP expressions
     |     eval()
     |
     */
 
     /**
+     * Evaluate a formula using the restricted parser.
+     *
      * @param  array<string, float>  $variables
      */
     private function evaluate(
@@ -373,10 +523,10 @@ class FormulaCalculationEngine
             /*
              * Numbers:
              *
-             * 10
-             * 10.5
-             * .5
-             * 10.
+             *     10
+             *     10.5
+             *     .5
+             *     10.
              */
             if (
                 ctype_digit($character) ||
@@ -433,15 +583,15 @@ class FormulaCalculationEngine
             /*
              * Identifiers:
              *
-             * LAND_AREA
-             * LIZZ_PERIOD
-             * RATE
+             *     LAND_AREA
+             *     LIZZ_PERIOD
+             *     RATE
              *
              * Allowed:
-             * A-Z
-             * a-z
-             * 0-9
-             * _
+             *     A-Z
+             *     a-z
+             *     0-9
+             *     _
              */
             if (
                 ctype_alpha($character) ||
@@ -478,7 +628,7 @@ class FormulaCalculationEngine
             }
 
             /*
-             * Operators.
+             * Arithmetic operators and parentheses.
              */
             if (in_array(
                 $character,
@@ -494,6 +644,9 @@ class FormulaCalculationEngine
                 continue;
             }
 
+            /*
+             * Anything else is rejected.
+             */
             throw new RuntimeException(
                 "Invalid character '{$character}' in formula."
             );
@@ -503,7 +656,7 @@ class FormulaCalculationEngine
     }
 
     /**
-     * Parse addition/subtraction.
+     * Parse addition and subtraction.
      *
      * expression:
      *
@@ -555,7 +708,7 @@ class FormulaCalculationEngine
     }
 
     /**
-     * Parse multiplication/division.
+     * Parse multiplication and division.
      *
      * term:
      *
@@ -614,9 +767,7 @@ class FormulaCalculationEngine
     }
 
     /**
-     * Parse numbers, variables, parentheses and unary +/-.
-     *
-     * factor:
+     * Parse:
      *
      *     NUMBER
      *     IDENTIFIER
@@ -661,9 +812,13 @@ class FormulaCalculationEngine
                 variables: $variables,
             );
 
-            return $operator === '-'
+            $result = $operator === '-'
                 ? -$value
                 : $value;
+
+            $this->assertFiniteResult($result);
+
+            return $result;
         }
 
         /*
@@ -680,7 +835,7 @@ class FormulaCalculationEngine
         }
 
         /*
-         * Variable.
+         * Configured formula variable.
          */
         if ($token['type'] === 'IDENTIFIER') {
             $position++;
@@ -742,3 +897,4 @@ class FormulaCalculationEngine
         }
     }
 }
+

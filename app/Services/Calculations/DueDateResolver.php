@@ -9,7 +9,6 @@ use Carbon\Carbon;
 use DateTimeZone;
 use InvalidArgumentException;
 use IntlCalendar;
-use IntlGregorianCalendar;
 
 class DueDateResolver
 {
@@ -32,28 +31,20 @@ class DueDateResolver
     |--------------------------------------------------------------------------
     | Dynamic Agreement Date Field
     |--------------------------------------------------------------------------
+    |
+    | The agreement date is identified through:
+    |
+    |     AssessmentService
+    |          ↓
+    |     AssessmentServiceValue
+    |          ↓
+    |     RevenueServiceField
+    |          ↓
+    |     BaseField.code
+    |
     */
 
     private const AGREEMENT_DATE_FIELD = 'AGREEMENT_DATE';
-
-    /*
-    |--------------------------------------------------------------------------
-    | Annual Payment Date Format
-    |--------------------------------------------------------------------------
-    |
-    | revenue_settings.annual_payment_due_date is stored as:
-    |
-    |     MM-DD
-    |
-    | Example:
-    |
-    |     06-13
-    |
-    | The value represents an Ethiopian-calendar month/day.
-    |
-    */
-
-    private const ANNUAL_PAYMENT_DATE_FORMAT = 'm-d';
 
     /*
     |--------------------------------------------------------------------------
@@ -85,7 +76,7 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         */
 
-        if (!$penaltyRule->exists) {
+        if (! $penaltyRule->exists) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Penalty rule is not persisted for assessment service [%s].',
@@ -134,10 +125,11 @@ class DueDateResolver
     |
     |     assessment_service_values
     |
-    | Example:
+    | and identified through:
     |
-    |     field_code = AGREEMENT_DATE
-    |     value      = "2024-08-01"
+    |     revenue_service_fields
+    |          ↓
+    |     base_fields.code
     |
     */
 
@@ -156,6 +148,14 @@ class DueDateResolver
     |
     | Reads AGREEMENT_DATE from assessment_service_values.
     |
+    | IMPORTANT:
+    |
+    | AssessmentService does not have serviceValues().
+    |
+    | The canonical relationship is:
+    |
+    |     AssessmentService::values()
+    |
     */
 
     private function getAgreementDate(
@@ -163,15 +163,35 @@ class DueDateResolver
     ): Carbon {
         /*
         |--------------------------------------------------------------------------
-        | Find Dynamic Field
+        | Find Dynamic Field Value
         |--------------------------------------------------------------------------
+        |
+        | Relationship:
+        |
+        | AssessmentService
+        |       ↓
+        | values()
+        |       ↓
+        | AssessmentServiceValue
+        |       ↓
+        | revenueServiceField
+        |       ↓
+        | baseField
+        |       ↓
+        | code = AGREEMENT_DATE
+        |
         */
 
         $value = $assessmentService
-            ->serviceValues()
-            ->where(
-                'field_code',
-                self::AGREEMENT_DATE_FIELD,
+            ->values()
+            ->whereHas(
+                'revenueServiceField.baseField',
+                function ($query): void {
+                    $query->where(
+                        'code',
+                        self::AGREEMENT_DATE_FIELD,
+                    );
+                },
             )
             ->value('value');
 
@@ -246,7 +266,7 @@ class DueDateResolver
 
         try {
             return Carbon::parse(
-                $value,
+                (string) $value,
             )->startOfDay();
 
         } catch (\Throwable $e) {
@@ -272,19 +292,19 @@ class DueDateResolver
     |
     | Example:
     |
-    |     "13-06"
+    |     06-13
     |
     | This value represents an Ethiopian-calendar month/day.
     |
     | IMPORTANT:
     |
-    |     13-06 is NOT a Gregorian date.
+    |     06-13 is NOT a Gregorian date.
     |
     | It is a recurring Ethiopian-calendar date:
     |
-    |     2019 EC → 13/06/2019
-    |     2020 EC → 13/06/2020
-    |     2021 EC → 13/06/2021
+    |     2019 EC → 06/13/2019
+    |     2020 EC → 06/13/2020
+    |     2021 EC → 06/13/2021
     |
     | The Ethiopian year is determined from the assessment date.
     |
@@ -303,7 +323,7 @@ class DueDateResolver
             ->where('is_active', true)
             ->first();
 
-        if (!$settings) {
+        if (! $settings) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Active revenue settings are not configured for assessment service [%s].',
@@ -338,7 +358,7 @@ class DueDateResolver
 
         /*
         |--------------------------------------------------------------------------
-        | Validate MM-DD Format
+        | Validate Ethiopian MM-DD Format
         |--------------------------------------------------------------------------
         |
         | Ethiopian calendar:
@@ -346,10 +366,13 @@ class DueDateResolver
         |     Months 1-12 → maximum 30 days
         |     Month 13    → maximum 6 days
         |
+        | Pagume day 6 is validated later after the Ethiopian year
+        | has been determined.
+        |
         */
 
         if (
-            !preg_match(
+            ! preg_match(
                 '/^(0[1-9]|1[0-3])-(0[1-9]|[12][0-9]|30)$/',
                 $annualPaymentDate,
             )
@@ -378,28 +401,13 @@ class DueDateResolver
 
         /*
         |--------------------------------------------------------------------------
-        | Validate Pagume
-        |--------------------------------------------------------------------------
-        |
-        | Ethiopian month 13 (Pagume) has:
-        |
-        |     5 days in a normal year
-        |     6 days in a leap year
-        |
-        | We cannot fully validate day 6 until the Ethiopian year is known,
-        | so this is checked after resolving the assessment's Ethiopian year.
-        |
-        */
-
-        /*
-        |--------------------------------------------------------------------------
         | Resolve Assessment
         |--------------------------------------------------------------------------
         */
 
         $assessment = $assessmentService->assessment;
 
-        if (!$assessment) {
+        if (! $assessment) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Assessment is missing for assessment service [%s].',
@@ -410,14 +418,14 @@ class DueDateResolver
 
         /*
         |--------------------------------------------------------------------------
-        | Assessment Date
+        | Resolve Assessment Date
         |--------------------------------------------------------------------------
         */
 
         $assessmentDate = $assessment->assessment_date
             ?? $assessment->created_at;
 
-        if (!$assessmentDate) {
+        if (! $assessmentDate) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Assessment date is missing for assessment service [%s].',
@@ -459,23 +467,6 @@ class DueDateResolver
     |              ↓
     |     Gregorian due date
     |
-    | Example:
-    |
-    |     Assessment:
-    |         2026-09-12 Gregorian
-    |
-    |     Ethiopian:
-    |         2019 EC
-    |
-    |     Configuration:
-    |         06-13
-    |
-    |     Target:
-    |         13/06/2019 EC
-    |
-    |     Result:
-    |         Gregorian equivalent of 13/06/2019 EC
-    |
     */
 
     private function resolveEthiopianAnnualPaymentDate(
@@ -490,7 +481,7 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         */
 
-        if (!class_exists(IntlCalendar::class)) {
+        if (! class_exists(IntlCalendar::class)) {
             throw new InvalidArgumentException(
                 sprintf(
                     'PHP Intl extension is required to resolve Ethiopian annual payment date [%02d-%02d] for assessment service [%s]. Enable ext-intl.',
@@ -503,20 +494,29 @@ class DueDateResolver
 
         /*
         |--------------------------------------------------------------------------
-        | Convert Assessment Gregorian Date → Ethiopian Date
+        | Resolve Application Timezone
         |--------------------------------------------------------------------------
         */
 
         $assessmentTimezone = new DateTimeZone(
-            config('app.timezone', 'Africa/Addis_Ababa'),
+            config(
+                'app.timezone',
+                'Africa/Addis_Ababa',
+            ),
         );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Create Ethiopian Calendar
+        |--------------------------------------------------------------------------
+        */
 
         $ethiopianCalendar = IntlCalendar::createInstance(
             $assessmentTimezone,
             'en_US@calendar=ethiopic',
         );
 
-        if (!$ethiopianCalendar) {
+        if (! $ethiopianCalendar) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Unable to initialize Ethiopian calendar for assessment service [%s].',
@@ -610,7 +610,7 @@ class DueDateResolver
 
         /*
         |--------------------------------------------------------------------------
-        | Create Target Ethiopian Date
+        | Create Target Ethiopian Calendar
         |--------------------------------------------------------------------------
         */
 
@@ -619,7 +619,7 @@ class DueDateResolver
             'en_US@calendar=ethiopic',
         );
 
-        if (!$targetEthiopianCalendar) {
+        if (! $targetEthiopianCalendar) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Unable to initialize Ethiopian target calendar for assessment service [%s].',
@@ -681,6 +681,12 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         | Validate Calendar Date
         |--------------------------------------------------------------------------
+        |
+        | ICU may normalize an invalid date automatically.
+        |
+        | We compare the requested date with the actual calendar date
+        | to detect invalid dates such as Pagume day 6 in a non-leap year.
+        |
         */
 
         $actualYear = $targetEthiopianCalendar->get(
@@ -694,19 +700,6 @@ class DueDateResolver
         $actualDay = $targetEthiopianCalendar->get(
             IntlCalendar::FIELD_DAY_OF_MONTH,
         );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Ensure ICU Did Not Normalize An Invalid Date
-        |--------------------------------------------------------------------------
-        |
-        | This is particularly important for:
-        |
-        |     Pagume day 6
-        |
-        | in a non-leap Ethiopian year.
-        |
-        */
 
         if (
             $actualYear !== $ethiopianYear ||

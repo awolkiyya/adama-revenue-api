@@ -15,6 +15,7 @@ use App\Modules\Revenue\Controllers\PenaltyRuleController;
 use App\Modules\Revenue\Controllers\RevenueSettingController;
 use App\Modules\Revenue\Controllers\InterestRuleController;
 use App\Http\Controllers\PenaltyDiscountRequestController;
+use App\Modules\Revenue\Controllers\RevenueCodePaymentScheduleRuleController;
 
 
 
@@ -569,6 +570,88 @@ Route::prefix('revenue')
                     'history'
                 );
             });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Schedule Rules
+    |--------------------------------------------------------------------------
+    |
+    | Payment schedule configuration is managed per revenue code.
+    |
+    | Revenue Code
+    |      |
+    |      └── Payment Schedule Rule
+    |              ├── is_enabled
+    |              └── first_installment_percentage (optional)
+    |
+    | A revenue code can have only one payment schedule rule.
+    |
+    */
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Schedule Rule Summary
+    |--------------------------------------------------------------------------
+    |
+    | GET /revenue/payment-schedule-rules/summary
+    |
+    */
+
+    Route::get(
+        'payment-schedule-rules/summary',
+        [RevenueCodePaymentScheduleRuleController::class, 'summary']
+    )
+        ->name('payment-schedule-rules.summary');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Schedule Rule CRUD
+    |--------------------------------------------------------------------------
+    |
+    | GET    /revenue/payment-schedule-rules
+    | POST   /revenue/payment-schedule-rules
+    | GET    /revenue/payment-schedule-rules/{paymentScheduleRule}
+    | PUT    /revenue/payment-schedule-rules/{paymentScheduleRule}
+    |
+    */
+
+    Route::apiResource(
+        'payment-schedule-rules',
+        RevenueCodePaymentScheduleRuleController::class
+    )
+        ->only([
+            'index',
+            'store',
+            'show',
+            'update',
+        ]);
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Schedule Rule Status
+    |--------------------------------------------------------------------------
+    |
+    | PATCH /revenue/payment-schedule-rules/{paymentScheduleRule}/activate
+    | PATCH /revenue/payment-schedule-rules/{paymentScheduleRule}/deactivate
+    |
+    */
+
+    Route::patch(
+        'payment-schedule-rules/{paymentScheduleRule}/activate',
+        [RevenueCodePaymentScheduleRuleController::class, 'activate']
+    )
+        ->name('payment-schedule-rules.activate');
+
+
+    Route::patch(
+        'payment-schedule-rules/{paymentScheduleRule}/deactivate',
+        [RevenueCodePaymentScheduleRuleController::class, 'deactivate']
+    )
+        ->name('payment-schedule-rules.deactivate');
 
 });
 

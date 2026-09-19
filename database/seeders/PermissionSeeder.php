@@ -710,6 +710,8 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+  
+
             [
                 'name' => 'tariff.submit',
                 'label' => 'Submit Tariff',
@@ -739,6 +741,48 @@ class PermissionSeeder extends Seeder
                 'label' => 'View Tariff History',
                 'module' => 'tariff',
                 'description' => 'Allows viewing tariff version and configuration history.',
+                'is_system' => false,
+            ],
+
+
+            // tariff formula management 
+            [
+                'name' => 'tariff_formula.view',
+                'label' => 'View Tariff Formulas',
+                'module' => 'tariff',
+                'description' => 'Allows viewing formulas used in tariff rule calculations.',
+                'is_system' => false,
+            ],
+            
+            [
+                'name' => 'tariff_formula.create',
+                'label' => 'Create Tariff Formula',
+                'module' => 'tariff',
+                'description' => 'Allows creating formulas for tariff rule calculations.',
+                'is_system' => false,
+            ],
+            
+            [
+                'name' => 'tariff_formula.update',
+                'label' => 'Update Tariff Formula',
+                'module' => 'tariff',
+                'description' => 'Allows updating formulas used in tariff rule calculations.',
+                'is_system' => false,
+            ],
+            
+            [
+                'name' => 'tariff_formula.delete',
+                'label' => 'Delete Tariff Formula',
+                'module' => 'tariff',
+                'description' => 'Allows deleting formulas from tariff rule calculations.',
+                'is_system' => false,
+            ],
+            
+            [
+                'name' => 'tariff_formula.validate',
+                'label' => 'Validate Tariff Formula',
+                'module' => 'tariff',
+                'description' => 'Allows validating tariff formulas before they are used for revenue calculation.',
                 'is_system' => false,
             ],
 
@@ -855,6 +899,60 @@ class PermissionSeeder extends Seeder
                 'label' => 'View Interest Rule History',
                 'module' => 'interest_rules',
                 'description' => 'Allows viewing the historical configuration and changes of interest rules.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Code Payment Schedule Rules
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'payment_schedule_rules.view',
+                'label' => 'View Payment Schedule Rules',
+                'module' => 'payment_schedule_rules',
+                'description' => 'Allows viewing payment schedule configuration for revenue codes.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payment_schedule_rules.create',
+                'label' => 'Create Payment Schedule Rule',
+                'module' => 'payment_schedule_rules',
+                'description' => 'Allows configuring payment schedule rules for revenue codes.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payment_schedule_rules.update',
+                'label' => 'Update Payment Schedule Rule',
+                'module' => 'payment_schedule_rules',
+                'description' => 'Allows updating payment schedule configuration for revenue codes, including schedule availability and first-installment percentage.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payment_schedule_rules.activate',
+                'label' => 'Activate Payment Schedule Rule',
+                'module' => 'payment_schedule_rules',
+                'description' => 'Allows enabling payment schedule processing for a revenue code.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payment_schedule_rules.deactivate',
+                'label' => 'Deactivate Payment Schedule Rule',
+                'module' => 'payment_schedule_rules',
+                'description' => 'Allows disabling payment schedule processing for a revenue code without deleting its configuration.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'payment_schedule_rules.view_history',
+                'label' => 'View Payment Schedule Rule History',
+                'module' => 'payment_schedule_rules',
+                'description' => 'Allows viewing historical changes to payment schedule rules.',
                 'is_system' => false,
             ],
 

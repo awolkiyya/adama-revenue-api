@@ -4,10 +4,21 @@ namespace App\Services;
 
 use App\Models\AssessmentService;
 use App\Models\TariffRule;
+use App\Services\Calculations\FormulaCalculationEngine;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use Throwable;
 
 class TariffCalculator
 {
+    /**
+     * Create the tariff calculator.
+     */
+    public function __construct(
+        private readonly FormulaCalculationEngine $formulaEngine,
+    ) {
+    }
+
     /**
      * Calculate the amount for one assessment service.
      *
@@ -24,13 +35,44 @@ class TariffCalculator
      * - choose tariff rules
      *
      * Those responsibilities belong to other services.
+     *
+     * Calculation strategy:
+     *
+     *     FIXED       → internal fixed calculation
+     *     PERCENTAGE  → percentage calculation
+     *     PER_UNIT    → per-unit calculation
+     *     RANGE       → range calculation
+     *     FORMULA     → FormulaCalculationEngine
      */
     public function calculate(
         TariffRule $rule,
         AssessmentService $assessmentService,
     ): TariffCalculationResult {
 
+        $calculationType = strtoupper(
+            trim(
+                (string) $rule->calculation_type
+            )
+        );
+
         try {
+
+            Log::debug(
+                'Starting tariff calculation.',
+                [
+                    'tariff_rule_id' =>
+                        $rule->id,
+
+                    'tariff_version_id' =>
+                        $rule->tariff_version_id,
+
+                    'assessment_service_id' =>
+                        $assessmentService->id,
+
+                    'calculation_type' =>
+                        $calculationType,
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -62,19 +104,27 @@ class TariffCalculator
                 $assessmentService
             );
 
+            Log::debug(
+                'Assessment values prepared for tariff calculation.',
+                [
+                    'tariff_rule_id' =>
+                        $rule->id,
+
+                    'assessment_service_id' =>
+                        $assessmentService->id,
+
+                    'input_value_count' =>
+                        count($values),
+                ]
+            );
+
             /*
             |--------------------------------------------------------------------------
             | Calculate
             |--------------------------------------------------------------------------
             */
 
-            $amount = match (
-                strtoupper(
-                    trim(
-                        (string) $rule->calculation_type
-                    )
-                )
-            ) {
+            $amount = match ($calculationType) {
 
                 'FIXED' =>
                     $this->calculateFixed(
@@ -172,6 +222,26 @@ class TariffCalculator
             |--------------------------------------------------------------------------
             */
 
+            Log::info(
+                'Tariff calculation completed successfully.',
+                [
+                    'tariff_rule_id' =>
+                        $rule->id,
+
+                    'tariff_version_id' =>
+                        $rule->tariff_version_id,
+
+                    'assessment_service_id' =>
+                        $assessmentService->id,
+
+                    'calculation_type' =>
+                        $calculationType,
+
+                    'calculated_amount' =>
+                        $amount,
+                ]
+            );
+
             return TariffCalculationResult::success(
                 amount: $amount,
 
@@ -210,12 +280,43 @@ class TariffCalculator
                     'formula' =>
                         $rule->formula,
 
+                    /*
+                     * Keep the existing metadata behavior.
+                     *
+                     * NOTE:
+                     * If these values contain sensitive taxpayer data,
+                     * consider removing them from metadata and storing
+                     * only field IDs/counts.
+                     */
                     'inputs' =>
                         $values,
                 ],
             );
 
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
+
+            Log::error(
+                'Tariff calculation failed.',
+                [
+                    'tariff_rule_id' =>
+                        $rule->id,
+
+                    'tariff_version_id' =>
+                        $rule->tariff_version_id,
+
+                    'assessment_service_id' =>
+                        $assessmentService->id,
+
+                    'calculation_type' =>
+                        $calculationType,
+
+                    'exception_class' =>
+                        $e::class,
+
+                    'exception_message' =>
+                        $e->getMessage(),
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -224,9 +325,7 @@ class TariffCalculator
             |
             | TariffCalculationResult::failed() accepts:
             |
-            | failed(string $error, array $metadata = [])
-            |
-            | Therefore tariff IDs belong inside metadata.
+            |     failed(string $error, array $metadata = [])
             |
             */
 
@@ -254,7 +353,6 @@ class TariffCalculator
         }
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | FIXED
@@ -273,7 +371,6 @@ class TariffCalculator
 
         return (float) $rule->amount;
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -313,7 +410,6 @@ class TariffCalculator
             ((float) $rule->percentage / 100);
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | PER UNIT
@@ -352,18 +448,16 @@ class TariffCalculator
             (float) $rule->amount;
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | RANGE
     |--------------------------------------------------------------------------
     |
-    | The TariffResolver is responsible for selecting the matching
+    | TariffResolver is responsible for selecting the matching
     | RANGE rule.
     |
-    | This method only validates that the selected rule actually
-    | accepts the assessment value and returns its configured amount.
-    |
+    | This method validates that the selected rule accepts the
+    | assessment value and returns its configured amount.
     */
 
     private function calculateRange(
@@ -437,14 +531,27 @@ class TariffCalculator
         return (float) $rule->amount;
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | FORMULA
     |--------------------------------------------------------------------------
     |
-    | DO NOT use eval().
-    |--------------------------------------------------------------------------
+    | Delegates FORMULA evaluation to FormulaCalculationEngine.
+    |
+    | IMPORTANT:
+    |
+    | Never use eval().
+    |
+    | Example:
+    |
+    |     LAND_AREA * RATE * LIZZ_PERIOD
+    |
+    | Formula variables:
+    |
+    |     LAND_AREA   → BASE_FIELD
+    |     RATE        → CONSTANT = 3.70
+    |     LIZZ_PERIOD → BASE_FIELD
+    |
     */
 
     private function calculateFormula(
@@ -464,19 +571,44 @@ class TariffCalculator
             );
         }
 
-        /*
-         * Formula evaluation must use a restricted
-         * expression parser.
-         *
-         * Never execute database/user supplied
-         * formula text using eval().
-         */
+        Log::debug(
+            'Delegating FORMULA tariff calculation to formula engine.',
+            [
+                'tariff_rule_id' =>
+                    $rule->id,
 
-        throw new RuntimeException(
-            'FORMULA calculation engine is not enabled.'
+                'formula' =>
+                    $rule->formula,
+            ]
         );
-    }
 
+        $amount = $this->formulaEngine->calculate(
+            rule: $rule,
+            values: $values,
+        );
+
+        if (!is_finite($amount)) {
+            throw new RuntimeException(
+                sprintf(
+                    'Formula calculation for tariff rule %s produced an invalid amount.',
+                    $rule->id
+                )
+            );
+        }
+
+        Log::debug(
+            'FORMULA tariff calculation completed.',
+            [
+                'tariff_rule_id' =>
+                    $rule->id,
+
+                'amount' =>
+                    $amount,
+            ]
+        );
+
+        return $amount;
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -489,36 +621,41 @@ class TariffCalculator
     |
     |     revenue_service_field_id
     |
-    | while TariffRule stores:
+    | while TariffRule / TariffFormulaVariable stores:
     |
     |     base_field_id
     |
-    | Therefore we must resolve:
+    | Therefore:
     |
-    | assessment value
-    |      ↓
-    | revenue service field
-    |      ↓
-    | base field
-    |      ↓
-    | base field ID
+    |     assessment value
+    |          ↓
+    |     revenue service field
+    |          ↓
+    |     base field
+    |          ↓
+    |     base field ID
     |
     | Example:
     |
-    | Assessment value:
+    |     Assessment value:
     |
-    | revenue_service_field_id =
-    | 019ff640-101e-708a-9c85-132b78c8b59c
+    |     revenue_service_field_id =
+    |     019ff640-101e-708a-9c85-132b78c8b59c
     |
-    | RevenueServiceField:
+    |     RevenueServiceField:
     |
-    | base_field_id =
-    | 23388827-cd82-4881-a812-c881f9774d1e
+    |     base_field_id =
+    |     23388827-cd82-4881-a812-c881f9774d1e
     |
-    | BaseField:
+    |     BaseField:
     |
-    | code = LAND_AREA
+    |     code = LAND_AREA
     |
+    | Result:
+    |
+    |     [
+    |         '23388827-cd82-4881-a812-c881f9774d1e' => 500
+    |     ]
     */
 
     private function buildValueMap(
@@ -536,10 +673,6 @@ class TariffCalculator
             |--------------------------------------------------------------------------
             | Direct field_id support
             |--------------------------------------------------------------------------
-            |
-            | Keep compatibility if the model/schema has a field_id
-            | in another version.
-            |
             */
 
             if (
@@ -561,6 +694,7 @@ class TariffCalculator
             /*
             |--------------------------------------------------------------------------
             | Current schema:
+            |
             | revenue_service_field_id
             |--------------------------------------------------------------------------
             */
@@ -575,20 +709,14 @@ class TariffCalculator
 
             /*
             |--------------------------------------------------------------------------
-            | Load RevenueServiceField
+            | Resolve RevenueServiceField
             |--------------------------------------------------------------------------
             */
 
             $revenueServiceField =
-                $assessmentValue
-                    ->revenueServiceField;
+                $assessmentValue->revenueServiceField;
 
             if (!$revenueServiceField) {
-
-                /*
-                 * Fallback query if the relationship is not
-                 * defined or was not loaded.
-                 */
 
                 $revenueServiceField =
                     \App\Models\RevenueServiceField::query()
@@ -605,7 +733,7 @@ class TariffCalculator
 
             /*
             |--------------------------------------------------------------------------
-            | Resolve BaseField
+            | Resolve BaseField ID
             |--------------------------------------------------------------------------
             */
 
@@ -633,7 +761,6 @@ class TariffCalculator
 
         return $values;
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -716,7 +843,6 @@ class TariffCalculator
         );
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | REQUIRED NUMERIC VALUE
@@ -768,7 +894,6 @@ class TariffCalculator
         return (float) $value;
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | MINIMUM / MAXIMUM
@@ -802,7 +927,6 @@ class TariffCalculator
 
         return $amount;
     }
-
 
     /*
     |--------------------------------------------------------------------------

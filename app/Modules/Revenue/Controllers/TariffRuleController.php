@@ -125,20 +125,16 @@ class TariffRuleController extends Controller
 
 
 
-    /**
-     * Update tariff rule
-     */
     public function update(
         UpdateTariffRuleRequest $request,
+        string $tariff_version,
         TariffRule $tariffRule
     ): JsonResponse {
-
         $rule = $this->service->update(
             $tariffRule,
             $request->validated()
         );
-
-
+    
         return ApiResponse::updated(
             new TariffRuleResource($rule),
             'Tariff rule updated successfully'
