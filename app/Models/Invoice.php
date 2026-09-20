@@ -49,6 +49,8 @@ class Invoice extends Model
 
         'assessment_id',
 
+        'payment_schedule_id',
+
         'citizen_id',
 
         'administrative_unit_id',
@@ -145,15 +147,47 @@ class Invoice extends Model
     /**
      * Assessment that generated this invoice.
      *
-     * Only populated when:
+     * Populated when:
      *
-     * source_type = ASSESSMENT
+     *     source_type = ASSESSMENT
+     *
+     * For DIRECT_COLLECTION invoices this is NULL.
      */
     public function assessment(): BelongsTo
     {
         return $this->belongsTo(
             Assessment::class,
             'assessment_id'
+        );
+    }
+
+    /**
+     * Payment schedule / installment that generated this invoice.
+     *
+     * Important:
+     *
+     * Each row in payment_schedules represents ONE installment.
+     *
+     * Therefore:
+     *
+     *     payment_schedule_id
+     *             ↓
+     *     payment_schedules.id
+     *
+     * NULL for:
+     *
+     * - normal assessment invoices
+     * - direct collection invoices
+     *
+     * Populated for:
+     *
+     * - LIZZ / schedule-based invoices
+     */
+    public function paymentSchedule(): BelongsTo
+    {
+        return $this->belongsTo(
+            PaymentSchedule::class,
+            'payment_schedule_id'
         );
     }
 
@@ -298,6 +332,9 @@ class Invoice extends Model
         );
     }
 
+    /**
+     * Invoices generated from an assessment.
+     */
     public function scopeForAssessment(
         $query,
         string $assessmentId
@@ -306,6 +343,42 @@ class Invoice extends Model
             'assessment_id',
             $assessmentId
         );
+    }
+
+    /**
+     * Invoices generated from a specific payment schedule
+     * / installment.
+     */
+    public function scopeForPaymentSchedule(
+        $query,
+        string $paymentScheduleId
+    ) {
+        return $query->where(
+            'payment_schedule_id',
+            $paymentScheduleId
+        );
+    }
+
+    /**
+     * Normal assessment invoices.
+     *
+     * Assessment invoice without a payment schedule.
+     */
+    public function scopeNormalAssessment($query)
+    {
+        return $query
+            ->where('source_type', 'ASSESSMENT')
+            ->whereNull('payment_schedule_id');
+    }
+
+    /**
+     * Schedule-based / LIZZ invoices.
+     */
+    public function scopeScheduleBased($query)
+    {
+        return $query
+            ->where('source_type', 'ASSESSMENT')
+            ->whereNotNull('payment_schedule_id');
     }
 
     public function scopeForCitizen(
@@ -367,6 +440,34 @@ class Invoice extends Model
     public function isDirectCollection(): bool
     {
         return $this->source_type === 'DIRECT_COLLECTION';
+    }
+
+    /**
+     * Determine whether this invoice belongs to a payment schedule.
+     */
+    public function isScheduleBased(): bool
+    {
+        return $this->source_type === 'ASSESSMENT'
+            && $this->payment_schedule_id !== null;
+    }
+
+    /**
+     * Determine whether this is a normal assessment invoice
+     * without a payment schedule.
+     */
+    public function isNormalAssessment(): bool
+    {
+        return $this->source_type === 'ASSESSMENT'
+            && $this->payment_schedule_id === null;
+    }
+
+    /**
+     * Determine whether this invoice represents a specific
+     * payment schedule installment.
+     */
+    public function hasPaymentSchedule(): bool
+    {
+        return $this->payment_schedule_id !== null;
     }
 
     public function isFullyPaid(): bool
