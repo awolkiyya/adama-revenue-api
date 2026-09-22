@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use App\Models\AssessmentService;
@@ -22,19 +24,12 @@ class TariffCalculator
     /**
      * Calculate the amount for one assessment service.
      *
-     * IMPORTANT:
-     * -------------------------------------------------------------
-     * This class ONLY calculates.
+     * This method is kept for backward compatibility with the
+     * existing AssessmentCalculationService.
      *
-     * It does NOT:
-     * - update assessment status
-     * - approve assessment
-     * - reject assessment
-     * - save database records
-     * - choose tariff versions
-     * - choose tariff rules
-     *
-     * Those responsibilities belong to other services.
+     * The AssessmentService is responsible only for providing
+     * the input values. The actual calculation is delegated to
+     * calculateWithValues().
      *
      * Calculation strategy:
      *
@@ -47,6 +42,155 @@ class TariffCalculator
     public function calculate(
         TariffRule $rule,
         AssessmentService $assessmentService,
+    ): TariffCalculationResult {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ensure assessment values are loaded
+        |--------------------------------------------------------------------------
+        */
+
+        $assessmentService->loadMissing([
+            'values',
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Build normalized value map
+        |--------------------------------------------------------------------------
+        |
+        | AssessmentServiceValue values are converted into:
+        |
+        | [
+        |     'base-field-uuid' => value,
+        | ]
+        |
+        | The generic calculation engine does not need to know
+        | anything about AssessmentService.
+        |
+        */
+
+        $values = $this->buildValueMap(
+            $assessmentService
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Calculate
+        |--------------------------------------------------------------------------
+        */
+
+        $result = $this->calculateWithValues(
+            rule: $rule,
+            values: $values,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Preserve Assessment-specific metadata
+        |--------------------------------------------------------------------------
+        */
+
+        if ($result->success) {
+            $resultMetadata = $result->metadata;
+
+            $resultMetadata['assessment_service_id'] =
+                $assessmentService->id;
+
+            return TariffCalculationResult::success(
+                amount: $result->amount,
+                metadata: $resultMetadata,
+            );
+        }
+
+        $resultMetadata = $result->metadata;
+
+        $resultMetadata['assessment_service_id'] =
+            $assessmentService->id;
+
+        return TariffCalculationResult::failed(
+            error: $result->error ?? 'Tariff calculation failed.',
+            metadata: $resultMetadata,
+        );
+    }
+
+
+
+    /**
+     * Calculate a tariff for a direct revenue-service collection.
+     *
+     * This is an adapter around calculateWithValues().
+     *
+     * Direct Collection already resolves:
+     *
+     *     RevenueService
+     *          ↓
+     *     TariffVersion
+     *          ↓
+     *     TariffRule
+     *          ↓
+     *     normalized values
+     *
+     * Therefore this method must NOT:
+     *
+     * - resolve the tariff version
+     * - resolve the tariff rule
+     * - validate the revenue service
+     * - create invoices
+     * - create payments
+     *
+     * Those responsibilities belong to their respective services.
+     */
+    public function calculateForRevenueService(
+        TariffRule $rule,
+        array $values,
+    ): TariffCalculationResult {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Calculate using the generic calculation engine
+        |--------------------------------------------------------------------------
+        */
+
+        return $this->calculateWithValues(
+            rule: $rule,
+            values: $values,
+        );
+    }
+
+    /**
+     * Calculate a tariff using a normalized input value map.
+     *
+     * This is the generic calculation entry point.
+     *
+     * It can be used by:
+     *
+     * - Assessment
+     * - Direct Collection
+     * - Future revenue workflows
+     *
+     * The calculator does NOT:
+     *
+     * - resolve tariff versions
+     * - resolve tariff rules
+     * - validate taxpayer data
+     * - validate revenue service fields
+     * - save database records
+     * - create invoices
+     * - approve assessments
+     *
+     * Those responsibilities belong to their respective services.
+     *
+     * Example:
+     *
+     *     [
+     *         'base-field-uuid' => 500,
+     *         'another-field-uuid' => 'RESIDENTIAL',
+     *     ]
+     */
+    public function calculateWithValues(
+        TariffRule $rule,
+        array $values,
     ): TariffCalculationResult {
 
         $calculationType = strtoupper(
@@ -66,52 +210,8 @@ class TariffCalculator
                     'tariff_version_id' =>
                         $rule->tariff_version_id,
 
-                    'assessment_service_id' =>
-                        $assessmentService->id,
-
                     'calculation_type' =>
                         $calculationType,
-                ]
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Ensure assessment values are loaded
-            |--------------------------------------------------------------------------
-            */
-
-            $assessmentService->loadMissing([
-                'values',
-            ]);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Build Assessment Input Map
-            |--------------------------------------------------------------------------
-            |
-            | The map is keyed by BaseField UUID.
-            |
-            | Example:
-            |
-            | [
-            |     "23388827-cd82-4881-a812-c881f9774d1e" => 105,
-            |     "5c37894c-ebc7-49aa-9e3c-7917e765c286" => "RESIDENTIAL",
-            | ]
-            |
-            */
-
-            $values = $this->buildValueMap(
-                $assessmentService
-            );
-
-            Log::debug(
-                'Assessment values prepared for tariff calculation.',
-                [
-                    'tariff_rule_id' =>
-                        $rule->id,
-
-                    'assessment_service_id' =>
-                        $assessmentService->id,
 
                     'input_value_count' =>
                         count($values),
@@ -231,9 +331,6 @@ class TariffCalculator
                     'tariff_version_id' =>
                         $rule->tariff_version_id,
 
-                    'assessment_service_id' =>
-                        $assessmentService->id,
-
                     'calculation_type' =>
                         $calculationType,
 
@@ -281,12 +378,10 @@ class TariffCalculator
                         $rule->formula,
 
                     /*
-                     * Keep the existing metadata behavior.
+                     * Keep the existing input metadata behavior.
                      *
-                     * NOTE:
-                     * If these values contain sensitive taxpayer data,
-                     * consider removing them from metadata and storing
-                     * only field IDs/counts.
+                     * If taxpayer data is considered sensitive,
+                     * this can later be replaced with field IDs/counts.
                      */
                     'inputs' =>
                         $values,
@@ -304,11 +399,11 @@ class TariffCalculator
                     'tariff_version_id' =>
                         $rule->tariff_version_id,
 
-                    'assessment_service_id' =>
-                        $assessmentService->id,
-
                     'calculation_type' =>
                         $calculationType,
+
+                    'input_value_count' =>
+                        count($values),
 
                     'exception_class' =>
                         $e::class,
@@ -322,11 +417,6 @@ class TariffCalculator
             |--------------------------------------------------------------------------
             | Failed Result
             |--------------------------------------------------------------------------
-            |
-            | TariffCalculationResult::failed() accepts:
-            |
-            |     failed(string $error, array $metadata = [])
-            |
             */
 
             return TariffCalculationResult::failed(
@@ -346,8 +436,8 @@ class TariffCalculator
                     'base_field_id' =>
                         $rule->base_field_id,
 
-                    'assessment_service_id' =>
-                        $assessmentService->id,
+                    'inputs' =>
+                        $values,
                 ],
             );
         }
@@ -457,7 +547,7 @@ class TariffCalculator
     | RANGE rule.
     |
     | This method validates that the selected rule accepts the
-    | assessment value and returns its configured amount.
+    | supplied value and returns its configured amount.
     */
 
     private function calculateRange(
@@ -551,7 +641,6 @@ class TariffCalculator
     |     LAND_AREA   → BASE_FIELD
     |     RATE        → CONSTANT = 3.70
     |     LIZZ_PERIOD → BASE_FIELD
-    |
     */
 
     private function calculateFormula(
@@ -615,6 +704,9 @@ class TariffCalculator
     | BUILD VALUE MAP
     |--------------------------------------------------------------------------
     |
+    | Converts AssessmentServiceValue records into the generic
+    | BaseField UUID => normalized value map.
+    |
     | IMPORTANT:
     |
     | AssessmentServiceValue currently stores:
@@ -637,24 +729,8 @@ class TariffCalculator
     |
     | Example:
     |
-    |     Assessment value:
-    |
-    |     revenue_service_field_id =
-    |     019ff640-101e-708a-9c85-132b78c8b59c
-    |
-    |     RevenueServiceField:
-    |
-    |     base_field_id =
-    |     23388827-cd82-4881-a812-c881f9774d1e
-    |
-    |     BaseField:
-    |
-    |     code = LAND_AREA
-    |
-    | Result:
-    |
     |     [
-    |         '23388827-cd82-4881-a812-c881f9774d1e' => 500
+    |         '23388827-cd82-4881-a812-c881f9774d1e' => 500,
     |     ]
     */
 
@@ -867,7 +943,7 @@ class TariffCalculator
         ) {
             throw new RuntimeException(
                 sprintf(
-                    'Required assessment field %s was not provided.',
+                    'Required tariff field %s was not provided.',
                     $fieldId
                 )
             );
@@ -885,7 +961,7 @@ class TariffCalculator
         ) {
             throw new RuntimeException(
                 sprintf(
-                    'Assessment field %s must contain a numeric value.',
+                    'Tariff field %s must contain a numeric value.',
                     $fieldId
                 )
             );

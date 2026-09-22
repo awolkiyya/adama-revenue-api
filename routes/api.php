@@ -136,7 +136,11 @@ Route::prefix('v1')->group(function () {
             'routes/Api/v1/audit.php'
         );
 
+        // DIRECT COLLECTION
 
+        require base_path(
+            'routes/Api/v1/direct-collection.php'
+        );
 
 
 
@@ -148,5 +152,7 @@ Route::prefix('v1')->group(function () {
             '/private-file/{file:uuid}/url',
             [PrivateFileController::class, 'show']
         );
+
+
     });
 });

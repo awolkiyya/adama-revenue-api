@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use Andegna\DateTimeFactory;
@@ -8,42 +10,37 @@ use App\Models\AssessmentService;
 use App\Models\BaseField;
 use App\Models\InterestRule;
 use App\Models\PenaltyRule;
+use App\Models\RevenueService;
+use App\Models\RevenueServiceField;
 use App\Models\TariffRule;
 use App\Models\TariffVersion;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class TariffResolver
 {
-    /**
-     * ================================================================
-     * RESOLVE TARIFF VERSION
-     * ================================================================
-     *
-     * Tariff version year:
-     *
-     *     Ethiopian calendar
-     *
-     * Tariff effective dates:
-     *
-     *     Gregorian database dates
-     *
-     * Example:
-     *
-     *     Gregorian: 2026-09-12
-     *     Ethiopian:  2019-01-02
-     *     Tariff year: 2019
-     *
-     * There is NO tariff approval workflow.
-     *
-     * A tariff version is eligible when:
-     *
-     *     - Ethiopian year matches
-     *     - is_active = true
-     *     - effective_from <= assessment date
-     *     - effective_to is NULL or >= assessment date
-     */
-    public function resolveVersion(
+    /*
+    |--------------------------------------------------------------------------
+    | Constants
+    |--------------------------------------------------------------------------
+    */
+
+    private const AGREEMENT_DATE_CODES = [
+        'AGREEMENT_DATE',
+        'AGREEMENT_SIGNING_DATE',
+        'LIZZ_AGREEMENT_DATE',
+    ];
+
+    private const FIXED_PAYMENT_DATE = 'FIXED_PAYMENT_DATE';
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE TARIFF VERSION FOR ASSESSMENT
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolve(
         AssessmentService $assessmentService,
     ): TariffVersion {
         $assessment = $assessmentService->assessment;
@@ -57,30 +54,62 @@ class TariffResolver
             );
         }
 
-        /*
-         * Assessment dates are stored as Gregorian dates.
-         */
         $date = Carbon::parse(
             $assessment->assessment_date
                 ?? $assessment->created_at
         )->startOfDay();
 
-        /*
-         * Convert Gregorian date to Ethiopian year.
-         */
-        $ethiopianYear = $this->getEthiopianYear($date);
+        return $this->resolveVersionForDate(
+            date: $date,
+        );
+    }
 
-        /*
-         * Resolve applicable tariff version.
-         *
-         * IMPORTANT:
-         *
-         * - year = Ethiopian year
-         * - effective_from = Gregorian
-         * - effective_to = Gregorian
-         * - is_active = true
-         * - NO approval check
-         */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE TARIFF VERSION FOR DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolveVersionForRevenueService(
+        RevenueService $revenueService,
+        Carbon|string|null $date = null,
+    ): TariffVersion {
+        if (!$revenueService->exists) {
+            throw new RuntimeException(
+                'The supplied revenue service does not exist.',
+            );
+        }
+
+        $collectionDate = $date === null
+            ? now()
+            : (
+                $date instanceof Carbon
+                    ? $date
+                    : Carbon::parse($date)
+            );
+
+        return $this->resolveVersionForDate(
+            $collectionDate,
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE TARIFF VERSION FOR DATE
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolveVersionForDate(
+        Carbon|string $date,
+    ): TariffVersion {
+        $date = $date instanceof Carbon
+            ? $date->copy()->startOfDay()
+            : Carbon::parse($date)->startOfDay();
+
+        $ethiopianYear = $this->getEthiopianYear(
+            $date,
+        );
+
         $version = TariffVersion::query()
             ->where(
                 'year',
@@ -95,7 +124,7 @@ class TariffResolver
                 '<=',
                 $date,
             )
-            ->where(function ($query) use ($date) {
+            ->where(function ($query) use ($date): void {
                 $query
                     ->whereNull('effective_to')
                     ->orWhereDate(
@@ -109,10 +138,6 @@ class TariffResolver
             ->first();
 
         if (!$version) {
-            /*
-             * Get all tariff versions belonging to this
-             * Ethiopian tariff year for diagnostics.
-             */
             $availableVersions = TariffVersion::query()
                 ->where(
                     'year',
@@ -133,7 +158,7 @@ class TariffResolver
             if ($availableVersions->isEmpty()) {
                 throw new RuntimeException(
                     sprintf(
-                        'No tariff version exists for assessment date %s (Ethiopian year %d). Create a tariff version for Ethiopian year %d.',
+                        'No tariff version exists for date %s (Ethiopian year %d). Create a tariff version for Ethiopian year %d.',
                         $date->toDateString(),
                         $ethiopianYear,
                         $ethiopianYear,
@@ -142,7 +167,7 @@ class TariffResolver
             }
 
             $diagnostics = $availableVersions
-                ->map(function (TariffVersion $item) {
+                ->map(function (TariffVersion $item): string {
                     return sprintf(
                         'v%s (%s): effective %s to %s, active=%s',
                         $item->version,
@@ -170,26 +195,28 @@ class TariffResolver
         return $version;
     }
 
-    /**
-     * ================================================================
-     * GET ETHIOPIAN YEAR
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | GET ETHIOPIAN YEAR
+    |--------------------------------------------------------------------------
+    */
+
     private function getEthiopianYear(
         Carbon $date,
     ): int {
         $ethiopianDate = DateTimeFactory::fromDateTime(
-            $date->toDateTime()
+            $date->toDateTime(),
         );
 
         return (int) $ethiopianDate->getYear();
     }
 
-    /**
-     * ================================================================
-     * RESOLVE TARIFF RULE
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE TARIFF RULE FOR ASSESSMENT
+    |--------------------------------------------------------------------------
+    */
+
     public function resolveRule(
         TariffVersion $version,
         AssessmentService $assessmentService,
@@ -198,6 +225,331 @@ class TariffResolver
             'values',
         ]);
 
+        $values = $this->buildAssessmentValueMap(
+            $assessmentService,
+        );
+
+        return $this->resolveRuleForValues(
+            version: $version,
+            serviceId: (string) $assessmentService->service_id,
+            values: $values,
+            diagnosticsContext: sprintf(
+                'assessment service %s',
+                $assessmentService->id,
+            ),
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE TARIFF RULE FOR DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolveRuleForRevenueService(
+        TariffVersion $version,
+        string $serviceId,
+        array $values,
+    ): TariffRule {
+        $serviceId = trim($serviceId);
+
+        if ($serviceId === '') {
+            throw new RuntimeException(
+                'A revenue service ID is required to resolve a tariff rule.',
+            );
+        }
+
+        return $this->resolveRuleForValues(
+            version: $version,
+            serviceId: $serviceId,
+            values: $this->normalizeValueMap($values),
+            diagnosticsContext: sprintf(
+                'revenue service %s',
+                $serviceId,
+            ),
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | BUILD DIRECT COLLECTION VALUE MAP
+    |--------------------------------------------------------------------------
+    */
+
+    public function buildRevenueServiceValueMap(
+        RevenueService $revenueService,
+        array $inputs,
+    ): array {
+        $inputs = $this->normalizeValueMap(
+            $inputs,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Preserve submitted values
+        |--------------------------------------------------------------------------
+        |
+        | Canonical frontend format:
+        |
+        | RevenueServiceField UUID => value
+        |
+        */
+
+        $values = $inputs;
+
+        $fields = $this->getRevenueServiceFields(
+            $revenueService,
+        );
+
+        if ($fields->isEmpty()) {
+            return $values;
+        }
+
+        foreach ($fields as $field) {
+            $fieldId = trim(
+                (string) $field->id
+            );
+
+            if ($fieldId === '') {
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Submitted Value
+            |--------------------------------------------------------------------------
+            */
+
+            [$hasValue, $value] =
+                $this->resolveDirectInputValue(
+                    field: $field,
+                    inputs: $inputs,
+                );
+
+            if (!$hasValue) {
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | RevenueServiceField UUID
+            |--------------------------------------------------------------------------
+            */
+
+            $values[$fieldId] = $value;
+
+            /*
+            |--------------------------------------------------------------------------
+            | RevenueServiceField Code
+            |--------------------------------------------------------------------------
+            */
+
+            if (!empty($field->field_code)) {
+                $fieldCode = strtoupper(
+                    trim(
+                        (string) $field->field_code
+                    )
+                );
+
+                if ($fieldCode !== '') {
+                    $values[$fieldCode] = $value;
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve BaseField
+            |--------------------------------------------------------------------------
+            */
+
+            $baseField = $field->baseField;
+
+            if (
+                !$baseField
+                &&
+                !empty($field->base_field_id)
+            ) {
+                $baseField = BaseField::query()
+                    ->find(
+                        $field->base_field_id,
+                    );
+            }
+
+            if (!$baseField) {
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | BaseField UUID
+            |--------------------------------------------------------------------------
+            */
+
+            $baseFieldId = trim(
+                (string) $baseField->id
+            );
+
+            if ($baseFieldId !== '') {
+                $values[$baseFieldId] = $value;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | BaseField Code
+            |--------------------------------------------------------------------------
+            */
+
+            if (!empty($baseField->code)) {
+                $baseFieldCode = strtoupper(
+                    trim(
+                        (string) $baseField->code
+                    )
+                );
+
+                if ($baseFieldCode !== '') {
+                    $values[$baseFieldCode] = $value;
+                }
+            }
+        }
+
+        return $values;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET REVENUE SERVICE FIELDS
+    |--------------------------------------------------------------------------
+    */
+
+    private function getRevenueServiceFields(
+        RevenueService $revenueService,
+    ) {
+        if (
+            method_exists(
+                $revenueService,
+                'fields',
+            )
+        ) {
+            return $revenueService
+                ->fields()
+                ->with('baseField')
+                ->get();
+        }
+
+        return RevenueServiceField::query()
+            ->with('baseField')
+            ->where(
+                'service_id',
+                $revenueService->id,
+            )
+            ->get();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE DIRECT INPUT VALUE
+    |--------------------------------------------------------------------------
+    */
+
+    private function resolveDirectInputValue(
+        RevenueServiceField $field,
+        array $inputs,
+    ): array {
+        $fieldId = trim(
+            (string) $field->id
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | RevenueServiceField UUID
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            array_key_exists(
+                $fieldId,
+                $inputs,
+            )
+        ) {
+            return [
+                true,
+                $inputs[$fieldId],
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | RevenueServiceField Code
+        |--------------------------------------------------------------------------
+        */
+
+        if (!empty($field->field_code)) {
+            $fieldCode = trim(
+                (string) $field->field_code
+            );
+
+            if (
+                array_key_exists(
+                    $fieldCode,
+                    $inputs,
+                )
+            ) {
+                return [
+                    true,
+                    $inputs[$fieldCode],
+                ];
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Case-Insensitive Lookup
+            |--------------------------------------------------------------------------
+            */
+
+            $normalizedFieldCode = strtoupper(
+                $fieldCode,
+            );
+
+            foreach (
+                $inputs as $key => $value
+            ) {
+                if (!is_string($key)) {
+                    continue;
+                }
+
+                if (
+                    strtoupper(
+                        trim($key)
+                    )
+                    ===
+                    $normalizedFieldCode
+                ) {
+                    return [
+                        true,
+                        $value,
+                    ];
+                }
+            }
+        }
+
+        return [
+            false,
+            null,
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERIC TARIFF RULE RESOLUTION
+    |--------------------------------------------------------------------------
+    */
+
+    private function resolveRuleForValues(
+        TariffVersion $version,
+        string $serviceId,
+        array $values,
+        string $diagnosticsContext,
+    ): TariffRule {
         $rules = TariffRule::query()
             ->where(
                 'tariff_version_id',
@@ -205,7 +557,7 @@ class TariffResolver
             )
             ->where(
                 'service_id',
-                $assessmentService->service_id,
+                $serviceId,
             )
             ->where(
                 'is_active',
@@ -219,7 +571,7 @@ class TariffResolver
             throw new RuntimeException(
                 sprintf(
                     'No active tariff rule found for service %s in tariff version %s.',
-                    $assessmentService->service_id,
+                    $serviceId,
                     $version->id,
                 )
             );
@@ -227,60 +579,75 @@ class TariffResolver
 
         foreach ($rules as $rule) {
             if (
-                $this->ruleMatches(
-                    $rule,
-                    $assessmentService,
+                $this->ruleMatchesValues(
+                    rule: $rule,
+                    values: $values,
                 )
             ) {
                 return $rule;
             }
         }
 
-        /*
-         * Build detailed diagnostics.
-         */
         $diagnostics = $rules
             ->map(function (
-                TariffRule $rule
+                TariffRule $rule,
             ) use (
-                $assessmentService
-            ) {
+                $values
+            ): string {
                 $conditions = $this->normalizeConditions(
-                    $rule->conditions
+                    $rule->conditions,
                 );
 
                 $conditionResults = [];
 
                 foreach ($conditions as $condition) {
                     try {
-                        $fieldReference = $this->getConditionFieldReference(
-                            $condition
-                        );
+                        $fieldReference =
+                            $this->getConditionFieldReference(
+                                $condition,
+                            );
 
-                        $resolvedField = $this->resolveFieldReference(
-                            $fieldReference
-                        );
+                        $resolvedField =
+                            $this->resolveFieldReference(
+                                $fieldReference,
+                            );
 
-                        $assessmentValue = $this->findAssessmentValue(
-                            $assessmentService,
-                            $fieldReference,
-                        );
+                        $actualValue =
+                            $this->findValue(
+                                values: $values,
+                                fieldReference: $fieldReference,
+                                resolvedField: $resolvedField,
+                            );
 
                         $conditionResults[] = [
-                            'field_reference' => $fieldReference,
-                            'resolved_code' => $resolvedField['code'] ?? null,
-                            'resolved_type' => $resolvedField['type'] ?? null,
-                            'operator' => $condition['operator'] ?? null,
-                            'expected' => $condition['value'] ?? null,
-                            'actual' => $assessmentValue
-                                ? $assessmentValue->value
-                                : null,
-                            'field_found' => $assessmentValue !== null,
+                            'field_reference' =>
+                                $fieldReference,
+
+                            'resolved_code' =>
+                                $resolvedField['code'] ?? null,
+
+                            'resolved_type' =>
+                                $resolvedField['type'] ?? null,
+
+                            'operator' =>
+                                $condition['operator'] ?? null,
+
+                            'expected' =>
+                                $condition['value'] ?? null,
+
+                            'actual' =>
+                                $actualValue,
+
+                            'field_found' =>
+                                $actualValue !== null,
                         ];
                     } catch (\Throwable $e) {
                         $conditionResults[] = [
-                            'error' => $e->getMessage(),
-                            'condition' => $condition,
+                            'error' =>
+                                $e->getMessage(),
+
+                            'condition' =>
+                                $condition,
                         ];
                     }
                 }
@@ -295,12 +662,12 @@ class TariffResolver
                     json_encode(
                         $conditions,
                         JSON_UNESCAPED_UNICODE
-                        | JSON_UNESCAPED_SLASHES
+                        | JSON_UNESCAPED_SLASHES,
                     ),
                     json_encode(
                         $conditionResults,
                         JSON_UNESCAPED_UNICODE
-                        | JSON_UNESCAPED_SLASHES
+                        | JSON_UNESCAPED_SLASHES,
                     ),
                 );
             })
@@ -308,47 +675,20 @@ class TariffResolver
 
         throw new RuntimeException(
             sprintf(
-                'No matching tariff rule found for service %s in tariff version %s. Rules checked: %s',
-                $assessmentService->service_id,
+                'No matching tariff rule found for %s in tariff version %s. Rules checked: %s',
+                $diagnosticsContext,
                 $version->id,
                 $diagnostics,
             )
         );
     }
 
-    /**
-     * ================================================================
-     * RESOLVE PENALTY RULE
-     * ================================================================
-     *
-     * Penalty rules are global.
-     *
-     * They are NOT linked to a revenue service.
-     *
-     * Resolution is based on:
-     *
-     *     1. active status
-     *     2. assessment date
-     *     3. commencement strategy
-     *
-     * IMPORTANT:
-     *
-     * Your database intentionally permits:
-     *
-     *     FIXED_PAYMENT_DATE
-     *     AGREEMENT_DATE
-     *
-     * to overlap.
-     *
-     * Therefore this method must not simply use:
-     *
-     *     ->first()
-     *
-     * across all active rules.
-     *
-     * The commencement strategy must be determined from the
-     * assessment context.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE PENALTY RULE FOR ASSESSMENT
+    |--------------------------------------------------------------------------
+    */
+
     public function resolvePenaltyRule(
         AssessmentService $assessmentService,
     ): PenaltyRule {
@@ -365,31 +705,95 @@ class TariffResolver
 
         $assessmentDate = Carbon::parse(
             $assessment->assessment_date
-                ?? $assessment->created_at
+                ?? $assessment->created_at,
         )->startOfDay();
 
-        /*
-         * Load values because agreement-related configuration
-         * may be stored on assessment service values.
-         */
         $assessmentService->loadMissing([
             'values',
         ]);
 
-        /*
-         * Determine whether this assessment service has an
-         * applicable agreement date.
-         *
-         * We intentionally inspect common agreement field names
-         * rather than assuming a single BaseField UUID.
-         */
         $hasAgreementDate = $this->hasAgreementDate(
-            $assessmentService
+            $assessmentService,
         );
 
-        /*
-         * Build the candidate rule query.
-         */
+        return $this->resolvePenaltyRuleForDate(
+            date: $assessmentDate,
+            hasAgreementDate: $hasAgreementDate,
+            context: sprintf(
+                'assessment service %s',
+                $assessmentService->id,
+            ),
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE PENALTY RULE FOR DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolvePenaltyRuleForRevenueService(
+        Carbon|string $date,
+        array $values = [],
+        ?string $context = null,
+    ): PenaltyRule {
+        $date = $date instanceof Carbon
+            ? $date->copy()->startOfDay()
+            : Carbon::parse($date)->startOfDay();
+
+        $values = $this->normalizeValueMap(
+            $values,
+        );
+
+        $hasAgreementDate = $this->hasAgreementDateInValues(
+            $values,
+        );
+
+        return $this->resolvePenaltyRuleForDate(
+            date: $date,
+            hasAgreementDate: $hasAgreementDate,
+            context: $context
+                ?? 'direct collection',
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE PENALTY RULE FOR DATE
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolvePenaltyRuleForDate(
+        Carbon|string $date,
+        bool $hasAgreementDate = false,
+        ?string $context = null,
+    ): PenaltyRule {
+        $date = $date instanceof Carbon
+            ? $date->copy()->startOfDay()
+            : Carbon::parse($date)->startOfDay();
+
+        return $this->resolvePenaltyRuleUsingContext(
+            date: $date,
+            hasAgreementDate: $hasAgreementDate,
+            context: $context
+                ?? sprintf(
+                    'date %s',
+                    $date->toDateString(),
+                ),
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | PENALTY RULE INTERNAL RESOLUTION
+    |--------------------------------------------------------------------------
+    */
+
+    private function resolvePenaltyRuleUsingContext(
+        Carbon $date,
+        bool $hasAgreementDate,
+        string $context,
+    ): PenaltyRule {
         $query = PenaltyRule::query()
             ->where(
                 'is_active',
@@ -398,91 +802,63 @@ class TariffResolver
             ->whereDate(
                 'effective_from',
                 '<=',
-                $assessmentDate,
+                $date,
             )
-            ->where(function ($query) use ($assessmentDate) {
+            ->where(function ($query) use ($date): void {
                 $query
                     ->whereNull('effective_to')
                     ->orWhereDate(
                         'effective_to',
                         '>=',
-                        $assessmentDate,
+                        $date,
                     );
             });
 
-        /*
-         * If an agreement date exists, use the agreement-date
-         * penalty family.
-         *
-         * Otherwise use the municipality-wide payment-date family.
-         */
-        if ($hasAgreementDate) {
-            $query->where(
-                'start_type',
-                PenaltyRule::START_TYPE_AGREEMENT_DATE,
-            );
-        } else {
-            /*
-             * IMPORTANT:
-             *
-             * The migration defines FIXED_PAYMENT_DATE.
-             *
-             * If your database/model is still using
-             * FIXED_FISCAL_MONTH, normalize that separately.
-             */
-            $query->where(
-                'start_type',
-                'FIXED_PAYMENT_DATE',
-            );
-        }
+        $startType = $hasAgreementDate
+            ? PenaltyRule::START_TYPE_AGREEMENT_DATE
+            : self::FIXED_PAYMENT_DATE;
+
+        $query->where(
+            'start_type',
+            $startType,
+        );
 
         $rules = $query
             ->orderByDesc('effective_from')
             ->get();
 
         if ($rules->isEmpty()) {
-            $startType = $hasAgreementDate
-                ? PenaltyRule::START_TYPE_AGREEMENT_DATE
-                : 'FIXED_PAYMENT_DATE';
-
             throw new RuntimeException(
                 sprintf(
-                    'No active penalty rule found for assessment service %s on %s using start type %s.',
-                    $assessmentService->id,
-                    $assessmentDate->toDateString(),
+                    'No active penalty rule found for %s on %s using start type %s.',
+                    $context,
+                    $date->toDateString(),
                     $startType,
                 )
             );
         }
 
-        /*
-         * PostgreSQL already prevents overlapping ACTIVE rules
-         * for the same start_type.
-         *
-         * Therefore normally only one rule can exist here.
-         *
-         * Keep this defensive check so application behaviour remains
-         * deterministic even if database constraints are bypassed.
-         */
         if ($rules->count() > 1) {
             $diagnostics = $rules
-                ->map(function (PenaltyRule $rule) {
+                ->map(function (PenaltyRule $rule): string {
                     return sprintf(
                         '%s (%s): %s to %s, active=%s',
                         $rule->id,
                         $rule->name,
                         $rule->effective_from,
                         $rule->effective_to ?? 'OPEN',
-                        $rule->is_active ? 'YES' : 'NO',
+                        $rule->is_active
+                            ? 'YES'
+                            : 'NO',
                     );
                 })
                 ->implode('; ');
 
             throw new RuntimeException(
                 sprintf(
-                    'Multiple active penalty rules matched assessment service %s on %s. Rules: %s',
-                    $assessmentService->id,
-                    $assessmentDate->toDateString(),
+                    'Multiple active penalty rules matched %s on %s. Rules: %s',
+                    $context,
+                    $date->toDateString(),
                     $diagnostics,
                 )
             );
@@ -491,24 +867,12 @@ class TariffResolver
         return $rules->first();
     }
 
-    /**
-     * ================================================================
-     * RESOLVE INTEREST RULE
-     * ================================================================
-     *
-     * Interest rules are global.
-     *
-     * They are not linked to a revenue service.
-     *
-     * The database prevents overlapping ACTIVE interest-rule
-     * effective periods.
-     *
-     * Therefore the applicable rule is:
-     *
-     *     active
-     *     AND
-     *     effective on assessment date
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE INTEREST RULE FOR ASSESSMENT
+    |--------------------------------------------------------------------------
+    */
+
     public function resolveInterestRule(
         AssessmentService $assessmentService,
     ): InterestRule {
@@ -525,8 +889,48 @@ class TariffResolver
 
         $assessmentDate = Carbon::parse(
             $assessment->assessment_date
-                ?? $assessment->created_at
+                ?? $assessment->created_at,
         )->startOfDay();
+
+        return $this->resolveInterestRuleForDate(
+            date: $assessmentDate,
+            context: sprintf(
+                'assessment service %s',
+                $assessmentService->id,
+            ),
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE INTEREST RULE FOR DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolveInterestRuleForRevenueService(
+        Carbon|string $date,
+        ?string $context = null,
+    ): InterestRule {
+        return $this->resolveInterestRuleForDate(
+            date: $date,
+            context: $context
+                ?? 'direct collection',
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE INTEREST RULE FOR DATE
+    |--------------------------------------------------------------------------
+    */
+
+    public function resolveInterestRuleForDate(
+        Carbon|string $date,
+        ?string $context = null,
+    ): InterestRule {
+        $date = $date instanceof Carbon
+            ? $date->copy()->startOfDay()
+            : Carbon::parse($date)->startOfDay();
 
         $rules = InterestRule::query()
             ->where(
@@ -536,15 +940,15 @@ class TariffResolver
             ->whereDate(
                 'effective_from',
                 '<=',
-                $assessmentDate,
+                $date,
             )
-            ->where(function ($query) use ($assessmentDate) {
+            ->where(function ($query) use ($date): void {
                 $query
                     ->whereNull('effective_to')
                     ->orWhereDate(
                         'effective_to',
                         '>=',
-                        $assessmentDate,
+                        $date,
                     );
             })
             ->orderByDesc('effective_from')
@@ -553,22 +957,17 @@ class TariffResolver
         if ($rules->isEmpty()) {
             throw new RuntimeException(
                 sprintf(
-                    'No active interest rule found for assessment service %s on %s.',
-                    $assessmentService->id,
-                    $assessmentDate->toDateString(),
+                    'No active interest rule found for %s on %s.',
+                    $context
+                        ?? 'the supplied date',
+                    $date->toDateString(),
                 )
             );
         }
 
-        /*
-         * The database exclusion constraint should guarantee
-         * that only one active rule is effective on a date.
-         *
-         * Defensively reject ambiguity.
-         */
         if ($rules->count() > 1) {
             $diagnostics = $rules
-                ->map(function (InterestRule $rule) {
+                ->map(function (InterestRule $rule): string {
                     return sprintf(
                         '%s (%s%% %s): %s to %s, active=%s',
                         $rule->id,
@@ -576,16 +975,19 @@ class TariffResolver
                         $rule->rate_period,
                         $rule->effective_from,
                         $rule->effective_to ?? 'OPEN',
-                        $rule->is_active ? 'YES' : 'NO',
+                        $rule->is_active
+                            ? 'YES'
+                            : 'NO',
                     );
                 })
                 ->implode('; ');
 
             throw new RuntimeException(
                 sprintf(
-                    'Multiple active interest rules matched assessment service %s on %s. Rules: %s',
-                    $assessmentService->id,
-                    $assessmentDate->toDateString(),
+                    'Multiple active interest rules matched %s on %s. Rules: %s',
+                    $context
+                        ?? 'the supplied date',
+                    $date->toDateString(),
                     $diagnostics,
                 )
             );
@@ -594,22 +996,12 @@ class TariffResolver
         return $rules->first();
     }
 
-    /**
-     * ================================================================
-     * AGREEMENT DATE DETECTION
-     * ================================================================
-     *
-     * Looks for an agreement date in assessment service values.
-     *
-     * Supported field codes:
-     *
-     *     AGREEMENT_DATE
-     *     AGREEMENT_SIGNING_DATE
-     *     LIZZ_AGREEMENT_DATE
-     *
-     * This is intentionally based on field_code rather than a hard-coded
-     * BaseField UUID.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | HAS AGREEMENT DATE - ASSESSMENT
+    |--------------------------------------------------------------------------
+    */
+
     private function hasAgreementDate(
         AssessmentService $assessmentService,
     ): bool {
@@ -617,65 +1009,328 @@ class TariffResolver
             'values',
         ]);
 
-        $agreementCodes = [
-            'AGREEMENT_DATE',
-            'AGREEMENT_SIGNING_DATE',
-            'LIZZ_AGREEMENT_DATE',
-        ];
+        foreach (
+            $assessmentService->values ?? []
+            as $value
+        ) {
+            /*
+            |--------------------------------------------------------------------------
+            | Persisted Field Code
+            |--------------------------------------------------------------------------
+            */
 
-        foreach ($assessmentService->values as $value) {
             $fieldCode = strtoupper(
                 trim(
-                    (string) ($value->field_code ?? '')
+                    (string) (
+                        $value->field_code
+                        ?? ''
+                    )
                 )
             );
 
-            if (!in_array(
-                $fieldCode,
-                $agreementCodes,
-                true
-            )) {
-                continue;
-            }
-
-            $rawValue = $value->value;
-
             if (
-                $rawValue === null
-                ||
-                $rawValue === ''
+                in_array(
+                    $fieldCode,
+                    self::AGREEMENT_DATE_CODES,
+                    true,
+                )
             ) {
-                continue;
+                if (
+                    $this->hasUsableScalarValue(
+                        $value->value,
+                    )
+                ) {
+                    return true;
+                }
             }
 
             /*
-             * JSON date values may sometimes be represented as
-             * arrays/objects. Only scalar values are relevant here.
-             */
-            if (
-                is_array($rawValue)
-                ||
-                is_object($rawValue)
-            ) {
+            |--------------------------------------------------------------------------
+            | RevenueServiceField / BaseField
+            |--------------------------------------------------------------------------
+            */
+
+            $revenueServiceField =
+                $value->revenueServiceField
+                ?? null;
+
+            if (!$revenueServiceField) {
+                $revenueServiceField =
+                    RevenueServiceField::query()
+                        ->with('baseField')
+                        ->find(
+                            $value->revenue_service_field_id
+                                ?? null,
+                        );
+            }
+
+            $baseField =
+                $revenueServiceField?->baseField;
+
+            if (!$baseField) {
                 continue;
             }
 
-            return trim(
-                (string) $rawValue
-            ) !== '';
+            $baseFieldCode = strtoupper(
+                trim(
+                    (string) $baseField->code
+                )
+            );
+
+            if (
+                in_array(
+                    $baseFieldCode,
+                    self::AGREEMENT_DATE_CODES,
+                    true,
+                )
+                &&
+                $this->hasUsableScalarValue(
+                    $value->value,
+                )
+            ) {
+                return true;
+            }
         }
 
         return false;
     }
 
-    /**
-     * ================================================================
-     * RULE MATCHING
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | HAS AGREEMENT DATE - DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    |
+    | IMPORTANT:
+    |
+    | The Direct Collection value map intentionally contains multiple
+    | identifier types:
+    |
+    |     RevenueServiceField UUID
+    |     RevenueServiceField code
+    |     BaseField UUID
+    |     BaseField code
+    |
+    | Therefore we MUST NOT send every array key into:
+    |
+    |     BaseField.id
+    |
+    | because field codes are not UUIDs.
+    |
+    */
+
+    private function hasAgreementDateInValues(
+        array $values,
+    ): bool {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Check field codes directly
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($values as $key => $value) {
+            if (
+                !is_string($key)
+                ||
+                !$this->hasUsableScalarValue($value)
+            ) {
+                continue;
+            }
+
+            $normalizedKey = strtoupper(
+                trim($key)
+            );
+
+            if (
+                in_array(
+                    $normalizedKey,
+                    self::AGREEMENT_DATE_CODES,
+                    true,
+                )
+            ) {
+                return true;
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Collect ONLY UUID keys
+        |--------------------------------------------------------------------------
+        |
+        | Never send codes such as:
+        |
+        |     TESSOO
+        |     TIRIIPPII
+        |     HALKAN
+        |
+        | into BaseField.id.
+        |
+        */
+
+        $baseFieldIds = [];
+
+        foreach ($values as $key => $value) {
+            if (
+                !is_string($key)
+                ||
+                !$this->hasUsableScalarValue($value)
+            ) {
+                continue;
+            }
+
+            $key = trim($key);
+
+            if (
+                !Str::isUuid($key)
+            ) {
+                continue;
+            }
+
+            $baseFieldIds[] = $key;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | No UUID values
+        |--------------------------------------------------------------------------
+        */
+
+        if (empty($baseFieldIds)) {
+            return false;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Remove Duplicate UUIDs
+        |--------------------------------------------------------------------------
+        */
+
+        $baseFieldIds = array_values(
+            array_unique(
+                $baseFieldIds,
+            )
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Find Matching Base Fields
+        |--------------------------------------------------------------------------
+        */
+
+        $baseFields = BaseField::query()
+            ->whereIn(
+                'id',
+                $baseFieldIds,
+            )
+            ->get([
+                'id',
+                'code',
+            ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Check Agreement Date BaseField
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($baseFields as $baseField) {
+            $code = strtoupper(
+                trim(
+                    (string) $baseField->code
+                )
+            );
+
+            if (
+                !in_array(
+                    $code,
+                    self::AGREEMENT_DATE_CODES,
+                    true,
+                )
+            ) {
+                continue;
+            }
+
+            $baseFieldId = (string) $baseField->id;
+
+            if (
+                array_key_exists(
+                    $baseFieldId,
+                    $values,
+                )
+                &&
+                $this->hasUsableScalarValue(
+                    $values[$baseFieldId],
+                )
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | USABLE SCALAR VALUE
+    |--------------------------------------------------------------------------
+    */
+
+    private function hasUsableScalarValue(
+        mixed $value,
+    ): bool {
+        if (
+            $value === null
+            ||
+            $value === ''
+        ) {
+            return false;
+        }
+
+        if (
+            is_array($value)
+            ||
+            is_object($value)
+        ) {
+            return false;
+        }
+
+        return trim(
+            (string) $value
+        ) !== '';
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RULE MATCHING - ASSESSMENT COMPATIBILITY
+    |--------------------------------------------------------------------------
+    */
+
     private function ruleMatches(
         TariffRule $rule,
         AssessmentService $assessmentService,
+    ): bool {
+        $assessmentService->loadMissing([
+            'values',
+        ]);
+
+        $values = $this->buildAssessmentValueMap(
+            $assessmentService,
+        );
+
+        return $this->ruleMatchesValues(
+            rule: $rule,
+            values: $values,
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERIC RULE MATCHING
+    |--------------------------------------------------------------------------
+    */
+
+    private function ruleMatchesValues(
+        TariffRule $rule,
+        array $values,
     ): bool {
         $calculationType = strtoupper(
             trim(
@@ -684,50 +1339,72 @@ class TariffResolver
         );
 
         $conditions = $this->normalizeConditions(
-            $rule->conditions
+            $rule->conditions,
         );
 
-        /*
-         * All configured conditions must match.
-         */
         if (!empty($conditions)) {
-            if (!$this->matchesConditions(
-                $conditions,
-                $assessmentService,
-            )) {
+            if (
+                !$this->matchesConditionsValues(
+                    conditions: $conditions,
+                    values: $values,
+                )
+            ) {
                 return false;
             }
         }
 
-        /*
-         * RANGE rules additionally validate their base field.
-         */
-        if ($calculationType === 'RANGE') {
-            return $this->matchesRange(
-                $rule,
-                $assessmentService,
+        if (
+            $calculationType === 'RANGE'
+        ) {
+            return $this->matchesRangeValues(
+                rule: $rule,
+                values: $values,
             );
         }
 
-        /*
-         * Non-RANGE rules match once all conditions match.
-         */
         return true;
     }
 
-    /**
-     * ================================================================
-     * RANGE MATCHING
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RANGE MATCHING - ASSESSMENT COMPATIBILITY
+    |--------------------------------------------------------------------------
+    */
+
     private function matchesRange(
         TariffRule $rule,
         AssessmentService $assessmentService,
     ): bool {
+        $assessmentService->loadMissing([
+            'values',
+        ]);
+
+        $values = $this->buildAssessmentValueMap(
+            $assessmentService,
+        );
+
+        return $this->matchesRangeValues(
+            rule: $rule,
+            values: $values,
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERIC RANGE MATCHING
+    |--------------------------------------------------------------------------
+    */
+
+    private function matchesRangeValues(
+        TariffRule $rule,
+        array $values,
+    ): bool {
         if (
             $rule->base_field_id === null
             ||
-            trim((string) $rule->base_field_id) === ''
+            trim(
+                (string) $rule->base_field_id
+            ) === ''
         ) {
             throw new RuntimeException(
                 sprintf(
@@ -737,41 +1414,46 @@ class TariffResolver
             );
         }
 
-        $value = $this->findAssessmentValue(
-            $assessmentService,
-            $rule->base_field_id,
+        $fieldReference =
+            (string) $rule->base_field_id;
+
+        $resolvedField =
+            $this->resolveFieldReference(
+                $fieldReference,
+            );
+
+        $value = $this->findValue(
+            values: $values,
+            fieldReference: $fieldReference,
+            resolvedField: $resolvedField,
         );
 
-        if (!$value) {
+        if ($value === null) {
             return false;
         }
 
         $numericValue = $this->numericValue(
-            $value->value
+            $value,
         );
 
         if ($numericValue === null) {
             return false;
         }
 
-        /*
-         * Minimum boundary.
-         */
         if (
             $rule->min_value !== null
             &&
-            $numericValue < (float) $rule->min_value
+            $numericValue <
+                (float) $rule->min_value
         ) {
             return false;
         }
 
-        /*
-         * Maximum boundary.
-         */
         if (
             $rule->max_value !== null
             &&
-            $numericValue > (float) $rule->max_value
+            $numericValue >
+                (float) $rule->max_value
         ) {
             return false;
         }
@@ -779,34 +1461,63 @@ class TariffResolver
         return true;
     }
 
-    /**
-     * ================================================================
-     * MATCH CONDITIONS
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | MATCH CONDITIONS - ASSESSMENT COMPATIBILITY
+    |--------------------------------------------------------------------------
+    */
+
     private function matchesConditions(
         array $conditions,
         AssessmentService $assessmentService,
     ): bool {
+        $assessmentService->loadMissing([
+            'values',
+        ]);
+
+        $values = $this->buildAssessmentValueMap(
+            $assessmentService,
+        );
+
+        return $this->matchesConditionsValues(
+            conditions: $conditions,
+            values: $values,
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERIC CONDITION MATCHING
+    |--------------------------------------------------------------------------
+    */
+
+    private function matchesConditionsValues(
+        array $conditions,
+        array $values,
+    ): bool {
         foreach ($conditions as $condition) {
             if (!is_array($condition)) {
                 throw new RuntimeException(
-                    'Invalid tariff rule condition.'
+                    'Invalid tariff rule condition.',
                 );
             }
 
-            $fieldReference = $this->getConditionFieldReference(
-                $condition
-            );
+            $fieldReference =
+                $this->getConditionFieldReference(
+                    $condition,
+                );
 
             $operator = strtolower(
                 trim(
-                    (string) ($condition['operator'] ?? '')
+                    (string) (
+                        $condition['operator']
+                        ?? ''
+                    )
                 )
             );
 
             if (
-                trim((string) $fieldReference) === ''
+                trim($fieldReference) === ''
                 ||
                 $operator === ''
             ) {
@@ -816,99 +1527,119 @@ class TariffResolver
                         json_encode(
                             $condition,
                             JSON_UNESCAPED_UNICODE
-                            | JSON_UNESCAPED_SLASHES
+                            | JSON_UNESCAPED_SLASHES,
                         ),
                     )
                 );
             }
 
-            $assessmentValue = $this->findAssessmentValue(
-                $assessmentService,
-                $fieldReference,
+            $resolvedField =
+                $this->resolveFieldReference(
+                    $fieldReference,
+                );
+
+            $actual = $this->findValue(
+                values: $values,
+                fieldReference: $fieldReference,
+                resolvedField: $resolvedField,
             );
 
-            if (!$assessmentValue) {
+            if ($actual === null) {
                 return false;
             }
 
-            $actual = $this->normalizeComparableValue(
-                $assessmentValue->value
-            );
+            $actual =
+                $this->normalizeComparableValue(
+                    $actual,
+                );
 
-            $expected = $this->normalizeComparableValue(
-                $condition['value'] ?? null
-            );
+            $expected =
+                $this->normalizeComparableValue(
+                    $condition['value'] ?? null,
+                );
 
             $matches = match ($operator) {
                 'equals',
-                '=' => $this->valuesEqual(
-                    $actual,
-                    $expected,
-                ),
+                '=' =>
+                    $this->valuesEqual(
+                        $actual,
+                        $expected,
+                    ),
 
                 'not_equals',
-                '!=' => !$this->valuesEqual(
-                    $actual,
-                    $expected,
-                ),
+                '!=' =>
+                    !$this->valuesEqual(
+                        $actual,
+                        $expected,
+                    ),
 
                 'greater_than',
-                '>' => $this->compareNumeric(
-                    $actual,
-                    $expected,
-                    '>',
-                ),
+                '>' =>
+                    $this->compareNumeric(
+                        $actual,
+                        $expected,
+                        '>',
+                    ),
 
                 'greater_than_or_equal',
-                '>=' => $this->compareNumeric(
-                    $actual,
-                    $expected,
-                    '>=',
-                ),
+                '>=' =>
+                    $this->compareNumeric(
+                        $actual,
+                        $expected,
+                        '>=',
+                    ),
 
                 'less_than',
-                '<' => $this->compareNumeric(
-                    $actual,
-                    $expected,
-                    '<',
-                ),
+                '<' =>
+                    $this->compareNumeric(
+                        $actual,
+                        $expected,
+                        '<',
+                    ),
 
                 'less_than_or_equal',
-                '<=' => $this->compareNumeric(
-                    $actual,
-                    $expected,
-                    '<=',
-                ),
+                '<=' =>
+                    $this->compareNumeric(
+                        $actual,
+                        $expected,
+                        '<=',
+                    ),
 
-                'in' => $this->valueIn(
-                    $actual,
-                    $expected,
-                ),
+                'in' =>
+                    $this->valueIn(
+                        $actual,
+                        $expected,
+                    ),
 
-                'not_in' => !$this->valueIn(
-                    $actual,
-                    $expected,
-                ),
+                'not_in' =>
+                    !$this->valueIn(
+                        $actual,
+                        $expected,
+                    ),
 
-                'contains' => $this->contains(
-                    $actual,
-                    $expected,
-                ),
+                'contains' =>
+                    $this->contains(
+                        $actual,
+                        $expected,
+                    ),
 
-                'not_contains' => !$this->contains(
-                    $actual,
-                    $expected,
-                ),
+                'not_contains' =>
+                    !$this->contains(
+                        $actual,
+                        $expected,
+                    ),
 
-                'starts_with' => $this->startsWith(
-                    $actual,
-                    $expected,
-                ),
+                'starts_with' =>
+                    $this->startsWith(
+                        $actual,
+                        $expected,
+                    ),
 
-                'ends_with' => $this->endsWith(
-                    $actual,
-                    $expected,
-                ),
+                'ends_with' =>
+                    $this->endsWith(
+                        $actual,
+                        $expected,
+                    ),
 
                 default => throw new RuntimeException(
                     sprintf(
@@ -918,9 +1649,6 @@ class TariffResolver
                 ),
             };
 
-            /*
-             * All conditions use AND semantics.
-             */
             if (!$matches) {
                 return false;
             }
@@ -929,11 +1657,12 @@ class TariffResolver
         return true;
     }
 
-    /**
-     * ================================================================
-     * GET CONDITION FIELD REFERENCE
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | GET CONDITION FIELD REFERENCE
+    |--------------------------------------------------------------------------
+    */
+
     private function getConditionFieldReference(
         array $condition,
     ): string {
@@ -951,7 +1680,7 @@ class TariffResolver
                     json_encode(
                         $condition,
                         JSON_UNESCAPED_UNICODE
-                        | JSON_UNESCAPED_SLASHES
+                        | JSON_UNESCAPED_SLASHES,
                     ),
                 )
             );
@@ -962,116 +1691,447 @@ class TariffResolver
         );
     }
 
-    /**
-     * ================================================================
-     * RESOLVE FIELD REFERENCE
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE FIELD REFERENCE
+    |--------------------------------------------------------------------------
+    |
+    | Supported:
+    |
+    |     BaseField UUID
+    |     BaseField code
+    |
+    | IMPORTANT:
+    |
+    | Only UUID values are queried against BaseField.id.
+    |
+    */
+
     private function resolveFieldReference(
         string $reference,
     ): array {
-        $reference = trim($reference);
+        $reference = trim(
+            $reference,
+        );
 
-        $baseField = BaseField::query()
-            ->where(
-                'id',
-                $reference,
-            )
-            ->first();
-
-        if ($baseField) {
+        if ($reference === '') {
             return [
-                'type' => 'base_field',
-                'id' => $baseField->id,
-                'code' => strtoupper(
-                    trim(
-                        (string) $baseField->code
-                    )
-                ),
+                'type' => 'unknown',
+                'id' => null,
+                'code' => null,
             ];
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | BaseField UUID
+        |--------------------------------------------------------------------------
+        */
+
+        if (Str::isUuid($reference)) {
+            $baseField = BaseField::query()
+                ->where(
+                    'id',
+                    $reference,
+                )
+                ->first();
+
+            if ($baseField) {
+                return [
+                    'type' => 'base_field',
+                    'id' => $baseField->id,
+                    'code' => strtoupper(
+                        trim(
+                            (string) $baseField->code
+                        )
+                    ),
+                ];
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | UUID but BaseField does not exist
+            |--------------------------------------------------------------------------
+            */
+
+            return [
+                'type' => 'base_field',
+                'id' => $reference,
+                'code' => null,
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | BaseField Code
+        |--------------------------------------------------------------------------
+        */
 
         return [
             'type' => 'code',
             'id' => null,
-            'code' => strtoupper($reference),
+            'code' => strtoupper(
+                $reference,
+            ),
         ];
     }
 
-    /**
-     * ================================================================
-     * FIND ASSESSMENT VALUE
-     * ================================================================
-     *
-     * Resolution order:
-     *
-     * 1. revenue_service_field_id
-     * 2. field_code
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | FIND VALUE
+    |--------------------------------------------------------------------------
+    */
+
+    private function findValue(
+        array $values,
+        string $fieldReference,
+        array $resolvedField,
+    ): mixed {
+        $fieldReference = trim(
+            $fieldReference,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Exact Reference
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            array_key_exists(
+                $fieldReference,
+                $values,
+            )
+        ) {
+            return $values[
+                $fieldReference
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | BaseField UUID
+        |--------------------------------------------------------------------------
+        */
+
+        $fieldId =
+            $resolvedField['id']
+            ?? null;
+
+        if (
+            $fieldId !== null
+            &&
+            array_key_exists(
+                $fieldId,
+                $values,
+            )
+        ) {
+            return $values[
+                $fieldId
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Field Code
+        |--------------------------------------------------------------------------
+        */
+
+        $code =
+            $resolvedField['code']
+            ?? null;
+
+        if (
+            $code !== null
+            &&
+            array_key_exists(
+                $code,
+                $values,
+            )
+        ) {
+            return $values[
+                $code
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Case-Insensitive Code Lookup
+        |--------------------------------------------------------------------------
+        */
+
+        if ($code !== null) {
+            foreach (
+                $values as $key => $value
+            ) {
+                if (
+                    is_string($key)
+                    &&
+                    strtoupper(
+                        trim($key)
+                    )
+                    ===
+                    strtoupper(
+                        trim($code)
+                    )
+                ) {
+                    return $value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND ASSESSMENT VALUE
+    |--------------------------------------------------------------------------
+    */
+
     private function findAssessmentValue(
         AssessmentService $assessmentService,
         string $fieldReference,
     ): mixed {
-        $reference = trim($fieldReference);
+        $assessmentService->loadMissing([
+            'values',
+        ]);
+
+        $reference = trim(
+            $fieldReference,
+        );
 
         /*
-         * First try RevenueServiceField UUID.
-         */
-        $value = $assessmentService->values->first(
-            function ($value) use ($reference) {
-                return
-                    !empty(
-                        $value->revenue_service_field_id
-                    )
-                    &&
-                    strcasecmp(
-                        trim(
-                            (string) $value->revenue_service_field_id
-                        ),
-                        $reference,
-                    ) === 0;
-            }
-        );
+        |--------------------------------------------------------------------------
+        | RevenueServiceField UUID
+        |--------------------------------------------------------------------------
+        */
+
+        $value = $assessmentService
+            ->values
+            ->first(
+                function ($value) use ($reference): bool {
+                    return
+                        !empty(
+                            $value->revenue_service_field_id
+                        )
+                        &&
+                        strcasecmp(
+                            trim(
+                                (string) $value
+                                    ->revenue_service_field_id
+                            ),
+                            $reference,
+                        ) === 0;
+                }
+            );
 
         if ($value) {
             return $value;
         }
 
         /*
-         * If reference is a BaseField UUID, resolve it
-         * to its field code.
-         */
-        $resolved = $this->resolveFieldReference(
-            $reference
-        );
+        |--------------------------------------------------------------------------
+        | Resolve BaseField
+        |--------------------------------------------------------------------------
+        */
 
-        $code = $resolved['code'];
+        $resolved =
+            $this->resolveFieldReference(
+                $reference,
+            );
+
+        $code =
+            $resolved['code']
+            ?? null;
+
+        if ($code === null) {
+            return null;
+        }
 
         /*
-         * Match against stored field code.
-         */
-        return $assessmentService->values->first(
-            function ($value) use ($code) {
-                return
-                    !empty(
-                        $value->field_code
-                    )
-                    &&
-                    strcasecmp(
-                        trim(
-                            (string) $value->field_code
-                        ),
-                        $code,
-                    ) === 0;
-            }
-        );
+        |--------------------------------------------------------------------------
+        | Field Code
+        |--------------------------------------------------------------------------
+        */
+
+        return $assessmentService
+            ->values
+            ->first(
+                function ($value) use ($code): bool {
+                    return
+                        !empty(
+                            $value->field_code
+                        )
+                        &&
+                        strcasecmp(
+                            trim(
+                                (string) $value->field_code
+                            ),
+                            $code,
+                        ) === 0;
+                }
+            );
     }
 
-    /**
-     * ================================================================
-     * NORMALIZE CONDITIONS
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | BUILD ASSESSMENT VALUE MAP
+    |--------------------------------------------------------------------------
+    */
+
+    private function buildAssessmentValueMap(
+        AssessmentService $assessmentService,
+    ): array {
+        $assessmentService->loadMissing([
+            'values',
+        ]);
+
+        $values = [];
+
+        foreach (
+            $assessmentService->values ?? []
+            as $assessmentValue
+        ) {
+            /*
+            |--------------------------------------------------------------------------
+            | Direct field_id support
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                !empty(
+                    $assessmentValue->field_id
+                )
+            ) {
+                $values[
+                    $assessmentValue->field_id
+                ] =
+                    $assessmentValue->value;
+
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | RevenueServiceField
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                empty(
+                    $assessmentValue
+                        ->revenue_service_field_id
+                )
+            ) {
+                continue;
+            }
+
+            $revenueServiceField =
+                $assessmentValue
+                    ->revenueServiceField
+                    ?? null;
+
+            if (!$revenueServiceField) {
+                $revenueServiceField =
+                    RevenueServiceField::query()
+                        ->with('baseField')
+                        ->find(
+                            $assessmentValue
+                                ->revenue_service_field_id
+                        );
+            }
+
+            if (!$revenueServiceField) {
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | BaseField ID
+            |--------------------------------------------------------------------------
+            */
+
+            $baseFieldId =
+                $revenueServiceField
+                    ->base_field_id
+                    ?? null;
+
+            if (
+                empty($baseFieldId)
+            ) {
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | BaseField UUID
+            |--------------------------------------------------------------------------
+            */
+
+            $values[$baseFieldId] =
+                $assessmentValue->value;
+
+            /*
+            |--------------------------------------------------------------------------
+            | BaseField Code
+            |--------------------------------------------------------------------------
+            */
+
+            $baseField =
+                $revenueServiceField
+                    ->baseField
+                    ?? null;
+
+            if (
+                $baseField
+                &&
+                !empty($baseField->code)
+            ) {
+                $values[
+                    strtoupper(
+                        trim(
+                            (string) $baseField->code
+                        )
+                    )
+                ] =
+                    $assessmentValue->value;
+            }
+        }
+
+        return $values;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | NORMALIZE VALUE MAP
+    |--------------------------------------------------------------------------
+    */
+
+    private function normalizeValueMap(
+        array $values,
+    ): array {
+        $normalized = [];
+
+        foreach (
+            $values as $key => $value
+        ) {
+            if (is_string($key)) {
+                $key = trim($key);
+            }
+
+            $normalized[$key] = $value;
+        }
+
+        return $normalized;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | NORMALIZE CONDITIONS
+    |--------------------------------------------------------------------------
+    */
+
     private function normalizeConditions(
         mixed $conditions,
     ): array {
@@ -1079,24 +2139,31 @@ class TariffResolver
             return [];
         }
 
-        /*
-         * Already decoded JSON / array.
-         */
         if (is_array($conditions)) {
             /*
              * Single condition object.
              */
             if (
-                isset($conditions['operator'])
+                isset(
+                    $conditions['operator']
+                )
                 &&
                 (
-                    isset($conditions['field'])
+                    isset(
+                        $conditions['field']
+                    )
                     ||
-                    isset($conditions['fieldId'])
+                    isset(
+                        $conditions['fieldId']
+                    )
                     ||
-                    isset($conditions['field_id'])
+                    isset(
+                        $conditions['field_id']
+                    )
                     ||
-                    isset($conditions['field_code'])
+                    isset(
+                        $conditions['field_code']
+                    )
                 )
             ) {
                 return [
@@ -1105,16 +2172,17 @@ class TariffResolver
             }
 
             /*
-             * Array of conditions.
+             * Condition list.
              */
-            return array_values($conditions);
+            return array_values(
+                $conditions,
+            );
         }
 
-        /*
-         * JSON string.
-         */
         if (is_string($conditions)) {
-            $conditions = trim($conditions);
+            $conditions = trim(
+                $conditions,
+            );
 
             if ($conditions === '') {
                 return [];
@@ -1131,7 +2199,7 @@ class TariffResolver
                 JSON_ERROR_NONE
             ) {
                 throw new RuntimeException(
-                    'Tariff rule conditions contain invalid JSON.'
+                    'Tariff rule conditions contain invalid JSON.',
                 );
             }
 
@@ -1140,21 +2208,31 @@ class TariffResolver
             }
 
             /*
-             * Single condition object.
+             * Single condition.
              */
             if (
                 is_array($decoded)
                 &&
-                isset($decoded['operator'])
+                isset(
+                    $decoded['operator']
+                )
                 &&
                 (
-                    isset($decoded['field'])
+                    isset(
+                        $decoded['field']
+                    )
                     ||
-                    isset($decoded['fieldId'])
+                    isset(
+                        $decoded['fieldId']
+                    )
                     ||
-                    isset($decoded['field_id'])
+                    isset(
+                        $decoded['field_id']
+                    )
                     ||
-                    isset($decoded['field_code'])
+                    isset(
+                        $decoded['field_code']
+                    )
                 )
             ) {
                 return [
@@ -1163,23 +2241,26 @@ class TariffResolver
             }
 
             /*
-             * Array of conditions.
+             * Condition list.
              */
             if (is_array($decoded)) {
-                return array_values($decoded);
+                return array_values(
+                    $decoded,
+                );
             }
         }
 
         throw new RuntimeException(
-            'Tariff rule conditions must be an array or valid JSON.'
+            'Tariff rule conditions must be an array or valid JSON.',
         );
     }
 
-    /**
-     * ================================================================
-     * NUMERIC VALUE
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | NUMERIC VALUE
+    |--------------------------------------------------------------------------
+    */
+
     private function numericValue(
         mixed $value,
     ): ?float {
@@ -1199,7 +2280,7 @@ class TariffResolver
             is_string($value)
         ) {
             $value = trim(
-                (string) $value
+                (string) $value,
             );
 
             if (is_numeric($value)) {
@@ -1210,11 +2291,12 @@ class TariffResolver
         return null;
     }
 
-    /**
-     * ================================================================
-     * NORMALIZE COMPARABLE VALUE
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | NORMALIZE COMPARABLE VALUE
+    |--------------------------------------------------------------------------
+    */
+
     private function normalizeComparableValue(
         mixed $value,
     ): mixed {
@@ -1250,11 +2332,12 @@ class TariffResolver
         return $value;
     }
 
-    /**
-     * ================================================================
-     * VALUES EQUAL
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | VALUES EQUAL
+    |--------------------------------------------------------------------------
+    */
+
     private function valuesEqual(
         mixed $actual,
         mixed $expected,
@@ -1303,11 +2386,12 @@ class TariffResolver
             );
     }
 
-    /**
-     * ================================================================
-     * NUMERIC COMPARISON
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | NUMERIC COMPARISON
+    |--------------------------------------------------------------------------
+    */
+
     private function compareNumeric(
         mixed $actual,
         mixed $expected,
@@ -1322,28 +2406,34 @@ class TariffResolver
         }
 
         $actualValue = (float) $actual;
+
         $expectedValue = (float) $expected;
 
         return match ($operator) {
-            '>' => $actualValue > $expectedValue,
+            '>' =>
+                $actualValue > $expectedValue,
 
-            '>=' => $actualValue >= $expectedValue,
+            '>=' =>
+                $actualValue >= $expectedValue,
 
-            '<' => $actualValue < $expectedValue,
+            '<' =>
+                $actualValue < $expectedValue,
 
-            '<=' => $actualValue <= $expectedValue,
+            '<=' =>
+                $actualValue <= $expectedValue,
 
             default => throw new RuntimeException(
-                "Unsupported numeric comparison operator [{$operator}]."
+                "Unsupported numeric comparison operator [{$operator}].",
             ),
         };
     }
 
-    /**
-     * ================================================================
-     * VALUE IN ARRAY
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | VALUE IN
+    |--------------------------------------------------------------------------
+    */
+
     private function valueIn(
         mixed $actual,
         mixed $expected,
@@ -1352,7 +2442,9 @@ class TariffResolver
             return false;
         }
 
-        foreach ($expected as $item) {
+        foreach (
+            $expected as $item
+        ) {
             if (
                 $this->valuesEqual(
                     $actual,
@@ -1366,11 +2458,12 @@ class TariffResolver
         return false;
     }
 
-    /**
-     * ================================================================
-     * CONTAINS
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | CONTAINS
+    |--------------------------------------------------------------------------
+    */
+
     private function contains(
         mixed $actual,
         mixed $expected,
@@ -1384,7 +2477,9 @@ class TariffResolver
         }
 
         if (is_array($actual)) {
-            foreach ($actual as $item) {
+            foreach (
+                $actual as $item
+            ) {
                 if (
                     $this->contains(
                         $item,
@@ -1412,11 +2507,12 @@ class TariffResolver
         );
     }
 
-    /**
-     * ================================================================
-     * STARTS WITH
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | STARTS WITH
+    |--------------------------------------------------------------------------
+    */
+
     private function startsWith(
         mixed $actual,
         mixed $expected,
@@ -1443,11 +2539,12 @@ class TariffResolver
         );
     }
 
-    /**
-     * ================================================================
-     * ENDS WITH
-     * ================================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | ENDS WITH
+    |--------------------------------------------------------------------------
+    */
+
     private function endsWith(
         mixed $actual,
         mixed $expected,

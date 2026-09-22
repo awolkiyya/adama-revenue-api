@@ -3,6 +3,7 @@
 namespace App\Services\Calculations;
 
 use App\Models\AssessmentService;
+use App\Models\BaseField;
 use App\Models\PenaltyRule;
 use App\Models\RevenueSetting;
 use Carbon\Carbon;
@@ -31,38 +32,18 @@ class DueDateResolver
     |--------------------------------------------------------------------------
     | Dynamic Agreement Date Field
     |--------------------------------------------------------------------------
-    |
-    | The agreement date is identified through:
-    |
-    |     AssessmentService
-    |          ↓
-    |     AssessmentServiceValue
-    |          ↓
-    |     RevenueServiceField
-    |          ↓
-    |     BaseField.code
-    |
     */
 
     private const AGREEMENT_DATE_FIELD = 'AGREEMENT_DATE';
 
     /*
     |--------------------------------------------------------------------------
-    | Resolve Due Date
+    | Resolve Due Date For Assessment
     |--------------------------------------------------------------------------
     |
-    | This resolver does NOT select the penalty rule.
+    | Existing assessment-based flow.
     |
-    | The applicable PenaltyRule must already be resolved by the
-    | financial rule-resolution layer and passed into this class.
-    |
-    | Flow:
-    |
-    |     Selected PenaltyRule
-    |            ↓
-    |     DueDateResolver
-    |            ↓
-    |     Actual Due Date
+    | The PenaltyRule must already have been resolved by TariffResolver.
     |
     */
 
@@ -115,21 +96,98 @@ class DueDateResolver
 
     /*
     |--------------------------------------------------------------------------
-    | AGREEMENT_DATE
+    | Resolve Due Date For Direct Collection
+    |--------------------------------------------------------------------------
+    |
+    | Direct Collection does not have an AssessmentService.
+    |
+    | Therefore the resolver receives:
+    |
+    |     PenaltyRule
+    |     collection date
+    |     submitted dynamic field values
+    |
+    | Example:
+    |
+    |     RevenueService
+    |           ↓
+    |     submitted fields
+    |           ↓
+    |     Tariff calculation
+    |           ↓
+    |     PenaltyRule
+    |           ↓
+    |     DueDateResolver
+    |
+    | The collection date is used to determine the Ethiopian year for
+    | FIXED_PAYMENT_DATE.
+    |
+    | For AGREEMENT_DATE, the agreement date is read from the supplied
+    | dynamic field values.
+    |
+    */
+
+    public function resolveForRevenueService(
+        PenaltyRule $penaltyRule,
+        Carbon $collectionDate,
+        array $values = [],
+    ): Carbon {
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Persisted Rule
+        |--------------------------------------------------------------------------
+        */
+
+        if (! $penaltyRule->exists) {
+            throw new InvalidArgumentException(
+                'Penalty rule is not persisted for direct collection.',
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Collection Date
+        |--------------------------------------------------------------------------
+        */
+
+        $collectionDate = $collectionDate
+            ->copy()
+            ->startOfDay();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve According To Start Type
+        |--------------------------------------------------------------------------
+        */
+
+        return match ($penaltyRule->start_type) {
+            self::RULE_AGREEMENT_DATE =>
+                $this->resolveDirectCollectionFromAgreementDate(
+                    values: $values,
+                ),
+
+            self::RULE_FIXED_PAYMENT_DATE =>
+                $this->resolveDirectCollectionFromFixedPaymentDate(
+                    collectionDate: $collectionDate,
+                ),
+
+            default =>
+                throw new InvalidArgumentException(
+                    sprintf(
+                        'Unsupported penalty rule start type [%s] for direct collection.',
+                        $penaltyRule->start_type,
+                    )
+                ),
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | AGREEMENT_DATE - ASSESSMENT
     |--------------------------------------------------------------------------
     |
     | Used by services such as LIZZ where the obligation's due date
     | is based on the agreement date.
-    |
-    | The agreement date is stored in:
-    |
-    |     assessment_service_values
-    |
-    | and identified through:
-    |
-    |     revenue_service_fields
-    |          ↓
-    |     base_fields.code
     |
     */
 
@@ -143,18 +201,24 @@ class DueDateResolver
 
     /*
     |--------------------------------------------------------------------------
-    | Get Agreement Date
+    | Get Agreement Date - Assessment
     |--------------------------------------------------------------------------
     |
     | Reads AGREEMENT_DATE from assessment_service_values.
     |
-    | IMPORTANT:
+    | Canonical relationship:
     |
-    | AssessmentService does not have serviceValues().
-    |
-    | The canonical relationship is:
-    |
-    |     AssessmentService::values()
+    | AssessmentService
+    |       ↓
+    | values()
+    |       ↓
+    | AssessmentServiceValue
+    |       ↓
+    | revenueServiceField
+    |       ↓
+    | baseField
+    |       ↓
+    | code = AGREEMENT_DATE
     |
     */
 
@@ -165,21 +229,6 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         | Find Dynamic Field Value
         |--------------------------------------------------------------------------
-        |
-        | Relationship:
-        |
-        | AssessmentService
-        |       ↓
-        | values()
-        |       ↓
-        | AssessmentServiceValue
-        |       ↓
-        | revenueServiceField
-        |       ↓
-        | baseField
-        |       ↓
-        | code = AGREEMENT_DATE
-        |
         */
 
         $value = $assessmentService
@@ -217,28 +266,11 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         | Handle JSON Value
         |--------------------------------------------------------------------------
-        |
-        | Depending on the model cast, the value may arrive as:
-        |
-        |     "2024-08-01"
-        |
-        | or:
-        |
-        |     ["2024-08-01"]
-        |
-        | or:
-        |
-        |     ["value" => "2024-08-01"]
-        |
         */
 
-        if (is_array($value)) {
-            $value =
-                $value['value']
-                ?? $value['date']
-                ?? $value[0]
-                ?? null;
-        }
+        $value = $this->extractDateValue(
+            $value,
+        );
 
         /*
         |--------------------------------------------------------------------------
@@ -283,7 +315,182 @@ class DueDateResolver
 
     /*
     |--------------------------------------------------------------------------
-    | FIXED_PAYMENT_DATE
+    | AGREEMENT_DATE - DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    |
+    | Direct Collection does not have assessment_service_values.
+    |
+    | The values are supplied by the DirectCollectionService.
+    |
+    | Supported value map examples:
+    |
+    |     [
+    |         'uuid-of-base-field' => '2026-09-20',
+    |     ]
+    |
+    | or:
+    |
+    |     [
+    |         'AGREEMENT_DATE' => '2026-09-20',
+    |     ]
+    |
+    */
+
+    private function resolveDirectCollectionFromAgreementDate(
+        array $values,
+    ): Carbon {
+        $value = $this->findAgreementDateInValues(
+            $values,
+        );
+
+        if (
+            $value === null ||
+            $value === ''
+        ) {
+            throw new InvalidArgumentException(
+                'AGREEMENT_DATE is required for direct collection.',
+            );
+        }
+
+        $value = $this->extractDateValue(
+            $value,
+        );
+
+        if (
+            $value === null ||
+            $value === ''
+        ) {
+            throw new InvalidArgumentException(
+                'Invalid AGREEMENT_DATE value for direct collection.',
+            );
+        }
+
+        try {
+            return Carbon::parse(
+                (string) $value,
+            )->startOfDay();
+
+        } catch (\Throwable $e) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid AGREEMENT_DATE [%s] for direct collection.',
+                    (string) $value,
+                ),
+                previous: $e,
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Find Agreement Date In Direct Collection Values
+    |--------------------------------------------------------------------------
+    |
+    | First tries:
+    |
+    |     AGREEMENT_DATE
+    |
+    | Then resolves the BaseField UUID for:
+    |
+    |     AGREEMENT_DATE
+    |
+    | and checks the values map using that UUID.
+    |
+    */
+
+    private function findAgreementDateInValues(
+        array $values,
+    ): mixed {
+        /*
+        |--------------------------------------------------------------------------
+        | Try Field Code Directly
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($values as $key => $value) {
+            if (
+                is_string($key) &&
+                strtoupper(trim($key)) === self::AGREEMENT_DATE_FIELD
+            ) {
+                return $value;
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve BaseField By Code
+        |--------------------------------------------------------------------------
+        */
+
+        $baseField = BaseField::query()
+            ->where(
+                'code',
+                self::AGREEMENT_DATE_FIELD,
+            )
+            ->first();
+
+        if (! $baseField) {
+            return null;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Try BaseField ID
+        |--------------------------------------------------------------------------
+        */
+
+        $baseFieldId = (string) $baseField->id;
+
+        if (array_key_exists($baseFieldId, $values)) {
+            return $values[$baseFieldId];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Try Original ID Type
+        |--------------------------------------------------------------------------
+        */
+
+        if (array_key_exists($baseField->id, $values)) {
+            return $values[$baseField->id];
+        }
+
+        return null;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Extract Date Value
+    |--------------------------------------------------------------------------
+    |
+    | Handles:
+    |
+    |     "2026-09-20"
+    |
+    |     ["2026-09-20"]
+    |
+    |     ["value" => "2026-09-20"]
+    |
+    |     ["date" => "2026-09-20"]
+    |
+    */
+
+    private function extractDateValue(
+        mixed $value,
+    ): mixed {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        return $value['value']
+            ?? $value['date']
+            ?? $value[0]
+            ?? null;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIXED_PAYMENT_DATE - ASSESSMENT
     |--------------------------------------------------------------------------
     |
     | Uses the global recurring annual payment deadline:
@@ -294,19 +501,7 @@ class DueDateResolver
     |
     |     06-13
     |
-    | This value represents an Ethiopian-calendar month/day.
-    |
-    | IMPORTANT:
-    |
-    |     06-13 is NOT a Gregorian date.
-    |
-    | It is a recurring Ethiopian-calendar date:
-    |
-    |     2019 EC → 06/13/2019
-    |     2020 EC → 06/13/2020
-    |     2021 EC → 06/13/2021
-    |
-    | The Ethiopian year is determined from the assessment date.
+    | This is an Ethiopian-calendar month/day.
     |
     */
 
@@ -320,7 +515,10 @@ class DueDateResolver
         */
 
         $settings = RevenueSetting::query()
-            ->where('is_active', true)
+            ->where(
+                'is_active',
+                true,
+            )
             ->first();
 
         if (! $settings) {
@@ -358,45 +556,12 @@ class DueDateResolver
 
         /*
         |--------------------------------------------------------------------------
-        | Validate Ethiopian MM-DD Format
-        |--------------------------------------------------------------------------
-        |
-        | Ethiopian calendar:
-        |
-        |     Months 1-12 → maximum 30 days
-        |     Month 13    → maximum 6 days
-        |
-        | Pagume day 6 is validated later after the Ethiopian year
-        | has been determined.
-        |
-        */
-
-        if (
-            ! preg_match(
-                '/^(0[1-9]|1[0-3])-(0[1-9]|[12][0-9]|30)$/',
-                $annualPaymentDate,
-            )
-        ) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Invalid annual payment due date [%s]. Expected Ethiopian MM-DD format.',
-                    $annualPaymentDate,
-                )
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Extract Ethiopian Month And Day
+        | Parse Ethiopian MM-DD
         |--------------------------------------------------------------------------
         */
 
-        [$month, $day] = array_map(
-            'intval',
-            explode(
-                '-',
-                $annualPaymentDate,
-            ),
+        [$month, $day] = $this->parseAnnualPaymentDate(
+            $annualPaymentDate,
         );
 
         /*
@@ -448,8 +613,212 @@ class DueDateResolver
             assessmentDate: $assessmentDate,
             month: $month,
             day: $day,
-            assessmentService: $assessmentService,
+            context: sprintf(
+                'assessment service [%s]',
+                $assessmentService->id,
+            ),
         );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIXED_PAYMENT_DATE - DIRECT COLLECTION
+    |--------------------------------------------------------------------------
+    |
+    | Direct Collection has no Assessment.
+    |
+    | Therefore:
+    |
+    |     collection date
+    |            ↓
+    |     Ethiopian collection year
+    |            ↓
+    |     configured MM-DD
+    |            ↓
+    |     Gregorian due date
+    |
+    */
+
+    private function resolveDirectCollectionFromFixedPaymentDate(
+        Carbon $collectionDate,
+    ): Carbon {
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Active Revenue Settings
+        |--------------------------------------------------------------------------
+        */
+
+        $settings = RevenueSetting::query()
+            ->where(
+                'is_active',
+                true,
+            )
+            ->first();
+
+        if (! $settings) {
+            throw new InvalidArgumentException(
+                'Active revenue settings are not configured for direct collection.',
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Configured Annual Payment Date
+        |--------------------------------------------------------------------------
+        */
+
+        $annualPaymentDate = $settings->annual_payment_due_date;
+
+        if (
+            $annualPaymentDate === null ||
+            trim((string) $annualPaymentDate) === ''
+        ) {
+            throw new InvalidArgumentException(
+                'Annual payment due date is not configured in revenue settings for direct collection.',
+            );
+        }
+
+        $annualPaymentDate = trim(
+            (string) $annualPaymentDate,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Parse Ethiopian MM-DD
+        |--------------------------------------------------------------------------
+        */
+
+        [$month, $day] = $this->parseAnnualPaymentDate(
+            $annualPaymentDate,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Ethiopian Annual Payment Date
+        |--------------------------------------------------------------------------
+        */
+
+        return $this->resolveEthiopianAnnualPaymentDate(
+            assessmentDate: $collectionDate,
+            month: $month,
+            day: $day,
+            context: 'direct collection',
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Parse Annual Payment Date
+    |--------------------------------------------------------------------------
+    |
+    | Expected:
+    |
+    |     MM-DD
+    |
+    | Ethiopian calendar:
+    |
+    |     Months 1-12 → maximum 30 days
+    |     Month 13    → maximum 6 days
+    |
+    */
+
+    private function parseAnnualPaymentDate(
+        string $annualPaymentDate,
+    ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Format
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            ! preg_match(
+                '/^(0[1-9]|1[0-3])-(0[1-9]|[12][0-9]|30)$/',
+                $annualPaymentDate,
+            )
+        ) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid annual payment due date [%s]. Expected Ethiopian MM-DD format.',
+                    $annualPaymentDate,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Extract Month And Day
+        |--------------------------------------------------------------------------
+        */
+
+        [$month, $day] = array_map(
+            'intval',
+            explode(
+                '-',
+                $annualPaymentDate,
+            ),
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Explicit Month Validation
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $month < 1 ||
+            $month > 13
+        ) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid Ethiopian month [%d].',
+                    $month,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Explicit Day Validation
+        |--------------------------------------------------------------------------
+        */
+
+        if ($day < 1) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid Ethiopian day [%d].',
+                    $day,
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Month 13 Can Only Have Up To 6 Days
+        |--------------------------------------------------------------------------
+        |
+        | The leap-year-specific validation is performed after the
+        | Ethiopian year has been determined by ICU.
+        |
+        */
+
+        if (
+            $month === 13 &&
+            $day > 6
+        ) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid Ethiopian Pagume date [%02d-%02d]. Month 13 can contain at most 6 days.',
+                    $month,
+                    $day,
+                )
+            );
+        }
+
+        return [
+            $month,
+            $day,
+        ];
     }
 
     /*
@@ -459,13 +828,18 @@ class DueDateResolver
     |
     | Converts:
     |
-    |     Gregorian assessment date
+    |     Gregorian reference date
     |              ↓
-    |     Ethiopian assessment year
+    |     Ethiopian reference year
     |              ↓
     |     Ethiopian year + configured month/day
     |              ↓
     |     Gregorian due date
+    |
+    | The same method is used by:
+    |
+    |     Assessment
+    |     Direct Collection
     |
     */
 
@@ -473,7 +847,7 @@ class DueDateResolver
         Carbon $assessmentDate,
         int $month,
         int $day,
-        AssessmentService $assessmentService,
+        string $context,
     ): Carbon {
         /*
         |--------------------------------------------------------------------------
@@ -484,10 +858,10 @@ class DueDateResolver
         if (! class_exists(IntlCalendar::class)) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'PHP Intl extension is required to resolve Ethiopian annual payment date [%02d-%02d] for assessment service [%s]. Enable ext-intl.',
+                    'PHP Intl extension is required to resolve Ethiopian annual payment date [%02d-%02d] for %s. Enable ext-intl.',
                     $month,
                     $day,
-                    $assessmentService->id,
+                    $context,
                 )
             );
         }
@@ -498,12 +872,33 @@ class DueDateResolver
         |--------------------------------------------------------------------------
         */
 
-        $assessmentTimezone = new DateTimeZone(
-            config(
-                'app.timezone',
-                'Africa/Addis_Ababa',
-            ),
-        );
+        try {
+            $assessmentTimezone = new DateTimeZone(
+                config(
+                    'app.timezone',
+                    'Africa/Addis_Ababa',
+                ),
+            );
+        } catch (\Throwable $e) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid application timezone while resolving Ethiopian annual payment date for %s.',
+                    $context,
+                ),
+                previous: $e,
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Reference Date
+        |--------------------------------------------------------------------------
+        */
+
+        $assessmentDate = $assessmentDate
+            ->copy()
+            ->setTimezone($assessmentTimezone)
+            ->startOfDay();
 
         /*
         |--------------------------------------------------------------------------
@@ -519,28 +914,25 @@ class DueDateResolver
         if (! $ethiopianCalendar) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Unable to initialize Ethiopian calendar for assessment service [%s].',
-                    $assessmentService->id,
+                    'Unable to initialize Ethiopian calendar for %s.',
+                    $context,
                 )
             );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Set Assessment Date
+        | Set Reference Date
         |--------------------------------------------------------------------------
         */
 
         $ethiopianCalendar->setTime(
-            $assessmentDate
-                ->copy()
-                ->setTimezone($assessmentTimezone)
-                ->getTimestamp() * 1000,
+            $assessmentDate->getTimestamp() * 1000,
         );
 
         /*
         |--------------------------------------------------------------------------
-        | Read Ethiopian Assessment Year
+        | Read Ethiopian Reference Year
         |--------------------------------------------------------------------------
         */
 
@@ -551,8 +943,8 @@ class DueDateResolver
         if ($ethiopianYear <= 0) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Unable to determine Ethiopian year for assessment service [%s].',
-                    $assessmentService->id,
+                    'Unable to determine Ethiopian year for %s.',
+                    $context,
                 )
             );
         }
@@ -569,9 +961,9 @@ class DueDateResolver
         ) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Invalid Ethiopian month [%d] for assessment service [%s].',
+                    'Invalid Ethiopian month [%d] for %s.',
                     $month,
-                    $assessmentService->id,
+                    $context,
                 )
             );
         }
@@ -585,9 +977,9 @@ class DueDateResolver
         if ($day < 1) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Invalid Ethiopian day [%d] for assessment service [%s].',
+                    'Invalid Ethiopian day [%d] for %s.',
                     $day,
-                    $assessmentService->id,
+                    $context,
                 )
             );
         }
@@ -622,8 +1014,8 @@ class DueDateResolver
         if (! $targetEthiopianCalendar) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Unable to initialize Ethiopian target calendar for assessment service [%s].',
-                    $assessmentService->id,
+                    'Unable to initialize Ethiopian target calendar for %s.',
+                    $context,
                 )
             );
         }
@@ -682,7 +1074,7 @@ class DueDateResolver
         | Validate Calendar Date
         |--------------------------------------------------------------------------
         |
-        | ICU may normalize an invalid date automatically.
+        | ICU may normalize invalid dates automatically.
         |
         | We compare the requested date with the actual calendar date
         | to detect invalid dates such as Pagume day 6 in a non-leap year.
@@ -708,11 +1100,11 @@ class DueDateResolver
         ) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Invalid Ethiopian annual payment date [%02d-%02d] for Ethiopian year [%d] and assessment service [%s].',
+                    'Invalid Ethiopian annual payment date [%02d-%02d] for Ethiopian year [%d] and %s.',
                     $month,
                     $day,
                     $ethiopianYear,
-                    $assessmentService->id,
+                    $context,
                 )
             );
         }
@@ -728,11 +1120,11 @@ class DueDateResolver
         if ($timestampMilliseconds === false) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'Unable to convert Ethiopian annual payment date [%02d-%02d/%d] to Gregorian date for assessment service [%s].',
+                    'Unable to convert Ethiopian annual payment date [%02d-%02d/%d] to Gregorian date for %s.',
                     $month,
                     $day,
                     $ethiopianYear,
-                    $assessmentService->id,
+                    $context,
                 )
             );
         }
