@@ -28,6 +28,19 @@ class AssessmentResource extends JsonResource
             'citizenId' =>
                 $this->citizen_id,
 
+            /*
+            |--------------------------------------------------------------------------
+            | Assessment Source
+            |--------------------------------------------------------------------------
+            |
+            | NEW
+            | EXISTING_LIZZ
+            |
+            */
+
+            'sourceType' =>
+                $this->source_type,
+
             'assessmentDate' =>
                 optional(
                     $this->assessment_date
@@ -88,9 +101,10 @@ class AssessmentResource extends JsonResource
             | Administrative Unit
             |--------------------------------------------------------------------------
             | Kept as a raw id for back-compat / filtering, PLUS a resolved object
-            | when the relation is actually eager-loaded. Controllers that need the
-            | name/level/breadcrumb in the response must ->with('administrativeUnit')
-            | (and its parent chain, see transformAdministrativeUnit below).
+            | when the relation is actually eager-loaded.
+            |
+            | Controllers that need the name/level/breadcrumb in the response
+            | must ->with('administrativeUnit') and its parent chain.
             */
 
             'administrativeUnitId' =>
@@ -170,7 +184,7 @@ class AssessmentResource extends JsonResource
 
                                         /*
                                         |--------------------------------------------------------------------------
-                                        | Service
+                                        | Assessment Service
                                         |--------------------------------------------------------------------------
                                         */
 
@@ -214,6 +228,73 @@ class AssessmentResource extends JsonResource
 
                                         /*
                                         |--------------------------------------------------------------------------
+                                        | Historical Financial Position
+                                        |--------------------------------------------------------------------------
+                                        |
+                                        | Used by Existing LIZZ.
+                                        |
+                                        | computedAmount
+                                        |     = Original Obligation
+                                        |
+                                        | paidAmount
+                                        |     = Amount Already Paid
+                                        |
+                                        | remainingAmount
+                                        |     = Outstanding Historical Balance
+                                        |
+                                        */
+
+                                        'paidAmount' =>
+                                            $service->paid_amount,
+
+                                        'remainingAmount' =>
+                                            $service->remaining_amount,
+
+                                        /*
+                                        |--------------------------------------------------------------------------
+                                        | Payment Tracking
+                                        |--------------------------------------------------------------------------
+                                        |
+                                        | This is kept separate from paidAmount.
+                                        |
+                                        */
+
+                                        'paymentStatus' =>
+                                            $service->payment_status,
+
+                                        'paidPrincipalAmount' =>
+                                            $service->paid_principal_amount,
+
+                                        /*
+                                        |--------------------------------------------------------------------------
+                                        | Payment Obligation
+                                        |--------------------------------------------------------------------------
+                                        */
+
+                                        'dueDate' =>
+                                            optional(
+                                                $service->due_date
+                                            )->format('Y-m-d'),
+
+                                        'agreementDate' =>
+                                            optional(
+                                                $service->agreement_date
+                                            )->format('Y-m-d'),
+
+                                        /*
+                                        |--------------------------------------------------------------------------
+                                        | Applied Financial Rules
+                                        |--------------------------------------------------------------------------
+                                        */
+
+                                        'penaltyRuleId' =>
+                                            $service->penalty_rule_id,
+
+                                        'interestRuleId' =>
+                                            $service->interest_rule_id,
+
+                                        /*
+                                        |--------------------------------------------------------------------------
                                         | Revenue Service
                                         |--------------------------------------------------------------------------
                                         */
@@ -246,12 +327,50 @@ class AssessmentResource extends JsonResource
                                                     )
                                                     ->values()
                                                 : [],
+
+                                        /*
+                                        |--------------------------------------------------------------------------
+                                        | Payment Schedules
+                                        |--------------------------------------------------------------------------
+                                        */
+
+                                        'paymentSchedules' =>
+                                            $service->relationLoaded(
+                                                'paymentSchedules'
+                                            )
+                                                ? $service->paymentSchedules
+                                                    ->map(
+                                                        function ($schedule) {
+
+                                                            return [
+                                                                'id' =>
+                                                                    $schedule->id,
+
+                                                                'installmentNumber' =>
+                                                                    $schedule->installment_number,
+
+                                                                'dueDate' =>
+                                                                    optional(
+                                                                        $schedule->due_date
+                                                                    )->format('Y-m-d'),
+
+                                                                'amount' =>
+                                                                    $schedule->amount,
+
+                                                                'status' =>
+                                                                    $schedule->status,
+                                                            ];
+                                                        }
+                                                    )
+                                                    ->values()
+                                                : [],
                                     ];
                                 }
                             )
                             ->values();
                     }
                 ),
+
             /*
             |--------------------------------------------------------------------------
             | Audit
@@ -289,7 +408,9 @@ class AssessmentResource extends JsonResource
                                 $this->creator->administrative_unit_id,
 
                             'administrativeUnit' =>
-                                $this->creator->relationLoaded('administrativeUnit')
+                                $this->creator->relationLoaded(
+                                    'administrativeUnit'
+                                )
                                     ? $this->transformAdministrativeUnit(
                                         $this->creator->administrativeUnit
                                     )
@@ -299,7 +420,9 @@ class AssessmentResource extends JsonResource
                                 $this->creator->sector_id,
 
                             'sector' =>
-                                $this->creator->relationLoaded('sector')
+                                $this->creator->relationLoaded(
+                                    'sector'
+                                )
                                     ? $this->transformSector(
                                         $this->creator->sector
                                     )
@@ -339,7 +462,9 @@ class AssessmentResource extends JsonResource
                                 $this->updater->administrative_unit_id,
 
                             'administrativeUnit' =>
-                                $this->updater->relationLoaded('administrativeUnit')
+                                $this->updater->relationLoaded(
+                                    'administrativeUnit'
+                                )
                                     ? $this->transformAdministrativeUnit(
                                         $this->updater->administrativeUnit
                                     )
@@ -349,7 +474,9 @@ class AssessmentResource extends JsonResource
                                 $this->updater->sector_id,
 
                             'sector' =>
-                                $this->updater->relationLoaded('sector')
+                                $this->updater->relationLoaded(
+                                    'sector'
+                                )
                                     ? $this->transformSector(
                                         $this->updater->sector
                                     )
@@ -413,14 +540,10 @@ class AssessmentResource extends JsonResource
     | ADMINISTRATIVE UNIT
     |--------------------------------------------------------------------------
     | Resolves a CITY / SUBCITY / WEREDA node plus a breadcrumb of its
-    | ancestors. Assumes a self-referencing adjacency list (`parent()`
-    | relation on the AdministrativeUnit model) — adjust the parent walk
-    | below if your schema instead stores explicit city_id/subcity_id/
-    | wereda_id foreign keys rather than a parent chain.
+    | ancestors.
     |
-    | For the `context` breadcrumb to populate, the parent chain must be
-    | eager-loaded by the caller, e.g.:
-    |   ->with(['creator.administrativeUnit.parent.parent'])
+    | Assumes a self-referencing adjacency list (`parent()` relation
+    | on the AdministrativeUnit model).
     */
 
     protected function transformAdministrativeUnit(
@@ -441,26 +564,47 @@ class AssessmentResource extends JsonResource
 
         while ($node) {
 
-            $level = strtolower($node->level ?? '');
+            $level = strtolower(
+                $node->level ?? ''
+            );
 
-            if (array_key_exists($level, $context) && $context[$level] === null) {
+            if (
+                array_key_exists(
+                    $level,
+                    $context
+                ) &&
+                $context[$level] === null
+            ) {
                 $context[$level] = [
-                    'id' => $node->id,
-                    'name' => $node->name,
+                    'id' =>
+                        $node->id,
+
+                    'name' =>
+                        $node->name,
                 ];
             }
 
-            $node = $node->relationLoaded('parent')
-                ? $node->parent
-                : null;
+            $node =
+                $node->relationLoaded('parent')
+                    ? $node->parent
+                    : null;
         }
 
         return [
-            'id' => $unit->id,
-            'name' => $unit->name,
-            'code' => $unit->code ?? null,
-            'level' => $unit->level,
-            'context' => $context,
+            'id' =>
+                $unit->id,
+
+            'name' =>
+                $unit->name,
+
+            'code' =>
+                $unit->code ?? null,
+
+            'level' =>
+                $unit->level,
+
+            'context' =>
+                $context,
         ];
     }
 
@@ -479,9 +623,14 @@ class AssessmentResource extends JsonResource
         }
 
         return [
-            'id' => $sector->id,
-            'name' => $sector->name,
-            'code' => $sector->code ?? null,
+            'id' =>
+                $sector->id,
+
+            'name' =>
+                $sector->name,
+
+            'code' =>
+                $sector->code ?? null,
         ];
     }
 
@@ -578,3 +727,4 @@ class AssessmentResource extends JsonResource
         ];
     }
 }
+

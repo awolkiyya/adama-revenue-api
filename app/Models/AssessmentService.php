@@ -63,6 +63,32 @@ class AssessmentService extends Model
 
         /*
         |--------------------------------------------------------------------------
+        | Historical Financial Position
+        |--------------------------------------------------------------------------
+        |
+        | Used by Existing LIZZ agreements.
+        |
+        | computed_amount
+        |     = Original Obligation
+        |
+        | paid_amount
+        |     = Amount Already Paid
+        |
+        | remaining_amount
+        |     = Outstanding Historical Balance
+        |
+        | balance_as_of_date
+        |     = Date on which the historical financial
+        |       position was established/confirmed.
+        |
+        */
+
+        'paid_amount',
+        'remaining_amount',
+        'balance_as_of_date',
+
+        /*
+        |--------------------------------------------------------------------------
         | Payment Obligation
         |--------------------------------------------------------------------------
         */
@@ -83,6 +109,10 @@ class AssessmentService extends Model
         |--------------------------------------------------------------------------
         | Payment Tracking
         |--------------------------------------------------------------------------
+        |
+        | paid_principal_amount is kept separately because it belongs
+        | to the normal payment/accounting workflow.
+        |
         */
 
         'payment_status',
@@ -98,6 +128,12 @@ class AssessmentService extends Model
     protected function casts(): array
     {
         return [
+            /*
+            |--------------------------------------------------------------------------
+            | Ordering
+            |--------------------------------------------------------------------------
+            */
+
             'service_order' => 'integer',
 
             /*
@@ -107,6 +143,26 @@ class AssessmentService extends Model
             */
 
             'computed_amount' => 'decimal:4',
+
+            /*
+             * Existing LIZZ:
+             *
+             * Amount already paid before system registration.
+             */
+            'paid_amount' => 'decimal:4',
+
+            /*
+             * Existing LIZZ:
+             *
+             * Outstanding historical balance.
+             */
+            'remaining_amount' => 'decimal:4',
+
+            /*
+             * Normal payment workflow:
+             *
+             * Principal actually paid through payments.
+             */
             'paid_principal_amount' => 'decimal:4',
 
             /*
@@ -115,6 +171,7 @@ class AssessmentService extends Model
             |--------------------------------------------------------------------------
             */
 
+            'balance_as_of_date' => 'date',
             'due_date' => 'date',
             'agreement_date' => 'date',
             'calculated_at' => 'datetime',
@@ -407,6 +464,36 @@ class AssessmentService extends Model
     {
         return $this->payment_status === 'WAIVED';
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Financial Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get the outstanding historical balance.
+     *
+     * Primarily used for Existing LIZZ agreements.
+     *
+     * Formula:
+     *
+     * computed_amount - paid_amount
+     */
+    public function getOutstandingHistoricalBalanceAttribute(): float
+    {
+        return max(
+            0,
+            (float) $this->computed_amount -
+            (float) $this->paid_amount
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Rule Helpers
+    |--------------------------------------------------------------------------
+    */
 
     public function hasPenaltyRule(): bool
     {
