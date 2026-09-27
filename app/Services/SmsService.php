@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Throwable;
 
 class SmsService
@@ -13,6 +15,25 @@ class SmsService
     private string $senderId;
     private string $paymentUrl;
 
+    /**
+     * HTTP timeout in seconds.
+     */
+    private int $timeout = 30;
+
+    /**
+     * Connection timeout in seconds.
+     */
+    private int $connectTimeout = 10;
+
+    /**
+     * Retry count.
+     */
+    private int $retryTimes = 3;
+
+    /**
+     * Retry delay in milliseconds.
+     */
+    private int $retryDelay = 500;
 
     public function __construct()
     {
@@ -21,7 +42,10 @@ class SmsService
             '/'
         );
 
-        $this->token = config('services.dagu_sms.token', '');
+        $this->token = config(
+            'services.dagu_sms.token',
+            ''
+        );
 
         $this->senderId = config(
             'services.dagu_sms.sender_id',
@@ -33,36 +57,59 @@ class SmsService
             '/'
         );
 
+        Log::debug('Initializing SMS service.', [
+            'base_url' => $this->baseUrl,
+            'sender_id' => $this->senderId,
+            'payment_url' => $this->paymentUrl,
+            'token_configured' => !empty($this->token),
+            'timeout_seconds' => $this->timeout,
+            'connect_timeout_seconds' => $this->connectTimeout,
+            'retry_times' => $this->retryTimes,
+            'retry_delay_ms' => $this->retryDelay,
+        ]);
 
         if (!$this->baseUrl || !$this->token) {
+            Log::critical('Dagu SMS configuration is missing.', [
+                'base_url_configured' => !empty($this->baseUrl),
+                'token_configured' => !empty($this->token),
+                'sender_id_configured' => !empty($this->senderId),
+            ]);
+
             throw new \RuntimeException(
                 'Dagu SMS configuration missing'
             );
         }
+
+        Log::debug('SMS service initialized successfully.');
     }
 
-
-
     /**
-     * Send SMS to a single phone number
+     * Send SMS to a single phone number.
      */
     public function sendByPhone(
         string $phone,
         string $message,
         bool $flash = false
     ): array {
+        $requestId = $this->requestId();
+
+        Log::info('SMS sendByPhone request received.', [
+            'request_id' => $requestId,
+            'phone_raw' => $phone,
+            'message_length' => mb_strlen($message),
+            'flash' => $flash,
+        ]);
 
         return $this->sendSms(
             $phone,
             $message,
-            $flash
+            $flash,
+            $requestId
         );
     }
 
-
-
     /**
-     * Send revenue payment link SMS
+     * Send revenue payment link SMS.
      */
     public function sendPaymentLink(
         string $phone,
@@ -70,202 +117,384 @@ class SmsService
         string $paymentToken,
         bool $flash = false
     ): array {
+        $requestId = $this->requestId();
 
         $paymentLink = $this->paymentUrl
             . '/p/'
             . $paymentToken;
-
 
         $message =
             "Dear {$taxpayerName}, "
             . "your revenue payment is pending. "
             . "Pay securely here: {$paymentLink}";
 
+        Log::info('Preparing payment link SMS.', [
+            'request_id' => $requestId,
+            'phone_raw' => $phone,
+            'taxpayer_name' => $taxpayerName,
+            'payment_url_configured' => !empty($this->paymentUrl),
+            'payment_link_length' => strlen($paymentLink),
+            'message_length' => mb_strlen($message),
+            'flash' => $flash,
+        ]);
 
         return $this->sendSms(
             $phone,
             $message,
-            $flash
+            $flash,
+            $requestId
         );
     }
 
-
-
     /**
-     * Send OTP SMS
+     * Send OTP SMS.
      *
-     * Store OTP separately in cache/database.
+     * The OTP itself is intentionally NOT logged.
      */
     public function sendOtp(string $phone): array
     {
+        $requestId = $this->requestId();
+
         $otp = random_int(
             100000,
             999999
         );
 
-
         $message =
             "Your verification code is {$otp}.";
 
+        Log::info('Preparing OTP SMS.', [
+            'request_id' => $requestId,
+            'phone_raw' => $phone,
+            'message_length' => mb_strlen($message),
+            'otp_generated' => true,
+        ]);
+
+        $response = $this->sendSms(
+            $phone,
+            $message,
+            false,
+            $requestId
+        );
 
         return [
             'otp' => $otp,
-
-            'response' => $this->sendSms(
-                $phone,
-                $message
-            ),
+            'response' => $response,
         ];
     }
 
-
-
     /**
-     * Send bulk SMS
+     * Send bulk SMS.
      */
     public function sendBulk(
         array $phones,
         string $message,
         bool $flash = false
     ): array {
+        $requestId = $this->requestId();
+
+        $startedAt = microtime(true);
+
+        Log::info('Bulk SMS request started.', [
+            'request_id' => $requestId,
+            'phone_count_received' => count($phones),
+            'message_length' => mb_strlen($message),
+            'flash' => $flash,
+        ]);
 
         try {
+            /*
+             * Normalize phones individually so we can log
+             * the transformation without exposing message contents.
+             */
+            $normalizedPhones = collect($phones)
+                ->map(function ($phone) use ($requestId) {
+                    $normalized = $this->normalizePhone($phone);
 
-            $phones = collect($phones)
-                ->map(
-                    fn ($phone) =>
-                    $this->normalizePhone($phone)
-                )
+                    Log::debug('Bulk SMS phone normalized.', [
+                        'request_id' => $requestId,
+                        'phone_raw' => $phone,
+                        'phone_normalized' => $normalized,
+                    ]);
+
+                    return $normalized;
+                })
                 ->values()
                 ->toArray();
 
+            Log::debug('Bulk SMS phones normalized.', [
+                'request_id' => $requestId,
+                'phone_count' => count($normalizedPhones),
+                'endpoint' => $this->baseUrl . '/to-phone-list',
+            ]);
 
-
-            $response = Http::timeout(30)
-                ->retry(3, 500)
-                ->withToken($this->token)
-                ->post(
-                    $this->baseUrl . '/to-phone-list',
-                    [
-                        'senderID' => $this->senderId,
-                        'message' => $message,
-                        'phones' => $phones,
-                        'flash' => $flash,
-                    ]
-                );
-
-
-            return $this->formatResponse(
-                $response
+            $response = $this->performRequest(
+                method: 'POST',
+                url: $this->baseUrl . '/to-phone-list',
+                payload: [
+                    'senderID' => $this->senderId,
+                    'message' => $message,
+                    'phones' => $normalizedPhones,
+                    'flash' => $flash,
+                ],
+                requestId: $requestId,
+                operation: 'bulk_sms'
             );
 
+            $result = $this->formatResponse(
+                $response,
+                $requestId,
+                $startedAt
+            );
+
+            Log::info('Bulk SMS request completed.', [
+                'request_id' => $requestId,
+                'status' => $result['status'],
+                'http_status' => $result['http_status'],
+                'duration_ms' => $result['duration_ms'],
+                'phone_count' => count($normalizedPhones),
+            ]);
+
+            return $result;
 
         } catch (Throwable $e) {
+            $durationMs = $this->durationMs($startedAt);
 
-
-            Log::error(
-                'Bulk SMS failed',
-                [
-                    'error' => $e->getMessage(),
-                ]
-            );
-
+            Log::error('Bulk SMS failed.', [
+                'request_id' => $requestId,
+                'duration_ms' => $durationMs,
+                'phone_count' => count($phones),
+                'exception_class' => get_class($e),
+                'error' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
 
             return [
                 'status' => 'failed',
                 'error' => $e->getMessage(),
+                'request_id' => $requestId,
+                'duration_ms' => $durationMs,
             ];
         }
     }
 
-
-
     /**
-     * Internal SMS sender
+     * Internal SMS sender.
      */
     private function sendSms(
         string $phone,
         string $message,
-        bool $flash = false
+        bool $flash = false,
+        ?string $requestId = null
     ): array {
+        $requestId ??= $this->requestId();
+
+        $startedAt = microtime(true);
+
+        Log::info('SMS request started.', [
+            'request_id' => $requestId,
+            'phone_raw' => $phone,
+            'message_length' => mb_strlen($message),
+            'flash' => $flash,
+            'sender_id' => $this->senderId,
+        ]);
 
         try {
+            $normalizedPhone = $this->normalizePhone($phone);
 
+            Log::debug('SMS phone normalized.', [
+                'request_id' => $requestId,
+                'phone_raw' => $phone,
+                'phone_normalized' => $normalizedPhone,
+            ]);
 
-            $phone = $this->normalizePhone(
-                $phone
+            $endpoint = $this->baseUrl . '/by-phone';
+
+            Log::debug('Preparing SMS HTTP request.', [
+                'request_id' => $requestId,
+                'method' => 'POST',
+                'endpoint' => $endpoint,
+                'sender_id' => $this->senderId,
+                'phone' => $normalizedPhone,
+                'message_length' => mb_strlen($message),
+                'flash' => $flash,
+                'timeout_seconds' => $this->timeout,
+                'connect_timeout_seconds' => $this->connectTimeout,
+                'retry_times' => $this->retryTimes,
+                'retry_delay_ms' => $this->retryDelay,
+            ]);
+
+            $response = $this->performRequest(
+                method: 'POST',
+                url: $endpoint,
+                payload: [
+                    'senderID' => $this->senderId,
+                    'message' => $message,
+                    'phone' => $normalizedPhone,
+                    'flash' => $flash,
+                ],
+                requestId: $requestId,
+                operation: 'single_sms'
             );
 
-
-
-            $response = Http::timeout(30)
-                ->retry(3, 500)
-                ->withToken($this->token)
-                ->post(
-                    $this->baseUrl . '/by-phone',
-                    [
-                        'senderID' => $this->senderId,
-
-                        'message' => $message,
-
-                        'phone' => $phone,
-
-                        'flash' => $flash,
-                    ]
-                );
-
-
-
-            return $this->formatResponse(
-                $response
+            $result = $this->formatResponse(
+                $response,
+                $requestId,
+                $startedAt
             );
 
+            if ($response->successful()) {
+                Log::info('SMS sent successfully.', [
+                    'request_id' => $requestId,
+                    'phone' => $normalizedPhone,
+                    'http_status' => $response->status(),
+                    'duration_ms' => $result['duration_ms'],
+                ]);
+            } else {
+                Log::warning('SMS gateway returned unsuccessful response.', [
+                    'request_id' => $requestId,
+                    'phone' => $normalizedPhone,
+                    'http_status' => $response->status(),
+                    'duration_ms' => $result['duration_ms'],
+                    'response_body' => $response->body(),
+                    'response_json' => $response->json(),
+                ]);
+            }
+
+            return $result;
 
         } catch (Throwable $e) {
+            $durationMs = $this->durationMs($startedAt);
 
-
-            Log::error(
-                'SMS sending failed',
-                [
-                    'phone' => $phone,
-                    'error' => $e->getMessage(),
-                ]
-            );
-
+            Log::error('SMS sending failed.', [
+                'request_id' => $requestId,
+                'phone' => $phone,
+                'duration_ms' => $durationMs,
+                'exception_class' => get_class($e),
+                'error' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
 
             return [
                 'status' => 'failed',
                 'error' => $e->getMessage(),
+                'request_id' => $requestId,
+                'duration_ms' => $durationMs,
             ];
         }
     }
 
+    /**
+     * Execute SMS HTTP request with explicit logging.
+     */
+    private function performRequest(
+        string $method,
+        string $url,
+        array $payload,
+        string $requestId,
+        string $operation
+    ): Response {
+        Log::debug('SMS HTTP request dispatching.', [
+            'request_id' => $requestId,
+            'operation' => $operation,
+            'method' => $method,
+            'url' => $url,
+            'payload_keys' => array_keys($payload),
+        ]);
 
+        /*
+         * Important:
+         *
+         * Do NOT log:
+         * - Authorization token
+         * - Full OTP message
+         * - Full payment token
+         * - Sensitive citizen information
+         */
+        return Http::timeout($this->timeout)
+            ->connectTimeout($this->connectTimeout)
+            ->retry(
+                $this->retryTimes,
+                $this->retryDelay,
+                function (Throwable $exception) use (
+                    $requestId,
+                    $operation
+                ) {
+                    Log::warning(
+                        'SMS HTTP retry triggered.',
+                        [
+                            'request_id' => $requestId,
+                            'operation' => $operation,
+                            'exception_class' => get_class($exception),
+                            'error' => $exception->getMessage(),
+                        ]
+                    );
+
+                    return true;
+                }
+            )
+            ->withToken($this->token)
+            ->acceptJson()
+            ->post(
+                $url,
+                $payload
+            );
+    }
 
     /**
-     * Standardize SMS gateway response
+     * Standardize SMS gateway response.
      */
-    private function formatResponse($response): array
-    {
-        return [
+    private function formatResponse(
+        Response $response,
+        string $requestId,
+        float $startedAt
+    ): array {
+        $durationMs = $this->durationMs($startedAt);
 
+        $body = $response->body();
+        $json = null;
+
+        try {
+            $json = $response->json();
+        } catch (Throwable $e) {
+            Log::debug('SMS response is not valid JSON.', [
+                'request_id' => $requestId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        Log::debug('SMS gateway response received.', [
+            'request_id' => $requestId,
+            'http_status' => $response->status(),
+            'successful' => $response->successful(),
+            'duration_ms' => $durationMs,
+            'response_body' => $body,
+            'response_json' => $json,
+        ]);
+
+        return [
             'status' => $response->successful()
                 ? 'success'
                 : 'failed',
 
             'http_status' => $response->status(),
 
-            'body' => $response->body(),
+            'body' => $body,
 
-            'json' => $response->json(),
+            'json' => $json,
 
+            'request_id' => $requestId,
+
+            'duration_ms' => $durationMs,
         ];
     }
 
-
-
     /**
-     * Normalize Ethiopian phone numbers
+     * Normalize Ethiopian phone numbers.
      *
      * 0912345678
      * => +251912345678
@@ -275,28 +504,48 @@ class SmsService
      */
     private function normalizePhone(string $phone): string
     {
+        $original = $phone;
+
         $phone = preg_replace(
             '/[\s\-\(\)]/',
             '',
             trim($phone)
         );
 
-
         if (str_starts_with($phone, '+251')) {
-            return $phone;
+            $normalized = $phone;
+        } elseif (str_starts_with($phone, '251')) {
+            $normalized = '+' . $phone;
+        } elseif (str_starts_with($phone, '0')) {
+            $normalized = '+251' . substr($phone, 1);
+        } else {
+            $normalized = $phone;
         }
 
+        Log::debug('Phone normalization completed.', [
+            'phone_raw' => $original,
+            'phone_cleaned' => $phone,
+            'phone_normalized' => $normalized,
+        ]);
 
-        if (str_starts_with($phone, '251')) {
-            return '+' . $phone;
-        }
+        return $normalized;
+    }
 
+    /**
+     * Generate request ID.
+     */
+    private function requestId(): string
+    {
+        return (string) Str::uuid();
+    }
 
-        if (str_starts_with($phone, '0')) {
-            return '+251' . substr($phone, 1);
-        }
-
-
-        return $phone;
+    /**
+     * Calculate elapsed milliseconds.
+     */
+    private function durationMs(float $startedAt): int
+    {
+        return (int) round(
+            (microtime(true) - $startedAt) * 1000
+        );
     }
 }

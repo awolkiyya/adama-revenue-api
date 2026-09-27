@@ -10,7 +10,6 @@ class AssessmentResource extends JsonResource
     public function toArray(
         Request $request
     ): array {
-
         return [
 
             /*
@@ -32,10 +31,6 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             | Assessment Source
             |--------------------------------------------------------------------------
-            |
-            | NEW
-            | EXISTING_LIZZ
-            |
             */
 
             'sourceType' =>
@@ -75,8 +70,83 @@ class AssessmentResource extends JsonResource
             'decisionNotes' =>
                 $this->decision_notes,
 
+            /*
+            |--------------------------------------------------------------------------
+            | Decision Maker
+            |--------------------------------------------------------------------------
+            |
+            | Return the decision maker as a user object instead of
+            | returning only the decided_by user ID.
+            |
+            */
+
             'decidedBy' =>
-                $this->decided_by,
+                $this->whenLoaded(
+                    'decider',
+                    function () {
+
+                        if (!$this->decider) {
+                            return null;
+                        }
+
+                        return [
+                            'id' =>
+                                $this->decider->id,
+
+                            'name' =>
+                                $this->decider->name,
+
+                            'label' =>
+                                $this->decider->label,
+
+                            'email' =>
+                                $this->decider->email,
+
+                            'phone' =>
+                                $this->decider->phone,
+
+                            'userType' =>
+                                $this->decider->user_type,
+
+                            'isActive' =>
+                                $this->decider->is_active,
+
+                            'administrativeUnitId' =>
+                                $this->decider->administrative_unit_id,
+
+                            'administrativeUnit' =>
+                                $this->decider->relationLoaded(
+                                    'administrativeUnit'
+                                )
+                                    ? $this->transformAdministrativeUnit(
+                                        $this->decider->administrativeUnit
+                                    )
+                                    : null,
+
+                            'sectorId' =>
+                                $this->decider->sector_id,
+
+                            'sector' =>
+                                $this->decider->relationLoaded(
+                                    'sector'
+                                )
+                                    ? $this->transformSector(
+                                        $this->decider->sector
+                                    )
+                                    : null,
+
+                            'createdAt' =>
+                                optional(
+                                    $this->decider->created_at
+                                )->toISOString(),
+
+                            'updatedAt' =>
+                                optional(
+                                    $this->decider->updated_at
+                                )->toISOString(),
+                        ];
+                    }
+                ),
 
             'decidedAt' =>
                 optional(
@@ -100,11 +170,6 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             | Administrative Unit
             |--------------------------------------------------------------------------
-            | Kept as a raw id for back-compat / filtering, PLUS a resolved object
-            | when the relation is actually eager-loaded.
-            |
-            | Controllers that need the name/level/breadcrumb in the response
-            | must ->with('administrativeUnit') and its parent chain.
             */
 
             'administrativeUnitId' =>
@@ -184,14 +249,20 @@ class AssessmentResource extends JsonResource
 
                                         /*
                                         |--------------------------------------------------------------------------
-                                        | Assessment Service
+                                        | Assessment Service Identity
                                         |--------------------------------------------------------------------------
                                         */
 
                                         'id' =>
                                             $service->id,
 
+                                        'assessmentId' =>
+                                            $service->assessment_id,
+
                                         'serviceId' =>
+                                            $service->service_id,
+
+                                        'revenueServiceId' =>
                                             $service->service_id,
 
                                         'serviceCode' =>
@@ -230,19 +301,10 @@ class AssessmentResource extends JsonResource
                                         |--------------------------------------------------------------------------
                                         | Historical Financial Position
                                         |--------------------------------------------------------------------------
-                                        |
-                                        | Used by Existing LIZZ.
-                                        |
-                                        | computedAmount
-                                        |     = Original Obligation
-                                        |
-                                        | paidAmount
-                                        |     = Amount Already Paid
-                                        |
-                                        | remainingAmount
-                                        |     = Outstanding Historical Balance
-                                        |
                                         */
+
+                                        'originalObligation' =>
+                                            $service->computed_amount,
 
                                         'paidAmount' =>
                                             $service->paid_amount,
@@ -250,13 +312,15 @@ class AssessmentResource extends JsonResource
                                         'remainingAmount' =>
                                             $service->remaining_amount,
 
+                                        'balanceAsOfDate' =>
+                                            optional(
+                                                $service->balance_as_of_date
+                                            )->format('Y-m-d'),
+
                                         /*
                                         |--------------------------------------------------------------------------
                                         | Payment Tracking
                                         |--------------------------------------------------------------------------
-                                        |
-                                        | This is kept separate from paidAmount.
-                                        |
                                         */
 
                                         'paymentStatus' =>
@@ -310,7 +374,7 @@ class AssessmentResource extends JsonResource
 
                                         /*
                                         |--------------------------------------------------------------------------
-                                        | Captured Values
+                                        | Captured Service Values
                                         |--------------------------------------------------------------------------
                                         */
 
@@ -343,8 +407,12 @@ class AssessmentResource extends JsonResource
                                                         function ($schedule) {
 
                                                             return [
+
                                                                 'id' =>
                                                                     $schedule->id,
+
+                                                                'assessmentServiceId' =>
+                                                                    $schedule->assessment_service_id,
 
                                                                 'installmentNumber' =>
                                                                     $schedule->installment_number,
@@ -357,13 +425,47 @@ class AssessmentResource extends JsonResource
                                                                 'amount' =>
                                                                     $schedule->amount,
 
+                                                                'paidAmount' =>
+                                                                    $schedule->paid_amount
+                                                                    ?? null,
+
+                                                                'remainingAmount' =>
+                                                                    $schedule->remaining_amount
+                                                                    ?? null,
+
                                                                 'status' =>
                                                                     $schedule->status,
+
+                                                                'createdAt' =>
+                                                                    optional(
+                                                                        $schedule->created_at
+                                                                    )->toISOString(),
+
+                                                                'updatedAt' =>
+                                                                    optional(
+                                                                        $schedule->updated_at
+                                                                    )->toISOString(),
                                                             ];
                                                         }
                                                     )
                                                     ->values()
                                                 : [],
+
+                                        /*
+                                        |--------------------------------------------------------------------------
+                                        | Assessment Service Audit
+                                        |--------------------------------------------------------------------------
+                                        */
+
+                                        'createdAt' =>
+                                            optional(
+                                                $service->created_at
+                                            )->toISOString(),
+
+                                        'updatedAt' =>
+                                            optional(
+                                                $service->updated_at
+                                            )->toISOString(),
                                     ];
                                 }
                             )
@@ -373,7 +475,7 @@ class AssessmentResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Audit
+            | Audit - Created By
             |--------------------------------------------------------------------------
             */
 
@@ -427,9 +529,25 @@ class AssessmentResource extends JsonResource
                                         $this->creator->sector
                                     )
                                     : null,
+
+                            'createdAt' =>
+                                optional(
+                                    $this->creator->created_at
+                                )->toISOString(),
+
+                            'updatedAt' =>
+                                optional(
+                                    $this->creator->updated_at
+                                )->toISOString(),
                         ];
                     }
                 ),
+
+            /*
+            |--------------------------------------------------------------------------
+            | Audit - Updated By
+            |--------------------------------------------------------------------------
+            */
 
             'updatedBy' =>
                 $this->whenLoaded(
@@ -481,6 +599,16 @@ class AssessmentResource extends JsonResource
                                         $this->updater->sector
                                     )
                                     : null,
+
+                            'createdAt' =>
+                                optional(
+                                    $this->updater->created_at
+                                )->toISOString(),
+
+                            'updatedAt' =>
+                                optional(
+                                    $this->updater->updated_at
+                                )->toISOString(),
                         ];
                     }
                 ),
@@ -522,16 +650,32 @@ class AssessmentResource extends JsonResource
                 $service->id,
 
             'name' =>
-                $service->name
-                ?? null,
+                $service->name ?? null,
 
             'code' =>
-                $service->code
-                ?? null,
+                $service->code ?? null,
 
             'description' =>
-                $service->description
-                ?? null,
+                $service->description ?? null,
+
+            'category' =>
+                $service->category ?? null,
+
+            'collectionMode' =>
+                $service->collection_mode ?? null,
+
+            'isActive' =>
+                $service->is_active ?? null,
+
+            'createdAt' =>
+                optional(
+                    $service->created_at
+                )->toISOString(),
+
+            'updatedAt' =>
+                optional(
+                    $service->updated_at
+                )->toISOString(),
         ];
     }
 
@@ -539,11 +683,6 @@ class AssessmentResource extends JsonResource
     |--------------------------------------------------------------------------
     | ADMINISTRATIVE UNIT
     |--------------------------------------------------------------------------
-    | Resolves a CITY / SUBCITY / WEREDA node plus a breadcrumb of its
-    | ancestors.
-    |
-    | Assumes a self-referencing adjacency list (`parent()` relation
-    | on the AdministrativeUnit model).
     */
 
     protected function transformAdministrativeUnit(
@@ -581,6 +720,9 @@ class AssessmentResource extends JsonResource
 
                     'name' =>
                         $node->name,
+
+                    'code' =>
+                        $node->code ?? null,
                 ];
             }
 
@@ -631,6 +773,9 @@ class AssessmentResource extends JsonResource
 
             'code' =>
                 $sector->code ?? null,
+
+            'isActive' =>
+                $sector->is_active ?? null,
         ];
     }
 
@@ -648,6 +793,9 @@ class AssessmentResource extends JsonResource
 
             'id' =>
                 $value->id,
+
+            'assessmentServiceId' =>
+                $value->assessment_service_id,
 
             'revenueServiceFieldId' =>
                 $value->revenue_service_field_id,
@@ -727,4 +875,3 @@ class AssessmentResource extends JsonResource
         ];
     }
 }
-

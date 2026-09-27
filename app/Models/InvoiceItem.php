@@ -46,6 +46,20 @@ class InvoiceItem extends Model
 
         'assessment_service_id',
 
+        /*
+        |--------------------------------------------------------------------------
+        | PAYMENT SCHEDULE
+        |--------------------------------------------------------------------------
+        |
+        | Nullable.
+        |
+        | Used when this invoice item represents a specific scheduled
+        | installment/payment schedule.
+        |
+        */
+
+        'payment_schedule_id',
+
         'service_id',
 
         'line_number',
@@ -140,6 +154,24 @@ class InvoiceItem extends Model
     }
 
     /**
+     * Payment schedule represented by this invoice item.
+     *
+     * Nullable because:
+     *
+     * - ONE_TIME assessment items do not have a payment schedule.
+     * - DIRECT_COLLECTION items do not have a payment schedule.
+     * - SCHEDULED assessment items reference the specific installment
+     *   being invoiced.
+     */
+    public function paymentSchedule(): BelongsTo
+    {
+        return $this->belongsTo(
+            PaymentSchedule::class,
+            'payment_schedule_id'
+        );
+    }
+
+    /**
      * Revenue service being charged.
      */
     public function service(): BelongsTo
@@ -198,12 +230,41 @@ class InvoiceItem extends Model
         );
     }
 
+    /**
+     * Scope invoice items belonging to a specific assessment service.
+     */
+    public function scopeForAssessmentService(
+        $query,
+        string $assessmentServiceId
+    ) {
+        return $query->where(
+            'assessment_service_id',
+            $assessmentServiceId
+        );
+    }
+
+    /**
+     * Scope invoice items belonging to a specific payment schedule.
+     */
+    public function scopeForPaymentSchedule(
+        $query,
+        string $paymentScheduleId
+    ) {
+        return $query->where(
+            'payment_schedule_id',
+            $paymentScheduleId
+        );
+    }
+
     /*
     |--------------------------------------------------------------------------
     | HELPERS
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Determine whether this item belongs to an assessment service.
+     */
     public function hasAssessmentService(): bool
     {
         return ! is_null(
@@ -211,6 +272,52 @@ class InvoiceItem extends Model
         );
     }
 
+    /**
+     * Determine whether this item represents a payment schedule.
+     */
+    public function hasPaymentSchedule(): bool
+    {
+        return ! is_null(
+            $this->payment_schedule_id
+        );
+    }
+
+    /**
+     * Determine whether this is a scheduled assessment item.
+     */
+    public function isScheduledItem(): bool
+    {
+        return
+            $this->hasAssessmentService()
+            &&
+            $this->hasPaymentSchedule();
+    }
+
+    /**
+     * Determine whether this is a direct collection item.
+     */
+    public function isDirectCollectionItem(): bool
+    {
+        return
+            is_null($this->assessment_service_id)
+            &&
+            is_null($this->payment_schedule_id);
+    }
+
+    /**
+     * Determine whether this is a one-time assessment item.
+     */
+    public function isOneTimeAssessmentItem(): bool
+    {
+        return
+            $this->hasAssessmentService()
+            &&
+            ! $this->hasPaymentSchedule();
+    }
+
+    /**
+     * Determine whether a tariff snapshot exists.
+     */
     public function hasTariffSnapshot(): bool
     {
         return
@@ -219,6 +326,9 @@ class InvoiceItem extends Model
             ! is_null($this->tariff_rule_id);
     }
 
+    /**
+     * Determine whether a calculation snapshot exists.
+     */
     public function hasCalculationSnapshot(): bool
     {
         return ! is_null(
@@ -226,6 +336,9 @@ class InvoiceItem extends Model
         );
     }
 
+    /**
+     * Determine whether an input snapshot exists.
+     */
     public function hasInputSnapshot(): bool
     {
         return ! is_null(

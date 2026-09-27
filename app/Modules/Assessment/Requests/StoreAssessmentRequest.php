@@ -4,6 +4,7 @@ namespace App\Modules\Assessment\Requests;
 
 use App\Models\RevenueService;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
 class StoreAssessmentRequest extends FormRequest
@@ -17,7 +18,6 @@ class StoreAssessmentRequest extends FormRequest
     {
         return true;
     }
-
 
     /**
      * ----------------------------------------------------------------------
@@ -40,7 +40,6 @@ class StoreAssessmentRequest extends FormRequest
                 'exists:citizens,id',
             ],
 
-
             /*
             |--------------------------------------------------------------------------
             | Notes
@@ -53,17 +52,10 @@ class StoreAssessmentRequest extends FormRequest
                 'max:5000',
             ],
 
-
             /*
             |--------------------------------------------------------------------------
             | Status
             |--------------------------------------------------------------------------
-            |
-            | Assessment creation only allows:
-            |
-            | DRAFT
-            | PENDING_APPROVAL
-            |
             */
 
             'status' => [
@@ -73,7 +65,6 @@ class StoreAssessmentRequest extends FormRequest
                     'PENDING_APPROVAL',
                 ]),
             ],
-
 
             /*
             |--------------------------------------------------------------------------
@@ -87,7 +78,6 @@ class StoreAssessmentRequest extends FormRequest
                 'min:1',
             ],
 
-
             /*
             |--------------------------------------------------------------------------
             | Revenue Service ID
@@ -100,7 +90,6 @@ class StoreAssessmentRequest extends FormRequest
                 'exists:revenue_services,id',
             ],
 
-
             /*
             |--------------------------------------------------------------------------
             | Revenue Service Code
@@ -111,8 +100,8 @@ class StoreAssessmentRequest extends FormRequest
             | serviceId
             | serviceCode
             |
-            | The backend verifies that the submitted serviceCode
-            | actually belongs to the selected serviceId.
+            | The backend verifies that serviceCode belongs
+            | to the submitted serviceId.
             |
             */
 
@@ -127,68 +116,37 @@ class StoreAssessmentRequest extends FormRequest
                     \Closure $fail
                 ): void {
 
-                    /*
-                     * Example attribute:
-                     *
-                     * services.0.serviceCode
-                     *
-                     * Extract:
-                     *
-                     * 0
-                     */
                     preg_match(
                         '/services\.(\d+)\.serviceCode/',
                         $attribute,
                         $matches
                     );
 
-
                     if (! isset($matches[1])) {
                         return;
                     }
 
-
                     $index = (int) $matches[1];
 
-
-                    /*
-                     * Get the service ID from the same service
-                     * object.
-                     */
                     $serviceId = $this->input(
                         "services.{$index}.serviceId"
                     );
-
 
                     if (! $serviceId) {
                         return;
                     }
 
-
-                    /*
-                     * Verify that this service ID has the
-                     * submitted revenue code.
-                     *
-                     * revenue_services.revenue_code_id
-                     *          ↓
-                     * revenue_codes.code
-                     */
                     $matchesService = RevenueService::query()
                         ->whereKey($serviceId)
                         ->whereHas(
                             'revenueCode',
-                            function ($query) use ($value) {
-                                $query->where(
-                                    'code',
-                                    $value
-                                );
+                            function ($query) use ($value): void {
+                                $query->where('code', $value);
                             }
                         )
                         ->exists();
 
-
                     if (! $matchesService) {
-
                         $fail(
                             "The serviceCode does not match serviceId [{$serviceId}]."
                         );
@@ -196,33 +154,28 @@ class StoreAssessmentRequest extends FormRequest
                 },
             ],
 
-
             /*
             |--------------------------------------------------------------------------
             | Dynamic Fields
             |--------------------------------------------------------------------------
+            |
+            | Fields are keyed by RevenueField.id.
+            |
+            | Example:
+            |
+            | fields: {
+            |     "01JFIELD-ID-1": 10000,
+            |     "01JFIELD-ID-2": "COMMERCIAL"
+            | }
+            |
             */
 
             'services.*.fields' => [
                 'required',
                 'array',
             ],
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Dynamic File Inputs
-            |--------------------------------------------------------------------------
-            |
-            | Files are validated separately because their names are:
-            |
-            | file__{serviceId}__{fieldCode}
-            |
-            */
-
         ];
     }
-
 
     /**
      * ----------------------------------------------------------------------
@@ -243,27 +196,96 @@ class StoreAssessmentRequest extends FormRequest
     {
         $services = $this->input('services');
 
+        if (! is_string($services)) {
+            return;
+        }
 
-        if (is_string($services)) {
+        $decoded = json_decode(
+            $services,
+            true
+        );
 
-            $decoded = json_decode(
-                $services,
-                true
-            );
-
-
-            if (
-                json_last_error() ===
-                JSON_ERROR_NONE
-            ) {
-
-                $this->merge([
-                    'services' => $decoded,
-                ]);
-            }
+        if (
+            json_last_error() === JSON_ERROR_NONE &&
+            is_array($decoded)
+        ) {
+            $this->merge([
+                'services' => $decoded,
+            ]);
         }
     }
 
+    /**
+     * ----------------------------------------------------------------------
+     * CONFIGURE VALIDATOR
+     * ----------------------------------------------------------------------
+     *
+     * Validate that every submitted field ID actually belongs
+     * to the selected RevenueService.
+     *
+     * This is important because the frontend must never be trusted
+     * to decide which fields belong to a service.
+     */
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator): void {
+
+            $services = $this->input('services', []);
+
+            if (! is_array($services)) {
+                return;
+            }
+
+            foreach ($services as $index => $service) {
+
+                if (! is_array($service)) {
+                    continue;
+                }
+
+                $serviceId = $service['serviceId'] ?? null;
+                $fields = $service['fields'] ?? [];
+
+                if (! $serviceId || ! is_array($fields)) {
+                    continue;
+                }
+
+                /*
+                 * Load the service together with its fields.
+                 */
+                $revenueService = RevenueService::query()
+                    ->with('fields')
+                    ->find($serviceId);
+
+                if (! $revenueService) {
+                    continue;
+                }
+
+                /*
+                 * Build a fast lookup of valid RevenueField IDs.
+                 */
+                $validFieldIds = $revenueService->fields
+                    ->pluck('id')
+                    ->map(fn ($id) => (string) $id)
+                    ->flip();
+
+                /*
+                 * The submitted `fields` array is keyed by
+                 * RevenueField.id.
+                 */
+                foreach (array_keys($fields) as $fieldId) {
+
+                    $fieldId = (string) $fieldId;
+
+                    if (! isset($validFieldIds[$fieldId])) {
+                        $validator->errors()->add(
+                            "services.{$index}.fields.{$fieldId}",
+                            "The field [{$fieldId}] does not belong to service [{$serviceId}]."
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     /**
      * ----------------------------------------------------------------------
@@ -275,7 +297,6 @@ class StoreAssessmentRequest extends FormRequest
         return $this->validated('services', []);
     }
 
-
     /**
      * ----------------------------------------------------------------------
      * TAXPAYER ID
@@ -285,7 +306,6 @@ class StoreAssessmentRequest extends FormRequest
     {
         return $this->validated('taxpayerId');
     }
-
 
     /**
      * ----------------------------------------------------------------------

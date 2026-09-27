@@ -26,7 +26,6 @@ class ExistingLizzService
     ) {
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | CREATE
@@ -46,6 +45,7 @@ class ExistingLizzService
             'service_field_count' => is_array($data['service_fields'] ?? null)
                 ? count($data['service_fields'])
                 : 0,
+            'balance_as_of_date' => $data['balance_as_of_date'] ?? null,
         ]);
 
         try {
@@ -89,7 +89,6 @@ class ExistingLizzService
                     ]);
                 }
 
-
                 /*
                 |--------------------------------------------------------------------------
                 | Financial Values
@@ -102,6 +101,8 @@ class ExistingLizzService
                 $amountAlreadyPaid =
                     (float) $data['amount_already_paid'];
 
+                $balanceAsOfDate =
+                    $data['balance_as_of_date'];
 
                 /*
                 |--------------------------------------------------------------------------
@@ -114,6 +115,18 @@ class ExistingLizzService
                     $amountAlreadyPaid
                 );
 
+                /*
+                |--------------------------------------------------------------------------
+                | Calculate Historical Outstanding Balance
+                |--------------------------------------------------------------------------
+                */
+
+                $remainingAmount =
+                    max(
+                        0,
+                        $originalObligation -
+                        $amountAlreadyPaid
+                    );
 
                 /*
                 |--------------------------------------------------------------------------
@@ -126,7 +139,6 @@ class ExistingLizzService
                         'assessment',
                         'ASM'
                     );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -164,7 +176,6 @@ class ExistingLizzService
                         $user->id,
                 ]);
 
-
                 Log::info(
                     'Existing LIZZ assessment created.',
                     [
@@ -188,7 +199,6 @@ class ExistingLizzService
                     ]
                 );
 
-
                 /*
                 |--------------------------------------------------------------------------
                 | Create Primary Assessment Service
@@ -207,7 +217,7 @@ class ExistingLizzService
                         $data['revenue_service_id'],
 
                     /*
-                     * Existing historical obligation.
+                     * Original historical obligation.
                      */
                     'computed_amount' =>
                         $originalObligation,
@@ -222,13 +232,15 @@ class ExistingLizzService
                      * Historical outstanding balance.
                      */
                     'remaining_amount' =>
-                        max(
-                            0,
-                            $originalObligation -
-                            $amountAlreadyPaid
-                        ),
-                ]);
+                        $remainingAmount,
 
+                    /*
+                     * Historical date on which the
+                     * financial balance was determined.
+                     */
+                    'balance_as_of_date' =>
+                        $balanceAsOfDate,
+                ]);
 
                 Log::info(
                     'Existing LIZZ assessment service created.',
@@ -250,9 +262,11 @@ class ExistingLizzService
 
                         'remaining_amount' =>
                             $assessmentService->remaining_amount,
+
+                        'balance_as_of_date' =>
+                            $assessmentService->balance_as_of_date,
                     ]
                 );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -261,22 +275,12 @@ class ExistingLizzService
                 |
                 | Existing LIZZ sends fields using RevenueServiceField UUIDs.
                 |
-                | The AssessmentServiceValueService is responsible for:
-                |
-                | - resolving field configuration
-                | - validating field types
-                | - normalizing values
-                | - validating options
-                | - handling files
-                | - creating AssessmentServiceValue records
-                |
                 */
 
                 $this->storeServiceFields(
                     $assessmentService,
                     $data['service_fields'] ?? []
                 );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -291,7 +295,6 @@ class ExistingLizzService
                     'services.values',
                     'services.paymentSchedules',
                 ]);
-
 
                 Log::info(
                     'Existing LIZZ creation completed successfully.',
@@ -313,7 +316,6 @@ class ExistingLizzService
                                 ),
                     ]
                 );
-
 
                 return $assessment;
             });
@@ -361,7 +363,6 @@ class ExistingLizzService
         }
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | UPDATE
@@ -369,7 +370,12 @@ class ExistingLizzService
     |
     | Update an Existing LIZZ assessment.
     |
-    | The assessment number is NEVER regenerated.
+    | IMPORTANT:
+    |
+    | - Only RETURNED assessments can be updated.
+    | - Assessment number is NEVER regenerated.
+    | - Status becomes PENDING_APPROVAL after a successful update.
+    | - Status transition happens inside the transaction.
     |
     */
 
@@ -379,16 +385,63 @@ class ExistingLizzService
     ): Assessment {
 
         /*
-         * Make sure this is actually an Existing LIZZ assessment.
-         */
+        |--------------------------------------------------------------------------
+        | Existing LIZZ Check
+        |--------------------------------------------------------------------------
+        */
+
         $this->ensureExistingLizz(
             $assessment
         );
 
+        /*
+        |--------------------------------------------------------------------------
+        | Only RETURNED assessments can be edited
+        |--------------------------------------------------------------------------
+        |
+        | This protects the approval workflow.
+        |
+        | Example:
+        |
+        | PENDING_APPROVAL -> cannot edit
+        | APPROVED         -> cannot edit
+        | REJECTED         -> cannot edit
+        | RETURNED         -> can edit
+        |
+        */
+
+        if (
+            $assessment->status !==
+            'RETURNED'
+        ) {
+
+            Log::warning(
+                'Existing LIZZ update rejected because assessment is not RETURNED.',
+                [
+                    'assessment_id' =>
+                        $assessment->id,
+
+                    'assessment_number' =>
+                        $assessment->assessment_number,
+
+                    'current_status' =>
+                        $assessment->status,
+                ]
+            );
+
+            throw ValidationException::withMessages([
+                'assessment' => [
+                    'Only returned assessments can be updated.',
+                ],
+            ]);
+        }
 
         /*
-         * Ensure authenticated officer exists.
-         */
+        |--------------------------------------------------------------------------
+        | Authenticated Officer
+        |--------------------------------------------------------------------------
+        */
+
         $user = auth()->user();
 
         if (! $user) {
@@ -408,10 +461,12 @@ class ExistingLizzService
             ]);
         }
 
-
         /*
-         * Ensure officer has administrative unit.
-         */
+        |--------------------------------------------------------------------------
+        | Administrative Unit
+        |--------------------------------------------------------------------------
+        */
+
         if (! $user->administrative_unit_id) {
 
             Log::warning(
@@ -432,7 +487,6 @@ class ExistingLizzService
             ]);
         }
 
-
         Log::info(
             'Existing LIZZ update started.',
             [
@@ -441,6 +495,9 @@ class ExistingLizzService
 
                 'assessment_number' =>
                     $assessment->assessment_number,
+
+                'current_status' =>
+                    $assessment->status,
 
                 'user_id' =>
                     $user->id,
@@ -455,9 +512,22 @@ class ExistingLizzService
                     is_array($data['service_fields'] ?? null)
                         ? count($data['service_fields'])
                         : 0,
+
+                'has_financial_update' =>
+                    array_key_exists(
+                        'original_obligation',
+                        $data
+                    ) ||
+                    array_key_exists(
+                        'amount_already_paid',
+                        $data
+                    ) ||
+                    array_key_exists(
+                        'balance_as_of_date',
+                        $data
+                    ),
             ]
         );
-
 
         try {
 
@@ -475,7 +545,6 @@ class ExistingLizzService
 
                 $assessmentData = [];
 
-
                 /*
                  * Taxpayer.
                  */
@@ -488,7 +557,6 @@ class ExistingLizzService
                     $assessmentData['citizen_id'] =
                         $data['taxpayer_id'];
                 }
-
 
                 /*
                  * Notes.
@@ -503,14 +571,12 @@ class ExistingLizzService
                         $data['notes'];
                 }
 
-
                 /*
-                 * Always synchronize the administrative
-                 * unit with the authenticated officer.
+                 * Always synchronize administrative unit
+                 * with the authenticated officer.
                  */
                 $assessmentData['administrative_unit_id'] =
                     $user->administrative_unit_id;
-
 
                 /*
                  * Audit field.
@@ -518,17 +584,18 @@ class ExistingLizzService
                 $assessmentData['updated_by'] =
                     $user->id;
 
-
                 /*
-                 |--------------------------------------------------------------------------
-                 | Persist assessment changes
-                 |--------------------------------------------------------------------------
-                 */
+                |--------------------------------------------------------------------------
+                | Persist Assessment Changes
+                |--------------------------------------------------------------------------
+                */
 
-                $assessment->update(
-                    $assessmentData
-                );
+                if (! empty($assessmentData)) {
 
+                    $assessment->update(
+                        $assessmentData
+                    );
+                }
 
                 /*
                 |--------------------------------------------------------------------------
@@ -540,7 +607,6 @@ class ExistingLizzService
                     $this->getPrimaryAssessmentService(
                         $assessment
                     );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -590,11 +656,19 @@ class ExistingLizzService
                     }
                 }
 
-
                 /*
                 |--------------------------------------------------------------------------
                 | Financial Position
                 |--------------------------------------------------------------------------
+                |
+                | Any change to:
+                |
+                | - original_obligation
+                | - amount_already_paid
+                | - balance_as_of_date
+                |
+                | is treated as a historical financial-position update.
+                |
                 */
 
                 if (
@@ -605,13 +679,15 @@ class ExistingLizzService
                     array_key_exists(
                         'amount_already_paid',
                         $data
+                    ) ||
+                    array_key_exists(
+                        'balance_as_of_date',
+                        $data
                     )
                 ) {
 
                     /*
-                     * Use submitted original obligation if supplied.
-                     *
-                     * Otherwise keep the existing value.
+                     * Original obligation.
                      */
                     $originalObligation =
                         array_key_exists(
@@ -621,11 +697,8 @@ class ExistingLizzService
                             ? (float) $data['original_obligation']
                             : (float) $assessmentService->computed_amount;
 
-
                     /*
-                     * Use submitted paid amount if supplied.
-                     *
-                     * Otherwise keep the existing value.
+                     * Amount already paid.
                      */
                     $amountAlreadyPaid =
                         array_key_exists(
@@ -635,6 +708,16 @@ class ExistingLizzService
                             ? (float) $data['amount_already_paid']
                             : (float) $assessmentService->paid_amount;
 
+                    /*
+                     * Historical balance date.
+                     */
+                    $balanceAsOfDate =
+                        array_key_exists(
+                            'balance_as_of_date',
+                            $data
+                        )
+                            ? $data['balance_as_of_date']
+                            : $assessmentService->balance_as_of_date;
 
                     /*
                      * Validate financial relationship.
@@ -644,6 +727,16 @@ class ExistingLizzService
                         $amountAlreadyPaid
                     );
 
+                    /*
+                     * Calculate outstanding balance
+                     * completely on the server.
+                     */
+                    $remainingAmount =
+                        max(
+                            0,
+                            $originalObligation -
+                            $amountAlreadyPaid
+                        );
 
                     /*
                      * Persist historical financial position.
@@ -657,13 +750,11 @@ class ExistingLizzService
                             $amountAlreadyPaid,
 
                         'remaining_amount' =>
-                            max(
-                                0,
-                                $originalObligation -
-                                $amountAlreadyPaid
-                            ),
-                    ]);
+                            $remainingAmount,
 
+                        'balance_as_of_date' =>
+                            $balanceAsOfDate,
+                    ]);
 
                     Log::info(
                         'Existing LIZZ financial position updated.',
@@ -681,20 +772,21 @@ class ExistingLizzService
                                 $amountAlreadyPaid,
 
                             'remaining_amount' =>
-                                max(
-                                    0,
-                                    $originalObligation -
-                                    $amountAlreadyPaid
-                                ),
+                                $remainingAmount,
+
+                            'balance_as_of_date' =>
+                                $balanceAsOfDate,
                         ]
                     );
                 }
-
 
                 /*
                 |--------------------------------------------------------------------------
                 | Dynamic Service Fields
                 |--------------------------------------------------------------------------
+                |
+                | service_fields must contain RevenueServiceField UUIDs.
+                |
                 */
 
                 if (
@@ -710,18 +802,58 @@ class ExistingLizzService
                     );
                 }
 
-
                 /*
                 |--------------------------------------------------------------------------
-                | Update Audit Field
+                | Re-submit For Approval
                 |--------------------------------------------------------------------------
+                |
+                | IMPORTANT:
+                |
+                | Do this ONLY after all requested changes have
+                | successfully passed validation and persistence.
+                |
+                | Because this is inside the DB transaction:
+                |
+                | update succeeds:
+                |
+                | RETURNED -> PENDING_APPROVAL
+                |
+                | update fails:
+                |
+                | all changes, including status, are rolled back.
+                |
                 */
 
                 $assessment->update([
+                    'status' =>
+                        'PENDING_APPROVAL',
+
+                    'submitted_at' =>
+                        now(),
+
                     'updated_by' =>
                         $user->id,
                 ]);
 
+                Log::info(
+                    'Existing LIZZ assessment re-submitted for approval after update.',
+                    [
+                        'assessment_id' =>
+                            $assessment->id,
+
+                        'assessment_number' =>
+                            $assessment->assessment_number,
+
+                        'previous_status' =>
+                            'RETURNED',
+
+                        'new_status' =>
+                            'PENDING_APPROVAL',
+
+                        'updated_by' =>
+                            $user->id,
+                    ]
+                );
 
                 /*
                 |--------------------------------------------------------------------------
@@ -737,7 +869,6 @@ class ExistingLizzService
                     'services.paymentSchedules',
                 ]);
 
-
                 Log::info(
                     'Existing LIZZ update completed successfully.',
                     [
@@ -746,6 +877,9 @@ class ExistingLizzService
 
                         'assessment_number' =>
                             $assessment->assessment_number,
+
+                        'status' =>
+                            $assessment->status,
 
                         'service_count' =>
                             $assessment->services->count(),
@@ -758,7 +892,6 @@ class ExistingLizzService
                                 ),
                     ]
                 );
-
 
                 return $assessment;
             });
@@ -816,7 +949,6 @@ class ExistingLizzService
         }
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | FIND
@@ -851,7 +983,6 @@ class ExistingLizzService
         ]);
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | LIST
@@ -875,7 +1006,6 @@ class ExistingLizzService
                 'services.paymentSchedules',
             ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Taxpayer Filter
@@ -890,7 +1020,6 @@ class ExistingLizzService
                 $filters['taxpayer_id']
             );
         }
-
 
         /*
         |--------------------------------------------------------------------------
@@ -907,7 +1036,6 @@ class ExistingLizzService
             );
         }
 
-
         /*
         |--------------------------------------------------------------------------
         | Status Filter
@@ -922,7 +1050,6 @@ class ExistingLizzService
                 $filters['status']
             );
         }
-
 
         /*
         |--------------------------------------------------------------------------
@@ -950,7 +1077,6 @@ class ExistingLizzService
                         "%{$search}%"
                     );
 
-
                     /*
                      * Taxpayer information.
                      */
@@ -977,7 +1103,6 @@ class ExistingLizzService
             );
         }
 
-
         /*
         |--------------------------------------------------------------------------
         | Pagination
@@ -992,7 +1117,6 @@ class ExistingLizzService
             max($perPage, 1),
             100
         );
-
 
         Log::debug(
             'Existing LIZZ list requested.',
@@ -1016,12 +1140,10 @@ class ExistingLizzService
             ]
         );
 
-
         return $query
             ->latest('assessment_date')
             ->paginate($perPage);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -1036,7 +1158,6 @@ class ExistingLizzService
         $assessmentService =
             $assessment->services()
                 ->first();
-
 
         if (! $assessmentService) {
 
@@ -1058,10 +1179,8 @@ class ExistingLizzService
             ]);
         }
 
-
         return $assessmentService;
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -1094,7 +1213,6 @@ class ExistingLizzService
             return;
         }
 
-
         Log::info(
             'Existing LIZZ service field persistence started.',
             [
@@ -1109,13 +1227,11 @@ class ExistingLizzService
             ]
         );
 
-
         $this->assessmentServiceValueService
             ->storeServiceValuesByFieldId(
                 $assessmentService,
                 $serviceFields
             );
-
 
         Log::info(
             'Existing LIZZ service field persistence completed.',
@@ -1128,7 +1244,6 @@ class ExistingLizzService
             ]
         );
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -1167,7 +1282,6 @@ class ExistingLizzService
         }
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | FINANCIAL VALIDATION
@@ -1204,7 +1318,6 @@ class ExistingLizzService
             ]);
         }
 
-
         /*
         |--------------------------------------------------------------------------
         | Amount Already Paid
@@ -1229,7 +1342,6 @@ class ExistingLizzService
                 ],
             ]);
         }
-
 
         /*
         |--------------------------------------------------------------------------

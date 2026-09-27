@@ -2,7 +2,10 @@
 
 namespace App\Modules\ExistingAssessment\Requests;
 
+use Carbon\Carbon;
+use Closure;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Validator;
 
 class UpdateExistingLizzRequest extends FormRequest
 {
@@ -58,14 +61,6 @@ class UpdateExistingLizzRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Dynamic Service Fields
             |--------------------------------------------------------------------------
-            |
-            | Example:
-            |
-            | {
-            |     "01a0a71b-d3e5-726e-ab39-04e0d79f01f7": true,
-            |     "01a0a71b-d3e1-7012-818e-df7a5d1e10df": "100"
-            | }
-            |
             */
 
             'service_fields' => [
@@ -128,17 +123,16 @@ class UpdateExistingLizzRequest extends FormRequest
                 function (
                     string $attribute,
                     mixed $value,
-                    \Closure $fail
+                    Closure $fail
                 ): void {
 
                     /*
-                     * If original_obligation is included in this request,
-                     * compare against the submitted value.
+                     * When original_obligation is included in this request,
+                     * validate against the submitted value.
                      *
-                     * If it is not included, the service layer must compare
-                     * amount_already_paid against the existing database value.
+                     * If it is not included, the existing database value
+                     * must be validated by the service/domain layer.
                      */
-
                     $originalObligation = $this->input(
                         'original_obligation'
                     );
@@ -148,15 +142,120 @@ class UpdateExistingLizzRequest extends FormRequest
                     }
 
                     if (
-                        (float) $value >
-                        (float) $originalObligation
+                        is_numeric($value) &&
+                        is_numeric($originalObligation) &&
+                        (float) $value > (float) $originalObligation
                     ) {
                         $fail(
-                            'amount_already_paid cannot be greater than original_obligation.'
+                            'The amount already paid cannot be greater than the original historical obligation.'
                         );
                     }
                 },
             ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Balance As Of Date
+            |--------------------------------------------------------------------------
+            |
+            | Historical date on which the outstanding balance was determined.
+            |
+            | Optional because this endpoint supports partial updates.
+            |
+            */
+
+            'balance_as_of_date' => [
+                'sometimes',
+                'required',
+                'date',
+            ],
+        ];
+    }
+
+    /**
+     * ----------------------------------------------------------------------
+     * AFTER VALIDATION
+     * ----------------------------------------------------------------------
+     *
+     * Validate cross-field business rules.
+     *
+     * Important:
+     *
+     *     agreement_date <= balance_as_of_date
+     *
+     * Because this is a PATCH-style request, one of the values may not
+     * be present in the request. In that case, the existing database
+     * value must be considered by the service/domain layer.
+     *
+     * This request validates the relationship when both values are
+     * available in the current request.
+     */
+    public function after(): array
+    {
+        return [
+            function (Validator $validator): void {
+
+                /*
+                 * Only perform the request-level comparison when both
+                 * values are available.
+                 */
+                $agreementDate = $this->agreementDate();
+
+                $balanceAsOfDate = $this->input(
+                    'balance_as_of_date'
+                );
+
+                if (
+                    $agreementDate === null ||
+                    empty($balanceAsOfDate)
+                ) {
+                    return;
+                }
+
+                try {
+                    $balanceDate = Carbon::parse(
+                        $balanceAsOfDate
+                    );
+                } catch (\Throwable) {
+                    return;
+                }
+
+                /*
+                 |--------------------------------------------------------------------------
+                 | LIZZ DATE INVARIANT
+                 |--------------------------------------------------------------------------
+                 |
+                 | The historical balance cannot be established before
+                 | the agreement existed.
+                 |
+                 | Valid:
+                 |
+                 |     agreement_date     = 2009-09-11
+                 |     balance_as_of_date = 2025-09-18
+                 |
+                 | Also valid:
+                 |
+                 |     agreement_date     = 2009-09-11
+                 |     balance_as_of_date = 2009-09-11
+                 |
+                 | Invalid:
+                 |
+                 |     agreement_date     = 2009-09-11
+                 |     balance_as_of_date = 1997-09-18
+                 |
+                 */
+
+                if ($balanceDate->lt($agreementDate)) {
+                    $validator->errors()->add(
+                        'balance_as_of_date',
+                        sprintf(
+                            'The balance as of date must be on or after the LIZZ agreement date. Agreement date: %s. Balance as of date: %s.',
+                            $agreementDate->toDateString(),
+                            $balanceDate->toDateString(),
+                        )
+                    );
+                }
+            },
         ];
     }
 
@@ -165,28 +264,29 @@ class UpdateExistingLizzRequest extends FormRequest
      * PREPARE FOR VALIDATION
      * ----------------------------------------------------------------------
      *
-     * When using multipart/form-data, service_fields is sent as
+     * When using multipart/form-data, service_fields may arrive as
      * a JSON string.
      */
     protected function prepareForValidation(): void
     {
         $serviceFields = $this->input('service_fields');
 
-        if (is_string($serviceFields)) {
+        if (! is_string($serviceFields)) {
+            return;
+        }
 
-            $decoded = json_decode(
-                $serviceFields,
-                true
-            );
+        $decoded = json_decode(
+            $serviceFields,
+            true
+        );
 
-            if (
-                json_last_error() === JSON_ERROR_NONE &&
-                is_array($decoded)
-            ) {
-                $this->merge([
-                    'service_fields' => $decoded,
-                ]);
-            }
+        if (
+            json_last_error() === JSON_ERROR_NONE &&
+            is_array($decoded)
+        ) {
+            $this->merge([
+                'service_fields' => $decoded,
+            ]);
         }
     }
 
@@ -297,6 +397,51 @@ class UpdateExistingLizzRequest extends FormRequest
 
     /**
      * ----------------------------------------------------------------------
+     * BALANCE AS OF DATE
+     * ----------------------------------------------------------------------
+     */
+    public function balanceAsOfDate(): ?string
+    {
+        if (! $this->has('balance_as_of_date')) {
+            return null;
+        }
+
+        return $this->validated(
+            'balance_as_of_date'
+        );
+    }
+
+    /**
+     * ----------------------------------------------------------------------
+     * AGREEMENT DATE
+     * ----------------------------------------------------------------------
+     *
+     * Agreement date is stored inside dynamic service fields.
+     *
+     * Expected field:
+     *
+     *     AGREEMENT_DATE
+     */
+    public function agreementDate(): ?Carbon
+    {
+        $value = data_get(
+            $this->input('service_fields', []),
+            'AGREEMENT_DATE'
+        );
+
+        if (empty($value)) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * ----------------------------------------------------------------------
      * HAS FINANCIAL UPDATE
      * ----------------------------------------------------------------------
      */
@@ -305,6 +450,7 @@ class UpdateExistingLizzRequest extends FormRequest
         return $this->hasAny([
             'original_obligation',
             'amount_already_paid',
+            'balance_as_of_date',
         ]);
     }
 }

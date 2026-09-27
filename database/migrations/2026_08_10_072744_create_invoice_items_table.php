@@ -76,6 +76,8 @@ return new class extends Migration
                 ->constrained('revenue_services')
                 ->restrictOnDelete();
 
+            // schedule payment table id 
+
 
             /*
             |--------------------------------------------------------------------------

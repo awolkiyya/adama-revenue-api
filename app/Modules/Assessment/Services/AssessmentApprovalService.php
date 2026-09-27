@@ -3,8 +3,6 @@
 namespace App\Modules\Assessment\Services;
 
 use App\Models\Assessment;
-use App\Modules\Invoice\Services\InvoiceIssuanceService;
-use App\Modules\Invoice\Services\InvoiceService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -14,51 +12,23 @@ use Throwable;
 class AssessmentApprovalService
 {
     public function __construct(
-        protected InvoiceService $invoiceService,
-        protected InvoiceIssuanceService $invoiceIssuanceService,
-        protected PaymentScheduleService $paymentScheduleService,
+        protected AssessmentPostApprovalService $postApprovalService,
     ) {
     }
 
     /**
-     * Approve an assessment and complete its post-approval workflow.
+     * Approve an assessment.
      *
-     * Business flow:
+     * Approval is responsible only for the assessment decision.
      *
-     * PENDING_APPROVAL
-     *        ↓
-     *     APPROVED
-     *        ↓
-     * Create applicable payment schedules
-     *        ↓
-     * Create Invoice
-     *        ↓
-     * Issue Invoice
+     * Post-approval financial processing is delegated to
+     * AssessmentPostApprovalService.
      *
-     * Responsibilities:
+     * The post-approval service determines, per assessment service,
+     * whether the service:
      *
-     * AssessmentApprovalService
-     *     - validates approval state
-     *     - records approval decision
-     *     - records decision officer
-     *     - records approval timestamp
-     *     - orchestrates payment schedule creation
-     *     - orchestrates invoice creation
-     *     - orchestrates invoice issuance
-     *
-     * PaymentScheduleService
-     *     - manages payment schedules only
-     *
-     * InvoiceService
-     *     - creates invoice and invoice items
-     *
-     * InvoiceIssuanceService
-     *     - issues the invoice
-     *
-     * No tariff, penalty, or interest calculation is performed here.
-     *
-     * @throws ValidationException
-     * @throws Throwable
+     *     1. Requires a payment schedule
+     *     2. Belongs to the immediate invoice
      */
     public function approve(
         string $assessmentId
@@ -73,6 +43,7 @@ class AssessmentApprovalService
         try {
             return DB::transaction(
                 function () use ($assessmentId): Assessment {
+
                     /*
                     |--------------------------------------------------------------------------
                     | 1. LOAD + LOCK ASSESSMENT
@@ -100,20 +71,11 @@ class AssessmentApprovalService
 
                     /*
                     |--------------------------------------------------------------------------
-                    | 2. VALIDATE ASSESSMENT STATUS
+                    | 2. VALIDATE STATUS
                     |--------------------------------------------------------------------------
                     */
 
-                    if (!$assessment->isPendingApproval()) {
-                        Log::warning(
-                            'Assessment approval rejected because assessment is not pending approval.',
-                            [
-                                ...$logContext,
-                                'current_status' => $assessment->status,
-                                'required_status' => 'PENDING_APPROVAL',
-                            ]
-                        );
-
+                    if (! $assessment->isPendingApproval()) {
                         throw ValidationException::withMessages([
                             'status' => [
                                 'Only assessments pending approval can be approved.',
@@ -123,18 +85,13 @@ class AssessmentApprovalService
 
                     /*
                     |--------------------------------------------------------------------------
-                    | 3. GET AUTHENTICATED USER
+                    | 3. AUTHENTICATED USER
                     |--------------------------------------------------------------------------
                     */
 
                     $userId = Auth::id();
 
-                    if (!$userId) {
-                        Log::warning(
-                            'Assessment approval rejected because no authenticated user was found.',
-                            $logContext
-                        );
-
+                    if (! $userId) {
                         throw ValidationException::withMessages([
                             'authorization' => [
                                 'An authenticated user is required to approve an assessment.',
@@ -142,16 +99,9 @@ class AssessmentApprovalService
                         ]);
                     }
 
-                    $logContext['approved_by'] = $userId;
-
-                    Log::info(
-                        'Assessment approval authorization validated.',
-                        $logContext
-                    );
-
                     /*
                     |--------------------------------------------------------------------------
-                    | 4. RECORD APPROVAL DECISION
+                    | 4. RECORD APPROVAL
                     |--------------------------------------------------------------------------
                     */
 
@@ -171,108 +121,47 @@ class AssessmentApprovalService
                         'Assessment approved successfully.',
                         [
                             ...$logContext,
+                            'approved_by' => $userId,
                             'approved_at' => $now->toISOString(),
                         ]
                     );
 
                     /*
                     |--------------------------------------------------------------------------
-                    | 5. CREATE PAYMENT SCHEDULES
+                    | 5. POST-APPROVAL FINANCIAL WORKFLOW
                     |--------------------------------------------------------------------------
                     |
-                    | PaymentScheduleService decides which assessment services
-                    | require payment scheduling.
+                    | This service decides what happens to each assessment
+                    | service.
                     |
-                    | Current rule:
+                    | Example:
                     |
-                    |     LIZZ -> schedule
-                    |     Other services -> skip
+                    | Service A
+                    |     → schedule
                     |
-                    | The approval service does not inspect service codes.
+                    | Service B
+                    |     → invoice item
+                    |
+                    | Service C
+                    |     → invoice item
+                    |
+                    | The post-approval service then creates:
+                    |
+                    |     Payment schedules for A
+                    |
+                    |     ONE invoice containing:
+                    |         - B
+                    |         - C
                     |
                     */
 
-                    Log::info(
-                        'Starting payment schedule workflow.',
-                        [
-                            ...$logContext,
-                            'workflow' => 'payment_schedule_creation',
-                        ]
-                    );
-
-                    $paymentSchedules = $this->paymentScheduleService
-                        ->createForAssessment(
-                            $assessment
-                        );
-
-                    Log::info(
-                        'Payment schedule workflow completed.',
-                        [
-                            ...$logContext,
-                            'schedule_count' => $paymentSchedules->count(),
-                            'schedule_ids' => $paymentSchedules
-                                ->pluck('id')
-                                ->values()
-                                ->all(),
-                        ]
+                    $this->postApprovalService->process(
+                        $assessment
                     );
 
                     /*
                     |--------------------------------------------------------------------------
-                    | 6. CREATE INVOICE
-                    |--------------------------------------------------------------------------
-                    */
-
-                    Log::info(
-                        'Starting invoice creation workflow.',
-                        [
-                            ...$logContext,
-                            'workflow' => 'invoice_creation',
-                        ]
-                    );
-
-                    $invoice = $this->invoiceService
-                        ->createFromAssessment(
-                            $assessment
-                        );
-
-                    Log::info(
-                        'Invoice created successfully.',
-                        [
-                            ...$logContext,
-                            'invoice_id' => $invoice->id,
-                        ]
-                    );
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | 7. ISSUE INVOICE
-                    |--------------------------------------------------------------------------
-                    */
-
-                    Log::info(
-                        'Starting invoice issuance workflow.',
-                        [
-                            ...$logContext,
-                            'invoice_id' => $invoice->id,
-                        ]
-                    );
-
-                    $this->invoiceIssuanceService->issue(
-                        $invoice
-                    );
-
-                    Log::info(
-                        'Invoice issued successfully.',
-                        [
-                            ...$logContext,
-                            'invoice_id' => $invoice->id,
-                        ]
-                    );
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | 8. REFRESH ASSESSMENT
+                    | 6. REFRESH
                     |--------------------------------------------------------------------------
                     */
 
@@ -284,11 +173,8 @@ class AssessmentApprovalService
                     Log::info(
                         'Assessment approval workflow completed successfully.',
                         [
-                            ...$logContext,
+                            'assessment_id' => $freshAssessment?->id,
                             'final_status' => $freshAssessment?->status,
-                            'invoice_id' => $invoice->id,
-                            'payment_schedule_count' =>
-                                $paymentSchedules->count(),
                         ]
                     );
 
@@ -296,6 +182,7 @@ class AssessmentApprovalService
                 }
             );
         } catch (Throwable $exception) {
+
             Log::error(
                 'Assessment approval workflow failed.',
                 [

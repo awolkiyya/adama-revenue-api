@@ -2,9 +2,10 @@
 
 namespace App\Modules\ExistingAssessment\Requests;
 
-use App\Models\RevenueService;
+use Carbon\Carbon;
+use Closure;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
 
 class StoreExistingLizzRequest extends FormRequest
 {
@@ -43,9 +44,6 @@ class StoreExistingLizzRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Revenue Service
             |--------------------------------------------------------------------------
-            |
-            | Existing LIZZ uses exactly ONE revenue service.
-            |
             */
 
             'revenue_service_id' => [
@@ -58,17 +56,6 @@ class StoreExistingLizzRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Dynamic Service Fields
             |--------------------------------------------------------------------------
-            |
-            | Frontend sends this as a JSON string when using multipart/form-data.
-            |
-            | Example:
-            |
-            | {
-            |     "field-uuid-1": true,
-            |     "field-uuid-2": "100",
-            |     "field-uuid-3": "2026-09-11"
-            | }
-            |
             */
 
             'service_fields' => [
@@ -104,6 +91,9 @@ class StoreExistingLizzRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Original Historical Obligation
             |--------------------------------------------------------------------------
+            |
+            | Original amount of the historical LIZZ obligation.
+            |
             */
 
             'original_obligation' => [
@@ -116,6 +106,10 @@ class StoreExistingLizzRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Historical Amount Already Paid
             |--------------------------------------------------------------------------
+            |
+            | Amount that was paid before the LIZZ balance was registered
+            | in this system.
+            |
             */
 
             'amount_already_paid' => [
@@ -126,9 +120,8 @@ class StoreExistingLizzRequest extends FormRequest
                 function (
                     string $attribute,
                     mixed $value,
-                    \Closure $fail
+                    Closure $fail
                 ): void {
-
                     $originalObligation = $this->input(
                         'original_obligation'
                     );
@@ -138,15 +131,104 @@ class StoreExistingLizzRequest extends FormRequest
                     }
 
                     if (
-                        (float) $value >
-                        (float) $originalObligation
+                        is_numeric($value) &&
+                        is_numeric($originalObligation) &&
+                        (float) $value > (float) $originalObligation
                     ) {
                         $fail(
-                            'amount_already_paid cannot be greater than original_obligation.'
+                            'The amount already paid cannot be greater than the original historical obligation.'
                         );
                     }
                 },
             ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Balance As Of Date
+            |--------------------------------------------------------------------------
+            |
+            | The historical cutoff date on which the outstanding LIZZ
+            | balance was determined.
+            |
+            | Business invariant:
+            |
+            |     balance_as_of_date >= agreement_date
+            |
+            */
+
+            'balance_as_of_date' => [
+                'required',
+                'date',
+            ],
+        ];
+    }
+
+    /**
+     * ----------------------------------------------------------------------
+     * AFTER VALIDATION
+     * ----------------------------------------------------------------------
+     *
+     * Validate relationships between fields that cannot be expressed
+     * cleanly using independent validation rules.
+     *
+     * Current rule:
+     *
+     *     agreement_date <= balance_as_of_date
+     *
+     * The agreement date is stored inside dynamic service fields.
+     */
+    public function after(): array
+    {
+        return [
+            function (Validator $validator): void {
+
+                $agreementDate = $this->agreementDate();
+
+                $balanceAsOfDate = $this->input(
+                    'balance_as_of_date'
+                );
+
+                /*
+                 * The individual fields are already validated by rules().
+                 * If either value is missing, malformed, or unavailable,
+                 * allow the normal validation errors to handle it.
+                 */
+                if (
+                    $agreementDate === null ||
+                    empty($balanceAsOfDate)
+                ) {
+                    return;
+                }
+
+                try {
+                    $balanceDate = Carbon::parse(
+                        $balanceAsOfDate
+                    );
+                } catch (\Throwable) {
+                    return;
+                }
+
+                /*
+                 |--------------------------------------------------------------------------
+                 | LIZZ DATE INVARIANT
+                 |--------------------------------------------------------------------------
+                 |
+                 | The historical balance cannot be established before
+                 | the agreement existed.
+                 |
+                 */
+
+                if ($balanceDate->lt($agreementDate)) {
+                    $validator->errors()->add(
+                        'balance_as_of_date',
+                        sprintf(
+                            'The balance as of date must be on or after the LIZZ agreement date. Agreement date: %s. Balance as of date: %s.',
+                            $agreementDate->toDateString(),
+                            $balanceDate->toDateString(),
+                        )
+                    );
+                }
+            },
         ];
     }
 
@@ -155,36 +237,29 @@ class StoreExistingLizzRequest extends FormRequest
      * PREPARE FOR VALIDATION
      * ----------------------------------------------------------------------
      *
-     * When the frontend uses multipart/form-data, service_fields arrives
-     * as a JSON string.
-     *
-     * Convert:
-     *
-     *     '{"field-id":"value"}'
-     *
-     * into:
-     *
-     *     ['field-id' => 'value']
+     * service_fields may arrive as JSON when the request is submitted
+     * through multipart/form-data.
      */
     protected function prepareForValidation(): void
     {
         $serviceFields = $this->input('service_fields');
 
-        if (is_string($serviceFields)) {
+        if (! is_string($serviceFields)) {
+            return;
+        }
 
-            $decoded = json_decode(
-                $serviceFields,
-                true
-            );
+        $decoded = json_decode(
+            $serviceFields,
+            true
+        );
 
-            if (
-                json_last_error() === JSON_ERROR_NONE &&
-                is_array($decoded)
-            ) {
-                $this->merge([
-                    'service_fields' => $decoded,
-                ]);
-            }
+        if (
+            json_last_error() === JSON_ERROR_NONE &&
+            is_array($decoded)
+        ) {
+            $this->merge([
+                'service_fields' => $decoded,
+            ]);
         }
     }
 
@@ -267,12 +342,58 @@ class StoreExistingLizzRequest extends FormRequest
 
     /**
      * ----------------------------------------------------------------------
+     * BALANCE AS OF DATE
+     * ----------------------------------------------------------------------
+     */
+    public function balanceAsOfDate(): string
+    {
+        return $this->validated(
+            'balance_as_of_date'
+        );
+    }
+
+    /**
+     * ----------------------------------------------------------------------
+     * AGREEMENT DATE
+     * ----------------------------------------------------------------------
+     *
+     * Agreement date is part of the dynamic service fields.
+     *
+     * Expected field:
+     *
+     *     AGREEMENT_DATE
+     */
+    public function agreementDate(): ?Carbon
+    {
+        $value = data_get(
+            $this->input('service_fields', []),
+            'AGREEMENT_DATE'
+        );
+
+        if (empty($value)) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * ----------------------------------------------------------------------
      * OUTSTANDING BALANCE
      * ----------------------------------------------------------------------
      *
-     * This is derived by the backend.
+     * Derived entirely by the backend.
      *
-     * It is NOT accepted from the frontend.
+     * The frontend must NOT submit this value.
+     *
+     * Formula:
+     *
+     *     original_obligation - amount_already_paid
+     *
      */
     public function outstandingBalance(): float
     {

@@ -343,7 +343,7 @@ class AssessmentCalculationService
 
         $version =
             $this->resolver
-                ->resolveVersion(
+                ->resolve(
                     $assessmentService,
                 );
 

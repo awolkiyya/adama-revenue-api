@@ -26,26 +26,38 @@ class AssessmentServiceValueService
      *
      * Store assessment services and their dynamic field values.
      *
-     * Normal Assessment payload:
+     * Expected payload:
      *
      * [
      *     [
      *         'serviceId' => '...',
      *         'serviceCode' => '...',
      *         'fields' => [
-     *             'FIELD_CODE' => 'value',
+     *             'REVENUE_SERVICE_FIELD_UUID' => 'value',
+     *             'REVENUE_SERVICE_FIELD_UUID' => 'value',
      *         ],
      *     ],
      * ]
      *
+     * IMPORTANT:
+     *
+     * The keys inside `fields` are RevenueServiceField.id.
+     *
+     * They are NOT:
+     *
+     * - BaseField.code
+     * - RevenueServiceField.key
+     * - Revenue code
+     *
      * Responsibilities:
      *
-     * - Resolve the configured revenue service
+     * - Resolve configured RevenueService
      * - Validate serviceCode against serviceId
      * - Create assessment_service
-     * - Store dynamic field values
-     * - Snapshot field configuration
+     * - Resolve RevenueServiceField by ID
+     * - Validate field belongs to selected service
      * - Normalize submitted values
+     * - Snapshot field configuration
      * - Generate display values
      * - Delegate file handling
      *
@@ -64,9 +76,10 @@ class AssessmentServiceValueService
         );
 
         foreach ($services as $index => $serviceData) {
+
             if (! is_array($serviceData)) {
                 Log::warning(
-                    'Assessment service skipped: invalid service payload.',
+                    'Assessment service rejected: invalid service payload.',
                     [
                         'assessment_id' => $assessment->id,
                         'service_index' => $index,
@@ -80,49 +93,80 @@ class AssessmentServiceValueService
                 ]);
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Revenue Service
+            |--------------------------------------------------------------------------
+            */
+
             $service = $this->resolveRevenueService(
                 $serviceData
             );
 
+            /*
+            |--------------------------------------------------------------------------
+            | Create Assessment Service
+            |--------------------------------------------------------------------------
+            */
+
             $assessmentService = AssessmentServiceModel::create([
-                'id' => (string) Str::uuid(),
+                'id' =>
+                    (string) Str::uuid(),
 
-                'assessment_id' => $assessment->id,
+                'assessment_id' =>
+                    $assessment->id,
 
-                'service_id' => $service->id,
-
-                /*
-                 * RevenueService
-                 *      ↓
-                 * revenueCode
-                 *      ↓
-                 * code
-                 */
-                'service_code' => $service->revenueCode?->code,
-
-                'service_order' => $index + 1,
-
-                'status' => 'CAPTURED',
+                'service_id' =>
+                    $service->id,
 
                 /*
-                 * Calculation is intentionally not
-                 * performed here.
+                 * Always store the authoritative code from
+                 * RevenueService -> RevenueCode.
                  */
-                'computed_amount' => null,
+                'service_code' =>
+                    $service->revenueCode?->code,
 
-                'currency_code' => null,
+                'service_order' =>
+                    $index + 1,
 
-                'calculation_metadata' => null,
+                'status' =>
+                    'CAPTURED',
 
-                'calculation_error' => null,
+                /*
+                 * Calculation is intentionally handled later.
+                 */
+                'computed_amount' =>
+                    null,
 
-                'calculated_at' => null,
+                'currency_code' =>
+                    null,
+
+                'calculation_metadata' =>
+                    null,
+
+                'calculation_error' =>
+                    null,
+
+                'calculated_at' =>
+                    null,
             ]);
+
+            $submittedFields =
+                $serviceData['fields'] ?? [];
+
+            if (! is_array($submittedFields)) {
+                throw ValidationException::withMessages([
+                    "services.{$index}.fields" => [
+                        'The fields value must be an object.',
+                    ],
+                ]);
+            }
 
             Log::info(
                 'Assessment service created.',
                 [
-                    'assessment_id' => $assessment->id,
+                    'assessment_id' =>
+                        $assessment->id,
 
                     'assessment_service_id' =>
                         $assessmentService->id,
@@ -137,28 +181,30 @@ class AssessmentServiceValueService
                         $index + 1,
 
                     'field_count' =>
-                        is_array($serviceData['fields'] ?? null)
-                            ? count($serviceData['fields'])
-                            : 0,
+                        count($submittedFields),
                 ]
             );
 
             /*
-             * Normal assessments submit fields using
-             * base-field codes.
-             */
-            $this->storeServiceValues(
+            |--------------------------------------------------------------------------
+            | Store Dynamic Fields By RevenueServiceField.id
+            |--------------------------------------------------------------------------
+            */
+
+            $this->storeServiceValuesByFieldId(
                 $assessmentService,
-                $serviceData['fields'] ?? []
+                $submittedFields
             );
         }
 
         Log::info(
             'Assessment services persistence completed.',
             [
-                'assessment_id' => $assessment->id,
+                'assessment_id' =>
+                    $assessment->id,
 
-                'service_count' => count($services),
+                'service_count' =>
+                    count($services),
 
                 'stored_service_count' =>
                     $assessment->services()->count(),
@@ -168,122 +214,27 @@ class AssessmentServiceValueService
 
     /**
      * ============================================================
-     * STORE VALUES BY FIELD CODE
+     * STORE VALUES BY FIELD ID
      * ============================================================
      *
-     * Store dynamic values for one assessment service.
+     * Canonical Assessment field persistence method.
      *
      * Expected input:
      *
      * [
-     *     'FIELD_CODE' => 'value',
-     *     'ANOTHER_FIELD' => 'value',
+     *     'RevenueServiceField.id' => value,
+     *     'RevenueServiceField.id' => value,
      * ]
      *
-     * This is the existing normal Assessment behavior.
-     */
-    public function storeServiceValues(
-        AssessmentServiceModel $assessmentService,
-        array $submittedFields
-    ): void {
-        Log::info(
-            'Assessment service field persistence started by field code.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'revenue_service_id' =>
-                    $assessmentService->service_id,
-
-                'submitted_field_count' =>
-                    count($submittedFields),
-            ]
-        );
-
-        $service = $this->resolveAssessmentService(
-            $assessmentService
-        );
-
-        /*
-         * Build lookup using BASE FIELD CODE.
-         */
-        $activeFields = $this->getActiveServiceFields(
-            $service
-        );
-
-        $fields = $activeFields->keyBy(
-            function ($serviceField) {
-                return strtoupper(
-                    trim(
-                        (string) $serviceField->baseField->code
-                    )
-                );
-            }
-        );
-
-        Log::debug(
-            'Assessment service field-code configuration loaded.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'revenue_service_id' =>
-                    $service->id,
-
-                'configured_field_count' =>
-                    $fields->count(),
-
-                'configured_field_codes' =>
-                    $fields->keys()->values()->all(),
-            ]
-        );
-
-        /*
-         * Persist submitted fields.
-         */
-        $this->persistServiceValues(
-            $assessmentService,
-            $fields,
-            $submittedFields
-        );
-
-        Log::info(
-            'Assessment service field-code persistence completed.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'stored_value_count' =>
-                    $assessmentService->values()->count(),
-            ]
-        );
-    }
-
-    /**
-     * ============================================================
-     * STORE VALUES BY FIELD UUID
-     * ============================================================
-     *
-     * Existing LIZZ uses RevenueServiceField UUIDs as keys.
-     *
-     * Example:
-     *
-     * [
-     *     '01a0a71b-d3e5-726e-ab39-04e0d79f01f7' => true,
-     *     '01a0a71b-d3e1-7012-818e-df7a5d1e10df' => '100',
-     *     '01a0a71b-d3e3-704d-b8ba-13dbd6ece574' => '1FFAA',
-     * ]
-     *
-     * This method resolves the UUID to the configured
-     * RevenueServiceField and then uses the SAME persistence
-     * and normalization logic as normal assessments.
+     * The field ID must belong to the RevenueService selected
+     * by the assessment service.
      */
     public function storeServiceValuesByFieldId(
         AssessmentServiceModel $assessmentService,
         array $submittedFields
     ): void {
         Log::info(
-            'Assessment service field persistence started by field UUID.',
+            'Assessment service field persistence started by field ID.',
             [
                 'assessment_service_id' =>
                     $assessmentService->id,
@@ -296,32 +247,40 @@ class AssessmentServiceValueService
             ]
         );
 
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Revenue Service
+        |--------------------------------------------------------------------------
+        */
+
         $service = $this->resolveAssessmentService(
             $assessmentService
         );
 
         /*
-         * Get only active configured fields.
-         */
-        $activeFields = $this->getActiveServiceFields(
-            $service
-        );
+        |--------------------------------------------------------------------------
+        | Active RevenueServiceFields
+        |--------------------------------------------------------------------------
+        */
+
+        $activeFields =
+            $this->getActiveServiceFields(
+                $service
+            );
 
         /*
-         * Build lookup using RevenueServiceField UUID.
-         *
-         * IMPORTANT:
-         *
-         * Your application uses UUIDv7-style identifiers.
-         *
-         * Example:
-         *
-         * 01a0a71b-d3e5-726e-ab39-04e0d79f01f7
-         *
-         * The UUID must therefore be normalized to lowercase.
-         */
+        |--------------------------------------------------------------------------
+        | Build Field ID Lookup
+        |--------------------------------------------------------------------------
+        |
+        | IMPORTANT:
+        |
+        | The lookup key is RevenueServiceField.id.
+        |
+        */
+
         $fields = $activeFields->keyBy(
-            function ($serviceField) {
+            function ($serviceField): string {
                 return strtolower(
                     trim(
                         (string) $serviceField->id
@@ -330,8 +289,8 @@ class AssessmentServiceValueService
             }
         );
 
-        Log::info(
-            'Assessment service UUID field configuration loaded.',
+        Log::debug(
+            'Revenue service field ID configuration loaded.',
             [
                 'assessment_service_id' =>
                     $assessmentService->id,
@@ -348,13 +307,16 @@ class AssessmentServiceValueService
         );
 
         /*
-         * Log submitted IDs only.
-         *
-         * Do NOT log raw values because some fields
-         * may contain sensitive taxpayer information.
-         */
+        |--------------------------------------------------------------------------
+        | Do Not Log Raw Values
+        |--------------------------------------------------------------------------
+        |
+        | Values may contain taxpayer information.
+        |
+        */
+
         Log::debug(
-            'Submitted service field UUIDs received.',
+            'Submitted service field IDs received.',
             [
                 'assessment_service_id' =>
                     $assessmentService->id,
@@ -365,23 +327,19 @@ class AssessmentServiceValueService
         );
 
         /*
-         * Persist submitted fields.
-         */
+        |--------------------------------------------------------------------------
+        | Persist Values
+        |--------------------------------------------------------------------------
+        */
+
         $this->persistServiceValues(
             $assessmentService,
             $fields,
             $submittedFields
         );
 
-        /*
-         * Verify the final number of persisted values.
-         */
-        $storedCount = $assessmentService
-            ->values()
-            ->count();
-
         Log::info(
-            'Assessment service field UUID persistence completed.',
+            'Assessment service field persistence completed.',
             [
                 'assessment_service_id' =>
                     $assessmentService->id,
@@ -389,11 +347,10 @@ class AssessmentServiceValueService
                 'submitted_field_count' =>
                     count($submittedFields),
 
-                'configured_field_count' =>
-                    $fields->count(),
-
                 'stored_value_count' =>
-                    $storedCount,
+                    $assessmentService
+                        ->values()
+                        ->count(),
             ]
         );
     }
@@ -402,24 +359,10 @@ class AssessmentServiceValueService
      * ============================================================
      * RESOLVE ASSESSMENT SERVICE
      * ============================================================
-     *
-     * Load the RevenueService configuration belonging to
-     * the AssessmentService record.
      */
     protected function resolveAssessmentService(
         AssessmentServiceModel $assessmentService
     ): RevenueService {
-        Log::debug(
-            'Resolving revenue service for assessment service.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'revenue_service_id' =>
-                    $assessmentService->service_id,
-            ]
-        );
-
         $service = RevenueService::query()
             ->with([
                 'revenueCode',
@@ -448,20 +391,6 @@ class AssessmentServiceValueService
             ]);
         }
 
-        Log::debug(
-            'Revenue service resolved successfully.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'revenue_service_id' =>
-                    $service->id,
-
-                'revenue_service_field_count' =>
-                    $service->fields->count(),
-            ]
-        );
-
         return $service;
     }
 
@@ -477,11 +406,13 @@ class AssessmentServiceValueService
         RevenueService $service
     ) {
         $activeFields = $service->fields
-            ->filter(function ($serviceField) {
-                return $serviceField->is_active
-                    && $serviceField->baseField
-                    && $serviceField->baseField->is_active;
-            })
+            ->filter(
+                function ($serviceField): bool {
+                    return $serviceField->is_active
+                        && $serviceField->baseField
+                        && $serviceField->baseField->is_active;
+                }
+            )
             ->values();
 
         Log::debug(
@@ -510,19 +441,11 @@ class AssessmentServiceValueService
      * PERSIST SERVICE VALUES
      * ============================================================
      *
-     * Shared persistence engine used by:
+     * Shared persistence engine.
      *
-     * - storeServiceValues()
-     * - storeServiceValuesByFieldId()
+     * `$fields` is keyed by RevenueServiceField.id.
      *
-     * This prevents duplication of:
-     *
-     * - field validation
-     * - type resolution
-     * - normalization
-     * - option validation
-     * - display-value generation
-     * - file handling
+     * `$submittedFields` is also keyed by RevenueServiceField.id.
      */
     protected function persistServiceValues(
         AssessmentServiceModel $assessmentService,
@@ -552,23 +475,17 @@ class AssessmentServiceValueService
         | Delete Existing Values
         |--------------------------------------------------------------------------
         |
-        | This is important for Existing LIZZ updates.
-        |
-        | Without this:
-        |
-        | Edit #1 → values
-        | Edit #2 → another set of values
-        | Edit #3 → another set of values
-        |
-        | The assessment would contain duplicate historical
-        | field snapshots.
+        | This protects replacement/update operations from
+        | leaving duplicate value records.
         |
         */
 
         if (! empty($submittedFields)) {
-            $deletedCount = $assessmentService
-                ->values()
-                ->delete();
+
+            $deletedCount =
+                $assessmentService
+                    ->values()
+                    ->delete();
 
             Log::debug(
                 'Existing assessment service values cleared.',
@@ -584,83 +501,105 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Store Submitted Fields
+        | Process Submitted Fields
         |--------------------------------------------------------------------------
         */
 
-        foreach ($submittedFields as $fieldKey => $rawValue) {
-            $normalizedKey = trim(
-                (string) $fieldKey
-            );
+        foreach ($submittedFields as $fieldId => $rawValue) {
+
+            $normalizedFieldId =
+                strtolower(
+                    trim(
+                        (string) $fieldId
+                    )
+                );
 
             /*
             |--------------------------------------------------------------------------
-            | Empty Key
+            | Empty Field ID
             |--------------------------------------------------------------------------
             */
 
-            if ($normalizedKey === '') {
+            if ($normalizedFieldId === '') {
+
                 Log::warning(
-                    'Assessment service field skipped: empty field key.',
+                    'Assessment service field rejected: empty field ID.',
                     [
                         'assessment_service_id' =>
                             $assessmentService->id,
                     ]
                 );
 
-                $skippedCount++;
-
-                continue;
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'Every submitted field must have a valid field ID.',
+                    ],
+                ]);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Resolve Lookup Key
+            | Field ID Format
             |--------------------------------------------------------------------------
             */
 
-            $lookupKey = $this->normalizeLookupKey(
-                $normalizedKey
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Resolve Configured Field
-            |--------------------------------------------------------------------------
-            */
-
-            if (! $fields->has($lookupKey)) {
+            if (
+                ! preg_match(
+                    '/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/',
+                    $normalizedFieldId
+                )
+            ) {
                 Log::warning(
-                    'Assessment service field skipped: field was not found in configured active service fields.',
+                    'Assessment service field rejected: invalid field ID.',
                     [
                         'assessment_service_id' =>
                             $assessmentService->id,
 
-                        'submitted_field_key' =>
-                            $normalizedKey,
-
-                        'normalized_lookup_key' =>
-                            $lookupKey,
-
-                        'configured_field_count' =>
-                            $fields->count(),
+                        'field_id' =>
+                            $normalizedFieldId,
                     ]
                 );
 
-                $skippedCount++;
-
-                continue;
+                throw ValidationException::withMessages([
+                    'services' => [
+                        "Invalid RevenueServiceField ID [{$normalizedFieldId}].",
+                    ],
+                ]);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Field Successfully Resolved
+            | Resolve Field
             |--------------------------------------------------------------------------
             */
 
-            $serviceField = $fields->get(
-                $lookupKey
-            );
+            if (! $fields->has($normalizedFieldId)) {
+
+                Log::warning(
+                    'Assessment service field rejected: field does not belong to the active service configuration.',
+                    [
+                        'assessment_service_id' =>
+                            $assessmentService->id,
+
+                        'revenue_service_id' =>
+                            $assessmentService->service_id,
+
+                        'field_id' =>
+                            $normalizedFieldId,
+                    ]
+                );
+
+                throw ValidationException::withMessages([
+                    'services' => [
+                        "Field [{$normalizedFieldId}] does not belong to the selected revenue service.",
+                    ],
+                ]);
+            }
+
+            $serviceField =
+                $fields->get(
+                    $normalizedFieldId
+                );
 
             $resolvedCount++;
 
@@ -670,60 +609,28 @@ class AssessmentServiceValueService
             |--------------------------------------------------------------------------
             */
 
-            $baseField = $serviceField->baseField;
+            $baseField =
+                $serviceField->baseField;
 
             if (! $baseField) {
-                Log::warning(
-                    'Assessment service field skipped: base field relationship is missing.',
-                    [
-                        'assessment_service_id' =>
-                            $assessmentService->id,
 
-                        'revenue_service_field_id' =>
-                            $serviceField->id,
-                    ]
-                );
-
-                $skippedCount++;
-
-                continue;
+                throw ValidationException::withMessages([
+                    'services' => [
+                        "The configured field [{$serviceField->id}] does not have a base field.",
+                    ],
+                ]);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Effective Types
+            | Effective Field Types
             |--------------------------------------------------------------------------
             */
 
-            $types = $this->resolveFieldTypes(
-                $serviceField
-            );
-
-            Log::debug(
-                'Assessment service field resolved successfully.',
-                [
-                    'assessment_service_id' =>
-                        $assessmentService->id,
-
-                    'revenue_service_field_id' =>
-                        $serviceField->id,
-
-                    'submitted_field_key' =>
-                        $normalizedKey,
-
-                    'normalized_lookup_key' =>
-                        $lookupKey,
-
-                    'field_code' =>
-                        $baseField->code,
-
-                    'data_type' =>
-                        $types['data_type'],
-
-                    'input_type' =>
-                        $types['input_type'],
-                ]
-            );
+            $types =
+                $this->resolveFieldTypes(
+                    $serviceField
+                );
 
             /*
             |--------------------------------------------------------------------------
@@ -741,21 +648,9 @@ class AssessmentServiceValueService
                     true
                 )
             ) {
-                Log::debug(
-                    'Assessment service file field detected.',
-                    [
-                        'assessment_service_id' =>
-                            $assessmentService->id,
-
-                        'revenue_service_field_id' =>
-                            $serviceField->id,
-
-                        'input_type' =>
-                            $types['input_type'],
-                    ]
-                );
 
                 try {
+
                     $value =
                         $this->fileService
                             ->storeUploadedFiles(
@@ -780,12 +675,14 @@ class AssessmentServiceValueService
                             'assessment_service_id' =>
                                 $assessmentService->id,
 
+                            /*
+                             * AUTHORITATIVE FIELD ID
+                             */
                             'revenue_service_field_id' =>
                                 $serviceField->id,
 
                             /*
-                             * Always snapshot the authoritative
-                             * base-field code.
+                             * Historical field code snapshot.
                              */
                             'field_code' =>
                                 strtoupper(
@@ -822,8 +719,11 @@ class AssessmentServiceValueService
                         ]);
 
                     /*
-                     * Attach uploaded files to the value record.
-                     */
+                    |--------------------------------------------------------------------------
+                    | Attach Files
+                    |--------------------------------------------------------------------------
+                    */
+
                     $this->fileService
                         ->attachValueFiles(
                             $assessmentServiceValue,
@@ -832,23 +732,8 @@ class AssessmentServiceValueService
 
                     $createdCount++;
 
-                    Log::debug(
-                        'Assessment service file value created.',
-                        [
-                            'assessment_service_id' =>
-                                $assessmentService->id,
-
-                            'assessment_service_value_id' =>
-                                $assessmentServiceValue->id,
-
-                            'revenue_service_field_id' =>
-                                $serviceField->id,
-
-                            'field_code' =>
-                                $baseField->code,
-                        ]
-                    );
                 } catch (Throwable $exception) {
+
                     Log::error(
                         'Assessment service file value creation failed.',
                         [
@@ -858,20 +743,11 @@ class AssessmentServiceValueService
                             'revenue_service_field_id' =>
                                 $serviceField->id,
 
-                            'field_code' =>
-                                $baseField->code,
-
                             'exception' =>
                                 $exception::class,
 
                             'message' =>
                                 $exception->getMessage(),
-
-                            'file' =>
-                                $exception->getFile(),
-
-                            'line' =>
-                                $exception->getLine(),
                         ]
                     );
 
@@ -883,44 +759,17 @@ class AssessmentServiceValueService
 
             /*
             |--------------------------------------------------------------------------
-            | NORMAL VALUES
+            | NORMAL VALUE
             |--------------------------------------------------------------------------
             */
 
-            try {
-                $value =
-                    $this->normalizeFieldValue(
-                        $rawValue,
-                        $types['data_type'],
-                        $types['input_type'],
-                        $serviceField
-                    );
-            } catch (ValidationException $exception) {
-                Log::warning(
-                    'Assessment service field value normalization failed.',
-                    [
-                        'assessment_service_id' =>
-                            $assessmentService->id,
-
-                        'revenue_service_field_id' =>
-                            $serviceField->id,
-
-                        'field_code' =>
-                            $baseField->code,
-
-                        'data_type' =>
-                            $types['data_type'],
-
-                        'input_type' =>
-                            $types['input_type'],
-
-                        'errors' =>
-                            $exception->errors(),
-                    ]
+            $value =
+                $this->normalizeFieldValue(
+                    $rawValue,
+                    $types['data_type'],
+                    $types['input_type'],
+                    $serviceField
                 );
-
-                throw $exception;
-            }
 
             /*
             |--------------------------------------------------------------------------
@@ -941,132 +790,73 @@ class AssessmentServiceValueService
             |--------------------------------------------------------------------------
             */
 
-            try {
-                $assessmentServiceValue =
-                    AssessmentServiceValue::create([
-                        'id' =>
-                            (string) Str::uuid(),
+            $assessmentServiceValue =
+                AssessmentServiceValue::create([
+                    'id' =>
+                        (string) Str::uuid(),
 
-                        'assessment_service_id' =>
-                            $assessmentService->id,
-
-                        'revenue_service_field_id' =>
-                            $serviceField->id,
-
-                        /*
-                         * Persist the authoritative base-field code,
-                         * regardless of whether the caller supplied:
-                         *
-                         * - field code
-                         * - field UUID
-                         */
-                        'field_code' =>
-                            strtoupper(
-                                trim(
-                                    (string) $baseField->code
-                                )
-                            ),
-
-                        'field_label' =>
-                            $serviceField->label
-                            ?: $baseField->label,
-
-                        'data_type' =>
-                            $types['data_type'],
-
-                        'input_type' =>
-                            $types['input_type'],
-
-                        'value' =>
-                            $value,
-
-                        'display_value' =>
-                            $displayValue,
-
-                        'measurement_unit_id' =>
-                            $serviceField->measurement_unit_id
-                            ?? $baseField->measurement_unit_id
-                            ?? null,
-
-                        'sort_order' =>
-                            $serviceField->sort_order
-                            ?? $baseField->sort_order
-                            ?? 0,
-                    ]);
-            } catch (Throwable $exception) {
-                Log::error(
-                    'Assessment service value creation failed.',
-                    [
-                        'assessment_service_id' =>
-                            $assessmentService->id,
-
-                        'revenue_service_field_id' =>
-                            $serviceField->id,
-
-                        'field_code' =>
-                            $baseField->code,
-
-                        'data_type' =>
-                            $types['data_type'],
-
-                        'input_type' =>
-                            $types['input_type'],
-
-                        'exception' =>
-                            $exception::class,
-
-                        'message' =>
-                            $exception->getMessage(),
-
-                        'file' =>
-                            $exception->getFile(),
-
-                        'line' =>
-                            $exception->getLine(),
-                    ]
-                );
-
-                throw $exception;
-            }
-
-            $createdCount++;
-
-            Log::debug(
-                'Assessment service value created.',
-                [
                     'assessment_service_id' =>
                         $assessmentService->id,
 
-                    'assessment_service_value_id' =>
-                        $assessmentServiceValue->id,
-
+                    /*
+                     * AUTHORITATIVE RevenueServiceField ID.
+                     */
                     'revenue_service_field_id' =>
                         $serviceField->id,
 
+                    /*
+                     * Historical BaseField code snapshot.
+                     */
                     'field_code' =>
-                        $baseField->code,
+                        strtoupper(
+                            trim(
+                                (string) $baseField->code
+                            )
+                        ),
+
+                    'field_label' =>
+                        $serviceField->label
+                        ?: $baseField->label,
 
                     'data_type' =>
                         $types['data_type'],
 
                     'input_type' =>
                         $types['input_type'],
-                ]
-            );
+
+                    'value' =>
+                        $value,
+
+                    'display_value' =>
+                        $displayValue,
+
+                    'measurement_unit_id' =>
+                        $serviceField->measurement_unit_id
+                        ?? $baseField->measurement_unit_id
+                        ?? null,
+
+                    'sort_order' =>
+                        $serviceField->sort_order
+                        ?? $baseField->sort_order
+                        ?? 0,
+                ]);
+
+            $createdCount++;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Final Persistence Summary
+        | Persistence Summary
         |--------------------------------------------------------------------------
         */
 
-        $storedCount = $assessmentService
-            ->values()
-            ->count();
+        $storedCount =
+            $assessmentService
+                ->values()
+                ->count();
 
         Log::info(
-            'Assessment service values persistence summary.',
+            'Assessment service values persistence completed.',
             [
                 'assessment_service_id' =>
                     $assessmentService->id,
@@ -1094,69 +884,9 @@ class AssessmentServiceValueService
 
     /**
      * ============================================================
-     * LOOKUP KEY
-     * ============================================================
-     *
-     * Field codes are case-insensitive.
-     *
-     * UUIDs are normalized to lowercase.
-     *
-     * IMPORTANT:
-     *
-     * This intentionally does NOT restrict the UUID version.
-     *
-     * The application uses UUIDv7 identifiers such as:
-     *
-     * 01a0a71b-d3e5-726e-ab39-04e0d79f01f7
-     *
-     * The old regex used:
-     *
-     * [1-5]
-     *
-     * which excluded UUIDv7.
-     */
-    protected function normalizeLookupKey(
-        string $key
-    ): string {
-        $key = trim($key);
-
-        /*
-        |--------------------------------------------------------------------------
-        | UUID / UUIDv7
-        |--------------------------------------------------------------------------
-        |
-        | Match the UUID structure only.
-        |
-        | 8-4-4-4-12
-        |
-        | Do not restrict the version nibble.
-        |
-        */
-
-        if (
-            preg_match(
-                '/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/',
-                $key
-            )
-        ) {
-            return strtolower($key);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Normal Field Codes
-        |--------------------------------------------------------------------------
-        */
-
-        return strtoupper($key);
-    }
-
-    /**
-     * ============================================================
-     * SERVICE RESOLUTION
+     * RESOLVE REVENUE SERVICE
      * ============================================================
      */
-
     protected function resolveRevenueService(
         array $serviceData
     ): RevenueService {
@@ -1164,9 +894,6 @@ class AssessmentServiceValueService
             $serviceData['serviceId'] ?? null;
 
         if (! $serviceId) {
-            Log::warning(
-                'Revenue service resolution failed: serviceId missing.'
-            );
 
             throw ValidationException::withMessages([
                 'services' => [
@@ -1175,27 +902,15 @@ class AssessmentServiceValueService
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Load Revenue Service
-        |--------------------------------------------------------------------------
-        */
-
-        $service = RevenueService::query()
-            ->with([
-                'revenueCode',
-                'fields.baseField.options',
-            ])
-            ->find($serviceId);
+        $service =
+            RevenueService::query()
+                ->with([
+                    'revenueCode',
+                    'fields.baseField.options',
+                ])
+                ->find($serviceId);
 
         if (! $service) {
-            Log::error(
-                'Revenue service could not be found.',
-                [
-                    'revenue_service_id' =>
-                        $serviceId,
-                ]
-            );
 
             throw ValidationException::withMessages([
                 'services' => [
@@ -1206,7 +921,7 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Authoritative Revenue Code
+        | Authoritative Service Code
         |--------------------------------------------------------------------------
         */
 
@@ -1214,13 +929,6 @@ class AssessmentServiceValueService
             $service->revenueCode?->code;
 
         if ($expectedCode === null) {
-            Log::error(
-                'Revenue service does not have a valid revenue code.',
-                [
-                    'revenue_service_id' =>
-                        $service->id,
-                ]
-            );
 
             throw ValidationException::withMessages([
                 'services' => [
@@ -1231,7 +939,7 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | Validate Submitted Service Code
+        | Verify Submitted Service Code
         |--------------------------------------------------------------------------
         */
 
@@ -1239,6 +947,7 @@ class AssessmentServiceValueService
             $serviceData['serviceCode'] ?? null;
 
         if ($submittedCode !== null) {
+
             $submittedCode =
                 trim(
                     (string) $submittedCode
@@ -1253,6 +962,7 @@ class AssessmentServiceValueService
                 strtoupper($submittedCode)
                 !== strtoupper($expectedCode)
             ) {
+
                 Log::warning(
                     'Revenue service code validation failed.',
                     [
@@ -1275,17 +985,6 @@ class AssessmentServiceValueService
             }
         }
 
-        Log::debug(
-            'Revenue service resolved and validated.',
-            [
-                'revenue_service_id' =>
-                    $service->id,
-
-                'revenue_service_code' =>
-                    $expectedCode,
-            ]
-        );
-
         return $service;
     }
 
@@ -1294,7 +993,6 @@ class AssessmentServiceValueService
      * FIELD TYPES
      * ============================================================
      */
-
     protected function resolveFieldTypes(
         $serviceField
     ): array {
@@ -1302,26 +1000,13 @@ class AssessmentServiceValueService
             $serviceField->baseField;
 
         if (! $baseField) {
-            Log::error(
-                'Service field has no base field.',
-                [
-                    'revenue_service_field_id' =>
-                        $serviceField->id,
-                ]
-            );
 
             throw ValidationException::withMessages([
                 'services' => [
-                    'The configured service field does not have a base field.',
+                    "The field [{$serviceField->id}] does not have a base field.",
                 ],
             ]);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Effective Data Type
-        |--------------------------------------------------------------------------
-        */
 
         $dataType =
             strtoupper(
@@ -1333,12 +1018,6 @@ class AssessmentServiceValueService
                     )
                 )
             );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Effective Input Type
-        |--------------------------------------------------------------------------
-        */
 
         $inputType =
             strtoupper(
@@ -1360,22 +1039,17 @@ class AssessmentServiceValueService
         if ($inputType === '') {
             $inputType = match ($dataType) {
                 'SELECT' => 'SELECT',
-
                 'BOOLEAN' => 'TEXT',
-
                 'NUMBER' => 'NUMBER',
-
                 'DECIMAL' => 'DECIMAL',
-
                 'DATE' => 'DATE',
-
                 default => 'TEXT',
             };
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Legacy FILE Configuration
+        | FILE / MULTI_FILE
         |--------------------------------------------------------------------------
         */
 
@@ -1396,12 +1070,6 @@ class AssessmentServiceValueService
                 'TEXT';
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Supported Data Types
-        |--------------------------------------------------------------------------
-        */
-
         $allowedDataTypes = [
             'NUMBER',
             'DECIMAL',
@@ -1410,12 +1078,6 @@ class AssessmentServiceValueService
             'DATE',
             'SELECT',
         ];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Supported Input Types
-        |--------------------------------------------------------------------------
-        */
 
         $allowedInputTypes = [
             'TEXT',
@@ -1430,12 +1092,6 @@ class AssessmentServiceValueService
             'MULTI_FILE',
         ];
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Data Type
-        |--------------------------------------------------------------------------
-        */
-
         if (
             ! in_array(
                 $dataType,
@@ -1443,16 +1099,6 @@ class AssessmentServiceValueService
                 true
             )
         ) {
-            Log::error(
-                'Unsupported service field data type.',
-                [
-                    'revenue_service_field_id' =>
-                        $serviceField->id,
-
-                    'data_type' =>
-                        $dataType,
-                ]
-            );
 
             throw ValidationException::withMessages([
                 'services' => [
@@ -1461,12 +1107,6 @@ class AssessmentServiceValueService
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Input Type
-        |--------------------------------------------------------------------------
-        */
-
         if (
             ! in_array(
                 $inputType,
@@ -1474,16 +1114,6 @@ class AssessmentServiceValueService
                 true
             )
         ) {
-            Log::error(
-                'Unsupported service field input type.',
-                [
-                    'revenue_service_field_id' =>
-                        $serviceField->id,
-
-                    'input_type' =>
-                        $inputType,
-                ]
-            );
 
             throw ValidationException::withMessages([
                 'services' => [
@@ -1503,22 +1133,15 @@ class AssessmentServiceValueService
 
     /**
      * ============================================================
-     * NORMALIZE VALUE
+     * NORMALIZE FIELD VALUE
      * ============================================================
      */
-
     protected function normalizeFieldValue(
         mixed $value,
         string $dataType,
         string $inputType,
         $serviceField
     ): mixed {
-        /*
-        |--------------------------------------------------------------------------
-        | NULL / EMPTY
-        |--------------------------------------------------------------------------
-        */
-
         if (
             $value === null
             || $value === ''
@@ -1555,9 +1178,7 @@ class AssessmentServiceValueService
         |--------------------------------------------------------------------------
         */
 
-        if (
-            $inputType === 'CHECKBOX'
-        ) {
+        if ($inputType === 'CHECKBOX') {
             return $this->normalizeCheckboxValue(
                 $value,
                 $serviceField
@@ -1566,35 +1187,25 @@ class AssessmentServiceValueService
 
         /*
         |--------------------------------------------------------------------------
-        | STANDARD DATA TYPES
+        | STANDARD TYPES
         |--------------------------------------------------------------------------
         */
 
         return match ($dataType) {
             'NUMBER' =>
-                $this->normalizeNumber(
-                    $value
-                ),
+                $this->normalizeNumber($value),
 
             'DECIMAL' =>
-                $this->normalizeDecimal(
-                    $value
-                ),
+                $this->normalizeDecimal($value),
 
             'BOOLEAN' =>
-                $this->normalizeBoolean(
-                    $value
-                ),
+                $this->normalizeBoolean($value),
 
             'DATE' =>
-                $this->normalizeDate(
-                    $value
-                ),
+                $this->normalizeDate($value),
 
             'TEXT' =>
-                $this->normalizeText(
-                    $value
-                ),
+                $this->normalizeText($value),
 
             'SELECT' =>
                 $this->normalizeOptionValue(
@@ -1609,10 +1220,9 @@ class AssessmentServiceValueService
 
     /**
      * ============================================================
-     * OPTION VALUES
+     * OPTION VALUE
      * ============================================================
      */
-
     protected function normalizeOptionValue(
         mixed $value,
         $serviceField
@@ -1648,14 +1258,10 @@ class AssessmentServiceValueService
             ]);
         }
 
-        $options =
-            $baseField->options;
-
         $matchingOption =
-            $options->first(
-                function ($option) use (
-                    $submittedValue
-                ) {
+            $baseField->options->first(
+                function ($option) use ($submittedValue): bool {
+
                     return strtoupper(
                         trim(
                             (string) $option->value
@@ -1683,7 +1289,6 @@ class AssessmentServiceValueService
      * CHECKBOX
      * ============================================================
      */
-
     protected function normalizeCheckboxValue(
         mixed $value,
         $serviceField
@@ -1707,13 +1312,10 @@ class AssessmentServiceValueService
             ]);
         }
 
-        $options =
-            $baseField->options;
-
         $validValues =
-            $options
+            $baseField->options
                 ->map(
-                    static fn ($option) =>
+                    static fn ($option): string =>
                         strtoupper(
                             trim(
                                 (string) $option->value
@@ -1725,6 +1327,7 @@ class AssessmentServiceValueService
         $normalizedValues = [];
 
         foreach ($value as $item) {
+
             if (
                 is_array($item)
                 || is_object($item)
@@ -1747,9 +1350,7 @@ class AssessmentServiceValueService
 
             if (
                 ! in_array(
-                    strtoupper(
-                        $normalizedItem
-                    ),
+                    strtoupper($normalizedItem),
                     $validValues,
                     true
                 )
@@ -1777,7 +1378,6 @@ class AssessmentServiceValueService
      * NUMBER
      * ============================================================
      */
-
     protected function normalizeNumber(
         mixed $value
     ): int {
@@ -1802,7 +1402,6 @@ class AssessmentServiceValueService
      * DECIMAL
      * ============================================================
      */
-
     protected function normalizeDecimal(
         mixed $value
     ): float {
@@ -1822,7 +1421,6 @@ class AssessmentServiceValueService
      * BOOLEAN
      * ============================================================
      */
-
     protected function normalizeBoolean(
         mixed $value
     ): bool {
@@ -1860,7 +1458,6 @@ class AssessmentServiceValueService
      * DATE
      * ============================================================
      */
-
     protected function normalizeDate(
         mixed $value
     ): string {
@@ -1882,7 +1479,6 @@ class AssessmentServiceValueService
      * TEXT
      * ============================================================
      */
-
     protected function normalizeText(
         mixed $value
     ): string {
@@ -1907,7 +1503,6 @@ class AssessmentServiceValueService
      * DISPLAY VALUE
      * ============================================================
      */
-
     protected function makeDisplayValue(
         mixed $value,
         array $types,
@@ -1924,8 +1519,7 @@ class AssessmentServiceValueService
         */
 
         if (
-            $types['input_type']
-            === 'CHECKBOX'
+            $types['input_type'] === 'CHECKBOX'
         ) {
             if (! is_array($value)) {
                 return (string) $value;
@@ -1967,7 +1561,7 @@ class AssessmentServiceValueService
                 return implode(
                     ', ',
                     array_map(
-                        static fn ($item) =>
+                        static fn ($item): string =>
                             (string) $item,
                         $value
                     )
@@ -1984,8 +1578,7 @@ class AssessmentServiceValueService
         */
 
         if (
-            $types['data_type']
-            === 'BOOLEAN'
+            $types['data_type'] === 'BOOLEAN'
         ) {
             return $value
                 ? 'Yes'
@@ -1999,8 +1592,7 @@ class AssessmentServiceValueService
         */
 
         if (
-            $types['data_type']
-            === 'SELECT'
+            $types['data_type'] === 'SELECT'
             || in_array(
                 $types['input_type'],
                 [
@@ -2035,7 +1627,6 @@ class AssessmentServiceValueService
      * OPTION LABEL
      * ============================================================
      */
-
     protected function resolveOptionLabel(
         mixed $value,
         $serviceField
@@ -2047,14 +1638,10 @@ class AssessmentServiceValueService
             return (string) $value;
         }
 
-        $options =
-            $baseField->options;
-
         $matchingOption =
-            $options->first(
-                function ($option) use (
-                    $value
-                ) {
+            $baseField->options->first(
+                function ($option) use ($value): bool {
+
                     return strtoupper(
                         trim(
                             (string) $option->value

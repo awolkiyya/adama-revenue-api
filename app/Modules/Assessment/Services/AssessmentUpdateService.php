@@ -24,8 +24,9 @@ class AssessmentUpdateService
      * Responsibilities:
      *
      * - Validate editable lifecycle state
-     * - Update assessment header
+     * - Update only supplied assessment header fields
      * - Replace services when supplied
+     * - Preserve existing values when fields are omitted
      * - Calculate when submitted
      * - Commit only after everything succeeds
      */
@@ -45,6 +46,9 @@ class AssessmentUpdateService
             |--------------------------------------------------------------------------
             | Lock Assessment
             |--------------------------------------------------------------------------
+            |
+            | Prevent concurrent updates to the same assessment.
+            |
             */
 
             $assessment = Assessment::query()
@@ -61,34 +65,122 @@ class AssessmentUpdateService
 
             /*
             |--------------------------------------------------------------------------
-            | Update Header
+            | Update Assessment Header
+            |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            |
+            | This is a partial update.
+            |
+            | If taxpayerId, notes, or status is not supplied,
+            | the existing database value must remain unchanged.
+            |
+            */
+
+            $headerData = [
+                'updated_by' => auth()->id(),
+            ];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Taxpayer
             |--------------------------------------------------------------------------
             */
 
-            $newStatus = $request->status();
+            if ($request->has('taxpayerId')) {
+                $headerData['citizen_id'] =
+                    $request->taxpayerId();
+            }
 
-            $assessment->update([
-                'status' => $newStatus,
+            /*
+            |--------------------------------------------------------------------------
+            | Notes
+            |--------------------------------------------------------------------------
+            |
+            | `has()` allows:
+            |
+            | - notes omitted → preserve existing notes
+            | - notes = null   → clear notes
+            | - notes = "..."  → update notes
+            |
+            */
 
-                'notes' =>
-                    $request->validated('notes'),
+            if ($request->has('notes')) {
+                $headerData['notes'] =
+                    $request->validated('notes');
+            }
 
-                'submitted_at' =>
+            /*
+            |--------------------------------------------------------------------------
+            | Status
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->has('status')) {
+
+                $newStatus = $request->status();
+
+                $headerData['status'] = $newStatus;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Submitted At
+                |--------------------------------------------------------------------------
+                |
+                | When moving to PENDING_APPROVAL:
+                |
+                | - preserve an existing submitted_at
+                | - otherwise create it now
+                |
+                | When moving back to DRAFT:
+                |
+                | - clear submitted_at
+                |
+                */
+
+                $headerData['submitted_at'] =
                     $newStatus === 'PENDING_APPROVAL'
                         ? ($assessment->submitted_at ?? now())
-                        : null,
+                        : null;
+            }
 
-                'updated_by' =>
-                    auth()->id(),
-            ]);
+            /*
+            |--------------------------------------------------------------------------
+            | Persist Header Changes
+            |--------------------------------------------------------------------------
+            */
+
+            $assessment->update($headerData);
 
             /*
             |--------------------------------------------------------------------------
             | Replace Services
             |--------------------------------------------------------------------------
+            |
+            | Services are replaced only when the request explicitly
+            | contains the `services` property.
+            |
+            | Dynamic fields inside the services payload are keyed by:
+            |
+            |     RevenueField.id
+            |
+            | NOT:
+            |
+            |     RevenueField.key
+            |
             */
 
             if ($request->has('services')) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Collect Existing Files
+                |--------------------------------------------------------------------------
+                |
+                | We need these before deleting the existing services
+                | so that physical files can be cleaned up after commit.
+                |
+                */
 
                 $existingFileUuids =
                     $this->fileService
@@ -98,6 +190,11 @@ class AssessmentUpdateService
                 |--------------------------------------------------------------------------
                 | Remove Existing Services
                 |--------------------------------------------------------------------------
+                |
+                | Database records are removed inside the transaction.
+                |
+                | Physical files are NOT permanently deleted here.
+                |
                 */
 
                 $this->fileService->removeAssessmentServices(
@@ -108,6 +205,16 @@ class AssessmentUpdateService
                 |--------------------------------------------------------------------------
                 | Store New Services
                 |--------------------------------------------------------------------------
+                |
+                | Expected structure:
+                |
+                | services[]
+                |     serviceId
+                |     serviceCode
+                |     fields[
+                |         field.id => value
+                |     ]
+                |
                 */
 
                 $this->serviceValueService->storeServices(
@@ -117,13 +224,19 @@ class AssessmentUpdateService
 
                 /*
                 |--------------------------------------------------------------------------
-                | Determine Obsolete Files
+                | Collect New Files
                 |--------------------------------------------------------------------------
                 */
 
                 $newFileUuids =
                     $this->fileService
                         ->collectAssessmentFiles($assessment);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Determine Obsolete Files
+                |--------------------------------------------------------------------------
+                */
 
                 $obsoleteFileUuids = array_values(
                     array_diff(
@@ -135,22 +248,22 @@ class AssessmentUpdateService
 
             /*
             |--------------------------------------------------------------------------
-            | CALCULATE BEFORE COMMIT
+            | Calculate When Submitted
             |--------------------------------------------------------------------------
             |
-            | This is critical.
+            | Calculation happens inside the database transaction.
             |
-            | If calculation throws an exception:
+            | If calculation fails:
             |
-            | - assessment update rolls back
+            | - assessment header rolls back
             | - service replacement rolls back
             | - service values roll back
-            | - status change rolls back
             | - calculation changes roll back
             |
             */
 
             if ($assessment->status === 'PENDING_APPROVAL') {
+
                 $this->calculationService->calculate(
                     $assessment
                 );
@@ -164,17 +277,21 @@ class AssessmentUpdateService
         | CLEANUP OBSOLETE FILES AFTER COMMIT
         |--------------------------------------------------------------------------
         |
-        | Physical file deletion must happen only after the database
-        | transaction successfully commits.
+        | Physical file deletion happens only after the database
+        | transaction has successfully committed.
         |
         */
 
         if ($obsoleteFileUuids !== []) {
-            DB::afterCommit(function () use ($obsoleteFileUuids) {
-                $this->fileService->cleanupObsoleteFiles(
-                    $obsoleteFileUuids
-                );
-            });
+
+            DB::afterCommit(
+                function () use ($obsoleteFileUuids): void {
+
+                    $this->fileService->cleanupObsoleteFiles(
+                        $obsoleteFileUuids
+                    );
+                }
+            );
         }
 
         /*
@@ -199,8 +316,9 @@ class AssessmentUpdateService
      * ============================================================
      * EDITABLE STATE
      * ============================================================
+     *
+     * Only DRAFT and RETURNED assessments may be edited.
      */
-
     protected function assertEditable(
         Assessment $assessment
     ): void {

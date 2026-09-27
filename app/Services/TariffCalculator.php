@@ -91,12 +91,12 @@ class TariffCalculator
         |--------------------------------------------------------------------------
         */
 
-        if ($result->success) {
+        if ($result->isSuccessful()) {
             $resultMetadata = $result->metadata;
-
+        
             $resultMetadata['assessment_service_id'] =
                 $assessmentService->id;
-
+        
             return TariffCalculationResult::success(
                 amount: $result->amount,
                 metadata: $resultMetadata,
