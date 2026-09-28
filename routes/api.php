@@ -143,6 +143,13 @@ Route::prefix('v1')->group(function () {
         );
 
 
+        // Paymentschedule
+
+        require base_path(
+            'routes/Api/v1/payment-schedule.php'
+        );
+
+
 
         // ----------------------------------------------------
         // PRIVATE FILE ACCESS

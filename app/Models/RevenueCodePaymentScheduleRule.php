@@ -62,4 +62,20 @@ class RevenueCodePaymentScheduleRule extends Model
     {
         return $this->first_installment_percentage !== null;
     }
+
+    /**
+     * Determine the payment plan type.
+     *
+     * ONE_TIME:
+     *     Payment scheduling is disabled.
+     *
+     * SCHEDULED:
+     *     Payment scheduling is enabled.
+     */
+    public function getPaymentPlanTypeAttribute(): string
+    {
+        return $this->is_enabled
+            ? 'SCHEDULED'
+            : 'ONE_TIME';
+    }
 }

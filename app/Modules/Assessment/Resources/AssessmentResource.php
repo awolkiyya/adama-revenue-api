@@ -274,6 +274,10 @@ class AssessmentResource extends JsonResource
                                         'status' =>
                                             $service->status,
 
+                                        'paymentPlanType' =>
+                                            $service->service?->revenueCode?->paymentScheduleRule?->payment_plan_type
+                                            ?? 'ONE_TIME',
+
                                         /*
                                         |--------------------------------------------------------------------------
                                         | Calculation

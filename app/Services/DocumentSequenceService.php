@@ -5,6 +5,7 @@ namespace App\Services;
 use Andegna\DateTimeFactory;
 use App\Models\Assessment;
 use App\Models\DocumentSequence;
+use App\Models\Invoice;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -34,19 +35,12 @@ class DocumentSequenceService
      *
      * Ethiopian calendar is used by default.
      *
-     * The sequence is maintained independently for:
+     * Sequence is maintained independently by:
      *
      * sequence_type + year
      *
-     * Example:
-     *
-     * assessment / 2019
-     * invoice    / 2019
-     * payment    / 2019
-     *
-     * The sequence is automatically synchronized with existing
-     * assessment numbers when an existing sequence is detected
-     * behind the current database data.
+     * Existing documents are used to synchronize the sequence
+     * when the persisted sequence is behind the existing data.
      */
     public function generate(
         string $sequenceType,
@@ -99,19 +93,6 @@ class DocumentSequenceService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Prefix Characters
-        |--------------------------------------------------------------------------
-        |
-        | Document numbers use:
-        |
-        | PREFIX-YEAR-SEQUENCE
-        |
-        | Restrict the prefix to predictable characters.
-        |
-        */
-
         if (! preg_match('/^[A-Z0-9_]+$/', $prefix)) {
             throw new InvalidArgumentException(
                 'Sequence prefix may contain only uppercase letters, numbers, and underscores.'
@@ -139,21 +120,13 @@ class DocumentSequenceService
 
         /*
         |--------------------------------------------------------------------------
-        | Generate Number Inside Transaction
+        | Generate Inside Transaction
         |--------------------------------------------------------------------------
         |
-        | This transaction is intentionally kept here.
+        | The sequence row is locked before calculating the next value.
         |
-        | If this method is already called from another DB transaction,
-        | Laravel will participate in the existing transaction.
-        |
-        | Therefore:
-        |
-        | successful document creation
-        |        -> sequence increment committed
-        |
-        | failed document creation
-        |        -> sequence increment rolled back
+        | This prevents two concurrent requests from receiving the same
+        | document number.
         |
         */
 
@@ -165,10 +138,10 @@ class DocumentSequenceService
             ): string {
                 /*
                 |--------------------------------------------------------------------------
-                | Initialize Sequence Row
+                | 1. Initialize Sequence Row
                 |--------------------------------------------------------------------------
                 |
-                | The database must have a unique constraint on:
+                | A unique database constraint must exist on:
                 |
                 | sequence_type + year
                 |
@@ -185,28 +158,8 @@ class DocumentSequenceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | Lock Sequence Row
+                | 2. Lock Sequence Row
                 |--------------------------------------------------------------------------
-                |
-                | This prevents concurrent requests from receiving
-                | the same sequence number.
-                |
-                | Request A:
-                |     locks assessment/2019
-                |
-                | Request B:
-                |     waits
-                |
-                | Request A:
-                |     gets 11
-                |
-                | Request A:
-                |     commits
-                |
-                | Request B:
-                |     gets the lock
-                |     gets 12
-                |
                 */
 
                 $sequence = DocumentSequence::query()
@@ -233,11 +186,12 @@ class DocumentSequenceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | Validate Current Sequence Value
+                | 3. Validate Current Sequence Value
                 |--------------------------------------------------------------------------
                 */
 
-                $currentValue = (int) $sequence->current_value;
+                $currentValue =
+                    (int) $sequence->current_value;
 
                 if ($currentValue < 0) {
                     throw new RuntimeException(
@@ -250,7 +204,10 @@ class DocumentSequenceService
                     );
                 }
 
-                if ($currentValue > self::MAX_SEQUENCE_VALUE) {
+                if (
+                    $currentValue >
+                    self::MAX_SEQUENCE_VALUE
+                ) {
                     throw new RuntimeException(
                         sprintf(
                             'Sequence value [%d] exceeds the maximum supported value of %d for [%s/%d].',
@@ -264,33 +221,33 @@ class DocumentSequenceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | Synchronize Existing Data
+                | 4. Synchronize Existing Documents
                 |--------------------------------------------------------------------------
                 |
-                | This is important when DocumentSequenceService is introduced
-                | into an existing system.
+                | This is especially important when:
+                |
+                | - the sequence service is introduced into an existing system
+                | - old documents already exist
+                | - the sequence table was reset
+                | - data was imported
                 |
                 | Example:
                 |
-                | assessments:
+                | invoices:
                 |
-                | ASM-2019-000001
-                | ASM-2019-000002
-                | ...
-                | ASM-2019-000010
+                | INV-2019-000001
+                | INV-2019-000002
+                | INV-2019-000010
                 |
-                | document_sequences:
+                | sequence:
                 |
-                | assessment / 2019 / 0
+                | invoice / 2019 / 0
                 |
-                | Without synchronization the service would generate:
+                | Existing maximum = 10
                 |
-                | ASM-2019-000001
+                | Current sequence becomes 10
                 |
-                | which would violate the unique constraint.
-                |
-                | We therefore synchronize the sequence with existing
-                | assessment numbers before generating the next value.
+                | Next number = 11
                 |
                 */
 
@@ -302,21 +259,25 @@ class DocumentSequenceService
                     );
 
                 if (
-                    $existingMaximum !== null &&
+                    $existingMaximum !== null
+                    &&
                     $existingMaximum > $currentValue
                 ) {
                     $currentValue =
                         $existingMaximum;
 
                     $sequence->update([
-                        'current_value' => $currentValue,
-                        'updated_at' => now(),
+                        'current_value' =>
+                            $currentValue,
+
+                        'updated_at' =>
+                            now(),
                     ]);
                 }
 
                 /*
                 |--------------------------------------------------------------------------
-                | Calculate Next Value
+                | 5. Calculate Next Value
                 |--------------------------------------------------------------------------
                 */
 
@@ -325,7 +286,7 @@ class DocumentSequenceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | Prevent Sequence Overflow
+                | 6. Prevent Overflow
                 |--------------------------------------------------------------------------
                 */
 
@@ -345,32 +306,28 @@ class DocumentSequenceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | Persist New Sequence Value
+                | 7. Persist New Sequence Value
                 |--------------------------------------------------------------------------
                 */
 
                 $sequence->update([
-                    'current_value' => $nextValue,
-                    'updated_at' => now(),
+                    'current_value' =>
+                        $nextValue,
+
+                    'updated_at' =>
+                        now(),
                 ]);
 
                 /*
                 |--------------------------------------------------------------------------
-                | Generate Document Number
+                | 8. Generate Document Number
                 |--------------------------------------------------------------------------
-                |
-                | Format:
-                |
-                | PREFIX-YEAR-SEQUENCE
-                |
-                | Example:
-                |
-                | ASM-2019-000011
-                |
                 */
 
                 return sprintf(
-                    '%s-%d-%0' . self::SEQUENCE_DIGITS . 'd',
+                    '%s-%d-%0' .
+                        self::SEQUENCE_DIGITS .
+                        'd',
                     $prefix,
                     $year,
                     $nextValue
@@ -381,15 +338,6 @@ class DocumentSequenceService
 
     /**
      * Get the highest existing document number for the sequence.
-     *
-     * This protects the application when DocumentSequenceService
-     * is introduced into a database that already contains documents.
-     *
-     * Currently supported existing sequence source:
-     *
-     * assessment -> assessments.assessment_number
-     *
-     * Returns null when no existing document is found.
      */
     protected function getExistingMaximumValue(
         string $sequenceType,
@@ -397,10 +345,17 @@ class DocumentSequenceService
         int $year
     ): ?int {
         return match ($sequenceType) {
-            'assessment' => $this->getExistingAssessmentMaximum(
-                $prefix,
-                $year
-            ),
+            'assessment' =>
+                $this->getExistingAssessmentMaximum(
+                    $prefix,
+                    $year
+                ),
+
+            'invoice' =>
+                $this->getExistingInvoiceMaximum(
+                    $prefix,
+                    $year
+                ),
 
             default => null,
         };
@@ -411,13 +366,11 @@ class DocumentSequenceService
      *
      * Example:
      *
-     * ASM-2019-000001
-     * ASM-2019-000002
-     * ASM-2019-000010
+     * ASM-2019-000011
      *
      * Returns:
      *
-     * 10
+     * 11
      */
     protected function getExistingAssessmentMaximum(
         string $prefix,
@@ -429,18 +382,6 @@ class DocumentSequenceService
                 $prefix,
                 $year
             );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Get Latest Existing Assessment
-        |--------------------------------------------------------------------------
-        |
-        | The sequence portion always has a fixed six-digit format.
-        |
-        | Therefore descending lexical order correctly identifies
-        | the highest existing sequence number.
-        |
-        */
 
         $assessmentNumber =
             Assessment::query()
@@ -456,32 +397,89 @@ class DocumentSequenceService
                     'assessment_number'
                 );
 
-        if (
-            $assessmentNumber === null
-        ) {
+        if ($assessmentNumber === null) {
             return null;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Extract Sequence
-        |--------------------------------------------------------------------------
-        |
-        | Example:
-        |
-        | ASM-2019-000011
-        |
-        | Prefix:
-        | ASM-2019-
-        |
-        | Sequence:
-        | 000011
-        |
-        */
+        return $this->extractSequenceValue(
+            $assessmentNumber,
+            $documentPrefix,
+            'assessment'
+        );
+    }
 
+    /**
+     * Get the highest existing invoice sequence.
+     *
+     * Example:
+     *
+     * INV-2019-000001
+     * INV-2019-000002
+     * INV-2019-000015
+     *
+     * Returns:
+     *
+     * 15
+     */
+    protected function getExistingInvoiceMaximum(
+        string $prefix,
+        int $year
+    ): ?int {
+        $documentPrefix =
+            sprintf(
+                '%s-%d-',
+                $prefix,
+                $year
+            );
+
+        $invoiceNumber =
+            Invoice::query()
+                ->where(
+                    'invoice_number',
+                    'like',
+                    $documentPrefix . '%'
+                )
+                ->orderByDesc(
+                    'invoice_number'
+                )
+                ->value(
+                    'invoice_number'
+                );
+
+        if ($invoiceNumber === null) {
+            return null;
+        }
+
+        return $this->extractSequenceValue(
+            $invoiceNumber,
+            $documentPrefix,
+            'invoice'
+        );
+    }
+
+    /**
+     * Extract the numeric sequence portion from a document number.
+     *
+     * Example:
+     *
+     * INV-2019-000015
+     *
+     * documentPrefix:
+     *
+     * INV-2019-
+     *
+     * result:
+     *
+     * 15
+     */
+    protected function extractSequenceValue(
+        string $documentNumber,
+        string $documentPrefix,
+        string $documentType
+    ): int {
         $sequencePart =
             substr(
-                $assessmentNumber,
+                $documentNumber,
                 strlen($documentPrefix)
             );
 
@@ -493,8 +491,9 @@ class DocumentSequenceService
         ) {
             throw new RuntimeException(
                 sprintf(
-                    'Invalid assessment number format [%s]. Expected format [%sNNNNNN].',
-                    $assessmentNumber,
+                    'Invalid %s number format [%s]. Expected format [%sNNNNNN].',
+                    $documentType,
+                    $documentNumber,
                     $documentPrefix
                 )
             );
@@ -504,14 +503,17 @@ class DocumentSequenceService
             (int) $sequencePart;
 
         if (
-            $value < 1 ||
-            $value > self::MAX_SEQUENCE_VALUE
+            $value < 1
+            ||
+            $value >
+            self::MAX_SEQUENCE_VALUE
         ) {
             throw new RuntimeException(
                 sprintf(
-                    'Invalid assessment sequence value [%d] in assessment number [%s].',
+                    'Invalid %s sequence value [%d] in document number [%s].',
+                    $documentType,
                     $value,
-                    $assessmentNumber
+                    $documentNumber
                 )
             );
         }
@@ -543,56 +545,37 @@ class DocumentSequenceService
         ) {
             'ethiopian',
             'et',
-            'am' => $this->getEthiopianYear(
-                $date
-            ),
+            'am' =>
+                $this->getEthiopianYear($date),
 
             'gregorian',
             'ge',
-            'en' => $date->year,
+            'en' =>
+                $date->year,
 
-            default => throw new InvalidArgumentException(
-                sprintf(
-                    'Unsupported calendar [%s]. Supported calendars are Ethiopian and Gregorian.',
-                    $calendar
-                )
-            ),
+            default =>
+                throw new InvalidArgumentException(
+                    sprintf(
+                        'Unsupported calendar [%s]. Supported calendars are Ethiopian and Gregorian.',
+                        $calendar
+                    )
+                ),
         };
     }
 
     /**
      * Get the Ethiopian calendar year.
-     *
-     * Uses andegna/calender.
      */
     protected function getEthiopianYear(
         Carbon $date
     ): int {
-        /*
-        |--------------------------------------------------------------------------
-        | Convert Carbon Date To Native DateTime
-        |--------------------------------------------------------------------------
-        */
-
         $gregorianDate =
             $date->toDateTime();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Convert Gregorian Date To Ethiopian Date
-        |--------------------------------------------------------------------------
-        */
 
         $ethiopianDate =
             DateTimeFactory::fromDateTime(
                 $gregorianDate
             );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Return Ethiopian Year
-        |--------------------------------------------------------------------------
-        */
 
         return $ethiopianDate->getYear();
     }

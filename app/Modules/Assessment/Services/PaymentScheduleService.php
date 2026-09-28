@@ -70,6 +70,47 @@ class PaymentScheduleService
     |     PAYMENT_COMPLETION_YEARS = 60
     |     remaining_payment_years  = 55
     |
+    |--------------------------------------------------------------------------
+    | FIRST INSTALLMENT RULE
+    |--------------------------------------------------------------------------
+    |
+    | The current revenue-code payment schedule rule contains:
+    |
+    |     first_installment_percentage
+    |
+    | This rule applies only when:
+    |
+    |     1. schedule type is NEW_LIZZ
+    |     2. FIRST_INSTALLMENT_REQUIRED is true
+    |
+    | When the rule is actually applied, the generated first schedule stores:
+    |
+    |     installment_number = 1
+    |     rule_percentage    = configured percentage
+    |     amount_due         = calculated first installment amount
+    |
+    | Example:
+    |
+    |     principal = 1,900,000
+    |     percentage = 10%
+    |
+    |     installment #1:
+    |         amount_due      = 190,000
+    |         rule_percentage = 10.00
+    |
+    |     remaining installments:
+    |         rule_percentage = NULL
+    |
+    | EXISTING LIZZ:
+    |
+    |     installment #1
+    |         rule_percentage = NULL
+    |
+    | because installment #1 only represents its position in the schedule.
+    |
+    | rule_percentage is a historical snapshot. It must not be recalculated
+    | later from the current RevenueCodePaymentScheduleRule.
+    |
     */
 
     private const FIRST_INSTALLMENT_REQUIRED_FIELD =
@@ -340,7 +381,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Applicability
+        | APPLICABILITY
         |--------------------------------------------------------------------------
         */
 
@@ -369,7 +410,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Validate
+        | VALIDATE
         |--------------------------------------------------------------------------
         */
 
@@ -379,7 +420,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Idempotency
+        | IDEMPOTENCY
         |--------------------------------------------------------------------------
         */
 
@@ -417,7 +458,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve configuration
+        | RESOLVE CONFIGURATION
         |--------------------------------------------------------------------------
         */
 
@@ -470,22 +511,8 @@ class PaymentScheduleService
                 'first_installment_percentage' =>
                     $configuration['first_installment_percentage'],
 
-                /*
-                |--------------------------------------------------------------------------
-                | IMPORTANT:
-                |
-                | This is the original contractual term.
-                |--------------------------------------------------------------------------
-                */
-
                 'payment_completion_years' =>
                     $configuration['payment_completion_years'],
-
-                /*
-                |--------------------------------------------------------------------------
-                | This is the actual remaining future schedule period.
-                |--------------------------------------------------------------------------
-                */
 
                 'remaining_payment_years' =>
                     $configuration['remaining_payment_years'],
@@ -623,12 +650,6 @@ class PaymentScheduleService
                 'payment_completion_years' =>
                     $paymentCompletionYears,
 
-                /*
-                |--------------------------------------------------------------------------
-                | New LIZZ has no historical elapsed term.
-                |--------------------------------------------------------------------------
-                */
-
                 'elapsed_payment_years' =>
                     0,
 
@@ -670,29 +691,34 @@ class PaymentScheduleService
             'first_installment_required' =>
                 $firstInstallmentRequired,
 
+            /*
+            |--------------------------------------------------------------------------
+            | This is configuration.
+            |
+            | It will be copied to payment_schedules.rule_percentage only
+            | when the rule is actually applied.
+            |--------------------------------------------------------------------------
+            */
+
             'first_installment_percentage' =>
                 $percentage,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Original / configured term.
-            |--------------------------------------------------------------------------
-            */
-
             'payment_completion_years' =>
                 $paymentCompletionYears,
-
-            /*
-            |--------------------------------------------------------------------------
-            | Actual number of future annual installments.
-            |--------------------------------------------------------------------------
-            */
 
             'remaining_payment_years' =>
                 $paymentCompletionYears,
 
             'elapsed_payment_years' =>
                 0,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Configuration reference only.
+            |
+            | Not persisted into payment_schedules.
+            |--------------------------------------------------------------------------
+            */
 
             'payment_schedule_rule_id' =>
                 $rule->id,
@@ -703,41 +729,6 @@ class PaymentScheduleService
     |--------------------------------------------------------------------------
     | EXISTING LIZZ CONFIGURATION
     |--------------------------------------------------------------------------
-    |
-    | IMPORTANT BUSINESS RULE
-    |--------------------------------------------------------------------------
-    |
-    | PAYMENT_COMPLETION_YEARS represents the ORIGINAL / TOTAL contractual
-    | payment term.
-    |
-    | Therefore:
-    |
-    |     elapsed_payment_years =
-    |         agreement_date → balance_as_of_date
-    |
-    |     remaining_payment_years =
-    |         payment_completion_years - elapsed_payment_years
-    |
-    | Example:
-    |
-    |     Agreement:
-    |         2017-09-11
-    |
-    |     Balance cutoff:
-    |         2022-09-11
-    |
-    |     Original term:
-    |         60
-    |
-    |     Elapsed:
-    |         5
-    |
-    |     Remaining:
-    |         55
-    |
-    | The 60 remains the contractual value.
-    | The 55 is used for schedule generation.
-    |
     */
 
     private function resolveExistingLizzConfiguration(
@@ -832,7 +823,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve agreement date
+        | RESOLVE AGREEMENT DATE
         |--------------------------------------------------------------------------
         */
 
@@ -851,7 +842,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve ORIGINAL / TOTAL CONTRACTUAL TERM
+        | ORIGINAL / TOTAL CONTRACTUAL TERM
         |--------------------------------------------------------------------------
         */
 
@@ -863,7 +854,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Calculate elapsed contractual years.
+        | ELAPSED CONTRACTUAL YEARS
         |--------------------------------------------------------------------------
         */
 
@@ -875,7 +866,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Calculate actual remaining future payment years.
+        | REMAINING FUTURE PAYMENT YEARS
         |--------------------------------------------------------------------------
         */
 
@@ -887,7 +878,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | A fully matured agreement cannot receive future schedules.
+        | CONTRACTUAL TERM COMPLETED
         |--------------------------------------------------------------------------
         */
 
@@ -920,13 +911,6 @@ class PaymentScheduleService
                         $remainingAmount,
                 ]
             );
-
-            /*
-            |--------------------------------------------------------------------------
-            | If money remains but the contractual term has ended, do not
-            | silently create an artificial schedule.
-            |--------------------------------------------------------------------------
-            */
 
             if ($remainingAmount > 0) {
                 throw ValidationException::withMessages([
@@ -961,6 +945,12 @@ class PaymentScheduleService
                 'base_due_date' =>
                     $balanceAsOfDate,
 
+                /*
+                |--------------------------------------------------------------------------
+                | Existing LIZZ never applies the new first-installment rule.
+                |--------------------------------------------------------------------------
+                */
+
                 'first_installment_required' =>
                     false,
 
@@ -983,7 +973,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve next applicable anniversary.
+        | RESOLVE NEXT APPLICABLE ANNIVERSARY
         |--------------------------------------------------------------------------
         */
 
@@ -1017,20 +1007,8 @@ class PaymentScheduleService
                 'balance_as_of_date' =>
                     $balanceAsOfDate->toDateString(),
 
-                /*
-                |--------------------------------------------------------------------------
-                | ORIGINAL term remains 60.
-                |--------------------------------------------------------------------------
-                */
-
                 'payment_completion_years' =>
                     $paymentCompletionYears,
-
-                /*
-                |--------------------------------------------------------------------------
-                | Derived term becomes 55.
-                |--------------------------------------------------------------------------
-                */
 
                 'elapsed_payment_years' =>
                     $elapsedPaymentYears,
@@ -1043,6 +1021,9 @@ class PaymentScheduleService
 
                 'first_installment_applied' =>
                     false,
+
+                'first_installment_percentage' =>
+                    0.0,
             ]
         );
 
@@ -1052,7 +1033,7 @@ class PaymentScheduleService
 
             /*
             |--------------------------------------------------------------------------
-            | Existing LIZZ schedules ONLY the historical outstanding balance.
+            | Existing LIZZ schedules ONLY historical outstanding balance.
             |--------------------------------------------------------------------------
             */
 
@@ -1079,7 +1060,7 @@ class PaymentScheduleService
 
             /*
             |--------------------------------------------------------------------------
-            | Existing LIZZ never receives a new first installment.
+            | Existing LIZZ never receives a new first installment rule.
             |--------------------------------------------------------------------------
             */
 
@@ -1119,19 +1100,6 @@ class PaymentScheduleService
     |--------------------------------------------------------------------------
     | CALCULATE ELAPSED PAYMENT YEARS
     |--------------------------------------------------------------------------
-    |
-    | Returns completed contractual anniversaries between:
-    |
-    |     agreement_date
-    |     and
-    |     balance_as_of_date
-    |
-    | Example:
-    |
-    |     2017-09-11 → 2022-09-11 = 5
-    |
-    |     2017-09-11 → 2022-08-11 = 4
-    |
     */
 
     private function calculateElapsedPaymentYears(
@@ -1274,34 +1242,6 @@ class PaymentScheduleService
     |--------------------------------------------------------------------------
     | RESOLVE EXISTING LIZZ BASE DUE DATE
     |--------------------------------------------------------------------------
-    |
-    | The agreement date is historical.
-    |
-    | We determine the next applicable anniversary relative to the historical
-    | balance cutoff.
-    |
-    | Example:
-    |
-    | agreement:
-    |     2017-09-11
-    |
-    | balance cutoff:
-    |     2022-09-11
-    |
-    | next applicable anniversary:
-    |     2022-09-11
-    |
-    | Example:
-    |
-    | agreement:
-    |     2017-09-11
-    |
-    | balance cutoff:
-    |     2022-10-01
-    |
-    | next applicable anniversary:
-    |     2023-09-11
-    |
     */
 
     private function resolveExistingLizzBaseDueDate(
@@ -1382,22 +1322,8 @@ class PaymentScheduleService
         $firstInstallmentPercentage =
             (float) $configuration['first_installment_percentage'];
 
-        /*
-        |--------------------------------------------------------------------------
-        | IMPORTANT:
-        |
-        | This is the original configured term.
-        |--------------------------------------------------------------------------
-        */
-
         $originalCompletionYears =
             (int) $configuration['payment_completion_years'];
-
-        /*
-        |--------------------------------------------------------------------------
-        | This is the actual number of future annual installments.
-        |--------------------------------------------------------------------------
-        */
 
         $remainingPaymentYears =
             (int) $configuration['remaining_payment_years'];
@@ -1439,7 +1365,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Existing LIZZ with no remaining balance
+        | EXISTING LIZZ WITH NO REMAINING BALANCE
         |--------------------------------------------------------------------------
         */
 
@@ -1497,7 +1423,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Existing LIZZ must never receive a first installment.
+        | EXISTING LIZZ MUST NEVER RECEIVE FIRST-INSTALLMENT RULE
         |--------------------------------------------------------------------------
         */
 
@@ -1562,7 +1488,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Initial installment
+        | FIRST INSTALLMENT
         |--------------------------------------------------------------------------
         */
 
@@ -1615,7 +1541,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Remaining balance after initial installment
+        | REMAINING BALANCE
         |--------------------------------------------------------------------------
         */
 
@@ -1627,7 +1553,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Create schedules
+        | CREATE SCHEDULES
         |--------------------------------------------------------------------------
         */
 
@@ -1639,6 +1565,12 @@ class PaymentScheduleService
         /*
         |--------------------------------------------------------------------------
         | NEW LIZZ FIRST INSTALLMENT
+        |--------------------------------------------------------------------------
+        |
+        | This is the ONLY place where rule_percentage is persisted.
+        |
+        | The persisted value is a historical snapshot of the rule that
+        | actually produced this schedule amount.
         |--------------------------------------------------------------------------
         */
 
@@ -1654,6 +1586,24 @@ class PaymentScheduleService
 
                     'installment_number' =>
                         $installmentNumber,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | RULE SNAPSHOT
+                    |--------------------------------------------------------------------------
+                    |
+                    | Example:
+                    |
+                    |     first_installment_percentage = 10.00
+                    |
+                    |     rule_percentage = 10.00
+                    |
+                    | This value is historical metadata.
+                    |--------------------------------------------------------------------------
+                    */
+
+                    'rule_percentage' =>
+                        $firstInstallmentPercentage,
 
                     'due_date' =>
                         $baseDueDate,
@@ -1682,12 +1632,41 @@ class PaymentScheduleService
                 $firstSchedule
             );
 
+            Log::info(
+                'New LIZZ first payment schedule created with rule snapshot.',
+                [
+                    'assessment_id' =>
+                        $assessmentService->assessment_id,
+
+                    'assessment_service_id' =>
+                        $assessmentService->id,
+
+                    'payment_schedule_id' =>
+                        $firstSchedule->id,
+
+                    'installment_number' =>
+                        $installmentNumber,
+
+                    'rule_percentage' =>
+                        $firstInstallmentPercentage,
+
+                    'amount_due' =>
+                        $firstInstallmentAmount,
+
+                    'due_date' =>
+                        $baseDueDate->toDateString(),
+
+                    'status' =>
+                        PaymentScheduleStatus::PENDING->value,
+                ]
+            );
+
             $installmentNumber++;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Nothing remaining
+        | NOTHING REMAINING
         |--------------------------------------------------------------------------
         */
 
@@ -1704,7 +1683,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Determine number of annual installments
+        | DETERMINE ANNUAL INSTALLMENTS
         |--------------------------------------------------------------------------
         |
         | NEW LIZZ:
@@ -1715,16 +1694,7 @@ class PaymentScheduleService
         |
         |     original term = contractual total
         |     remaining term = original term - elapsed term
-        |
-        | Therefore Existing LIZZ with:
-        |
-        |     PAYMENT_COMPLETION_YEARS = 60
-        |     elapsed_payment_years    = 5
-        |
-        | gets:
-        |
-        |     remaining_payment_years = 55
-        |
+        |--------------------------------------------------------------------------
         */
 
         if ($remainingPaymentYears <= 0) {
@@ -1753,7 +1723,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Annual schedules
+        | ANNUAL SCHEDULES
         |--------------------------------------------------------------------------
         */
 
@@ -1764,21 +1734,20 @@ class PaymentScheduleService
         ) {
             /*
             |--------------------------------------------------------------------------
-            | Existing LIZZ:
+            | EXISTING LIZZ
+            |--------------------------------------------------------------------------
             |
-            | First annual installment is due on the resolved base date.
+            | The first annual schedule is due on the resolved base date.
             |
             | Example:
             |
-            | agreement       = 2017-09-11
-            | balance cutoff  = 2022-09-11
-            | base due date   = 2022-09-11
+            |     agreement      = 2017-09-11
+            |     balance cutoff = 2022-09-11
+            |     base due date  = 2022-09-11
             |
-            | 1st = 2022-09-11
-            | 2nd = 2023-09-11
-            | ...
-            | 55th = 2076-09-11
-            |
+            |     #1 = 2022-09-11
+            |     #2 = 2023-09-11
+            |     ...
             |--------------------------------------------------------------------------
             */
 
@@ -1791,10 +1760,12 @@ class PaymentScheduleService
 
             /*
             |--------------------------------------------------------------------------
-            | NEW LIZZ with first installment:
+            | NEW LIZZ WITH FIRST INSTALLMENT
+            |--------------------------------------------------------------------------
             |
-            | Initial installment occurs at base date.
-            | Annual installment 1 starts one year later.
+            | The first percentage installment is already due at base date.
+            |
+            | Therefore annual installment #1 starts one year later.
             |--------------------------------------------------------------------------
             */
 
@@ -1813,7 +1784,7 @@ class PaymentScheduleService
 
             /*
             |--------------------------------------------------------------------------
-            | Final installment absorbs rounding difference.
+            | FINAL INSTALLMENT ABSORBS ROUNDING DIFFERENCE
             |--------------------------------------------------------------------------
             */
 
@@ -1843,6 +1814,9 @@ class PaymentScheduleService
 
                         'annual_installment_number' =>
                             $year,
+
+                        'installment_number' =>
+                            $installmentNumber,
 
                         'remaining_payment_years' =>
                             $remainingPaymentYears,
@@ -1875,6 +1849,22 @@ class PaymentScheduleService
 
                     'installment_number' =>
                         $installmentNumber,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | IMPORTANT:
+                    |
+                    | Annual installments do NOT receive the first-installment
+                    | percentage snapshot.
+                    |
+                    | NULL means no percentage rule was applied to this row.
+                    |
+                    | This is also correct for Existing LIZZ installment #1.
+                    |--------------------------------------------------------------------------
+                    */
+
+                    'rule_percentage' =>
+                        null,
 
                     'due_date' =>
                         $dueDate,
@@ -1917,9 +1907,7 @@ class PaymentScheduleService
 
             /*
             |--------------------------------------------------------------------------
-            | Production-safe logging:
-            |
-            | Do not dump all 55/60 IDs.
+            | PRODUCTION-SAFE LOGGING
             |--------------------------------------------------------------------------
             */
 
@@ -1957,6 +1945,9 @@ class PaymentScheduleService
                         'amount_due' =>
                             $amountDue,
 
+                        'rule_percentage' =>
+                            null,
+
                         'status' =>
                             PaymentScheduleStatus::PENDING->value,
                     ]
@@ -1968,7 +1959,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Reconcile remaining balance
+        | RECONCILE REMAINING BALANCE
         |--------------------------------------------------------------------------
         */
 
@@ -2020,7 +2011,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Reconcile complete principal
+        | RECONCILE COMPLETE PRINCIPAL
         |--------------------------------------------------------------------------
         */
 
@@ -2033,7 +2024,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Final summary
+        | FINAL SUMMARY
         |--------------------------------------------------------------------------
         */
 
@@ -2084,35 +2075,23 @@ class PaymentScheduleService
                 'base_due_date' =>
                     $baseDueDate->toDateString(),
 
+                'first_installment_required' =>
+                    $firstInstallmentRequired,
+
+                'first_installment_percentage' =>
+                    $firstInstallmentPercentage,
+
                 'first_installment_amount' =>
                     $firstInstallmentAmount,
 
                 'remaining_balance_scheduled' =>
                     $remainingBalance,
 
-                /*
-                |--------------------------------------------------------------------------
-                | Original contractual term.
-                |--------------------------------------------------------------------------
-                */
-
                 'payment_completion_years' =>
                     $originalCompletionYears,
 
-                /*
-                |--------------------------------------------------------------------------
-                | Derived elapsed term.
-                |--------------------------------------------------------------------------
-                */
-
                 'elapsed_payment_years' =>
                     $configuration['elapsed_payment_years'],
-
-                /*
-                |--------------------------------------------------------------------------
-                | Actual future term.
-                |--------------------------------------------------------------------------
-                */
 
                 'remaining_payment_years' =>
                     $remainingPaymentYears,
@@ -2242,6 +2221,12 @@ class PaymentScheduleService
         RevenueCodePaymentScheduleRule $rule,
         bool $firstInstallmentRequired
     ): float {
+        /*
+        |--------------------------------------------------------------------------
+        | No first installment means no percentage is applied.
+        |--------------------------------------------------------------------------
+        */
+
         if (! $firstInstallmentRequired) {
             return 0.0;
         }
@@ -2663,7 +2648,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Existing LIZZ may have zero balance and therefore zero principal.
+        | Existing LIZZ may have zero balance.
         |--------------------------------------------------------------------------
         */
 
@@ -2712,6 +2697,12 @@ class PaymentScheduleService
 
                 'remaining_payment_years' =>
                     $configuration['remaining_payment_years'],
+
+                'first_installment_required' =>
+                    $configuration['first_installment_required'],
+
+                'first_installment_percentage' =>
+                    $configuration['first_installment_percentage'],
 
                 'base_due_date' =>
                     $configuration['base_due_date']
@@ -2925,7 +2916,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Original contractual period.
+        | ORIGINAL CONTRACTUAL PERIOD
         |--------------------------------------------------------------------------
         */
 
@@ -2937,7 +2928,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Derived elapsed period.
+        | DERIVED ELAPSED PERIOD
         |--------------------------------------------------------------------------
         */
 
@@ -2949,7 +2940,7 @@ class PaymentScheduleService
 
         /*
         |--------------------------------------------------------------------------
-        | Derived remaining period.
+        | DERIVED REMAINING PERIOD
         |--------------------------------------------------------------------------
         */
 
@@ -3157,7 +3148,7 @@ class PaymentScheduleService
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Never rebuild after actual schedule payments.
+                    | NEVER REBUILD AFTER ACTUAL PAYMENTS
                     |--------------------------------------------------------------------------
                     */
 
@@ -3182,7 +3173,7 @@ class PaymentScheduleService
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Delete all schedules that have not been paid.
+                    | DELETE UNPAID SCHEDULES
                     |--------------------------------------------------------------------------
                     */
 
@@ -3213,6 +3204,15 @@ class PaymentScheduleService
                                 $deleted,
                         ]
                     );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | REBUILD FROM CURRENT CONFIGURATION
+                    |--------------------------------------------------------------------------
+                    |
+                    | Newly generated schedules receive fresh rule snapshots.
+                    |--------------------------------------------------------------------------
+                    */
 
                     return $this->createForAssessmentServiceInternal(
                         $lockedAssessmentService

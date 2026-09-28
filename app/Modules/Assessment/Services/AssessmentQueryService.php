@@ -29,6 +29,8 @@ class AssessmentQueryService
             'services.service',
             'services.values',
             'services.values.files',
+            'services.service.revenueCode.paymentScheduleRule',
+
         ];
     }
 
