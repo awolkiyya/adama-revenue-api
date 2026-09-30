@@ -8,7 +8,7 @@ use App\Modules\Invoice\Services\InvoiceService;
 use App\Services\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Throwable;
-
+use App\Modules\Invoice\Resources\InvoiceDetailResource;
 class InvoiceController
 {
     /*
@@ -156,6 +156,85 @@ class InvoiceController
 
             return ApiResponse::serverError(
                 message: 'Failed to retrieve invoices.',
+                exception: $e,
+            );
+        }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | SHOW
+    |--------------------------------------------------------------------------
+    |
+    | Return a single invoice with its complete detail information.
+    |
+    | The InvoiceService controls:
+    |
+    | - invoice lookup
+    | - related data loading
+    | - invoice detail preparation
+    |
+    | The InvoiceDetailResource controls the response shape.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    public function show(string $id): JsonResponse
+    {
+        try {
+
+            /*
+            |--------------------------------------------------------------------------
+            | INVOICE DETAILS
+            |--------------------------------------------------------------------------
+            */
+
+            $invoice = $this->invoiceService->findForDetails(
+                id: $id,
+            );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | NOT FOUND
+            |--------------------------------------------------------------------------
+            */
+
+            if (!$invoice) {
+                return ApiResponse::notFound(
+                    message: 'Invoice not found.',
+                );
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | RESPONSE
+            |--------------------------------------------------------------------------
+            |
+            | Transform the invoice through InvoiceDetailResource
+            | before returning it to the client.
+            |
+            */
+
+            return ApiResponse::success(
+                data: new InvoiceDetailResource($invoice),
+                message: 'Invoice retrieved successfully.',
+            );
+
+        } catch (Throwable $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | ERROR HANDLING
+            |--------------------------------------------------------------------------
+            */
+
+            report($e);
+
+            return ApiResponse::serverError(
+                message: 'Failed to retrieve invoice.',
                 exception: $e,
             );
         }

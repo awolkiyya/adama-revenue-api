@@ -9,6 +9,7 @@ use App\Modules\Payment\DTOs\InitializePaymentData;
 use App\Modules\Payment\DTOs\PaymentResult;
 use App\Modules\Payment\DTOs\PaymentVerificationResult;
 use App\Modules\Payment\Factories\PaymentProviderFactory;
+use App\Services\DocumentSequenceService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -18,6 +19,7 @@ class PaymentService
 {
     public function __construct(
         protected PaymentProviderFactory $providerFactory,
+        protected DocumentSequenceService $documentSequenceService,
     ) {
     }
 
@@ -55,6 +57,28 @@ class PaymentService
                 $existingPayment->isPending()
                 && filled($existingPayment->checkout_url)
             ) {
+                Log::info(
+                    'Existing pending payment found.',
+                    [
+                        'payment_id' =>
+                            $existingPayment->id,
+
+                        'payment_number' =>
+                            $existingPayment->payment_number,
+
+                        'transaction_reference' =>
+                            $existingPayment->transaction_reference,
+
+                        'payment_reference' =>
+                            $data->paymentReference,
+
+                        'provider' =>
+                            $this->providerValue(
+                                $data->provider
+                            ),
+                    ]
+                );
+
                 return $this->paymentResultFromExistingPayment(
                     $existingPayment,
                     'Payment already initialized.'
@@ -68,6 +92,29 @@ class PaymentService
             */
 
             if ($existingPayment->isSuccessful()) {
+
+                Log::info(
+                    'Existing successful payment found.',
+                    [
+                        'payment_id' =>
+                            $existingPayment->id,
+
+                        'payment_number' =>
+                            $existingPayment->payment_number,
+
+                        'transaction_reference' =>
+                            $existingPayment->transaction_reference,
+
+                        'payment_reference' =>
+                            $data->paymentReference,
+
+                        'provider' =>
+                            $this->providerValue(
+                                $data->provider
+                            ),
+                    ]
+                );
+
                 return $this->paymentResultFromExistingPayment(
                     $existingPayment,
                     'Payment has already been completed.'
@@ -80,10 +127,87 @@ class PaymentService
             |--------------------------------------------------------------------------
             */
 
+            Log::warning(
+                'Existing payment found with non-reusable status.',
+                [
+                    'payment_id' =>
+                        $existingPayment->id,
+
+                    'payment_number' =>
+                        $existingPayment->payment_number,
+
+                    'transaction_reference' =>
+                        $existingPayment->transaction_reference,
+
+                    'status' =>
+                        $this->paymentStatusValue(
+                            $existingPayment->status
+                        ),
+
+                    'payment_reference' =>
+                        $data->paymentReference,
+                ]
+            );
+
             throw new RuntimeException(
                 'A payment already exists for this payment reference.'
             );
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Generate Payment Number
+        |--------------------------------------------------------------------------
+        |
+        | This is the municipal/internal payment document number.
+        |
+        | Example:
+        |
+        | PAY-2018-000001
+        |
+        | This is intentionally different from:
+        |
+        | transaction_reference
+        |
+        | Example:
+        |
+        | PAY-01M3QRDAS51DFXJ489QR3NQ3R6
+        |
+        */
+
+        $paymentNumber =
+            $this->documentSequenceService->generate(
+                sequenceType: 'payment',
+                prefix: 'PAY',
+            );
+
+        Log::info(
+            'Payment number generated.',
+            [
+                'payment_number' =>
+                    $paymentNumber,
+
+                'transaction_reference' =>
+                    $data->paymentReference,
+
+                'invoice_id' =>
+                    $data->invoiceId,
+
+                'citizen_id' =>
+                    $data->citizenId,
+
+                'amount' =>
+                    $data->amount,
+
+                'currency' =>
+                    $data->currency,
+
+                'provider' =>
+                    $this->providerValue(
+                        $data->provider
+                    ),
+            ]
+        );
 
         /*
         |--------------------------------------------------------------------------
@@ -98,7 +222,10 @@ class PaymentService
         */
 
         $payment = DB::transaction(
-            function () use ($data): Payment {
+            function () use (
+                $data,
+                $paymentNumber
+            ): Payment {
                 return Payment::query()->create([
 
                     /*
@@ -112,6 +239,15 @@ class PaymentService
 
                     'citizen_id' =>
                         $data->citizenId,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Payment Number
+                    |--------------------------------------------------------------------------
+                    */
+
+                    'payment_number' =>
+                        $paymentNumber,
 
                     /*
                     |--------------------------------------------------------------------------
@@ -136,7 +272,7 @@ class PaymentService
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Internal Payment Reference
+                    | Internal Transaction Reference
                     |--------------------------------------------------------------------------
                     */
 
@@ -177,9 +313,56 @@ class PaymentService
                     */
 
                     'metadata' =>
-                        $data->metadata,
+                        $data->metadata ?? [],
                 ]);
             }
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Local Payment Created Logging
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info(
+            'Local payment created successfully.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number,
+
+                'transaction_reference' =>
+                    $payment->transaction_reference,
+
+                'invoice_id' =>
+                    $payment->invoice_id,
+
+                'citizen_id' =>
+                    $payment->citizen_id,
+
+                'amount' =>
+                    $payment->amount,
+
+                'currency' =>
+                    $payment->currency,
+
+                'status' =>
+                    $this->paymentStatusValue(
+                        $payment->status
+                    ),
+
+                'provider' =>
+                    $this->providerValue(
+                        $payment->payment_provider
+                    ),
+
+                'method' =>
+                    $this->paymentMethodValue(
+                        $payment->payment_method
+                    ),
+            ]
         );
 
         /*
@@ -199,9 +382,36 @@ class PaymentService
         */
 
         try {
+
+            Log::info(
+                'Calling payment provider initialize.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
+                    'provider' =>
+                        $this->providerValue(
+                            $data->provider
+                        ),
+
+                    'amount' =>
+                        $data->amount,
+
+                    'currency' =>
+                        $data->currency,
+                ]
+            );
+
             $result = $provider->initialize(
                 $data
             );
+
         } catch (Throwable $exception) {
 
             Log::error(
@@ -210,8 +420,14 @@ class PaymentService
                     'payment_id' =>
                         $payment->id,
 
+                    'payment_number' =>
+                        $payment->payment_number,
+
                     'citizen_id' =>
                         $payment->citizen_id,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
 
                     'provider' =>
                         $this->providerValue(
@@ -220,6 +436,15 @@ class PaymentService
 
                     'payment_reference' =>
                         $data->paymentReference,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
+                    'amount' =>
+                        $data->amount,
+
+                    'currency' =>
+                        $data->currency,
 
                     'exception' =>
                         $exception::class,
@@ -248,7 +473,7 @@ class PaymentService
         |--------------------------------------------------------------------------
         */
 
-        if (!$result->success) {
+        if (! $result->success) {
 
             $payment->forceFill([
                 'status' =>
@@ -265,6 +490,37 @@ class PaymentService
                         $result
                     ),
             ])->save();
+
+            Log::warning(
+                'Payment provider initialization returned failure.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
+                    'provider' =>
+                        $this->providerValue(
+                            $data->provider
+                        ),
+
+                    'provider_reference' =>
+                        $result->providerReference,
+
+                    'amount' =>
+                        $data->amount,
+
+                    'currency' =>
+                        $data->currency,
+
+                    'message' =>
+                        $result->message,
+                ]
+            );
 
             return $result;
         }
@@ -308,8 +564,17 @@ class PaymentService
         Log::info(
             'PaymentService::initialize() completed.',
             [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number,
+
                 'payment_reference' =>
                     $data->paymentReference,
+
+                'transaction_reference' =>
+                    $payment->transaction_reference,
 
                 'success' =>
                     $result->success,
@@ -422,8 +687,14 @@ class PaymentService
                     'payment_id' =>
                         $payment->id,
 
+                    'payment_number' =>
+                        $payment->payment_number,
+
                     'citizen_id' =>
                         $payment->citizen_id,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
 
                     'provider' =>
                         $this->providerValue(
@@ -432,6 +703,9 @@ class PaymentService
 
                     'transaction_reference' =>
                         $payment->transaction_reference,
+
+                    'provider_reference' =>
+                        $payment->provider_reference,
 
                     'exception' =>
                         $exception::class,
@@ -533,6 +807,40 @@ class PaymentService
                             ),
                     ])->save();
 
+                    Log::info(
+                        'Payment verification applied successfully.',
+                        [
+                            'payment_id' =>
+                                $lockedPayment->id,
+
+                            'payment_number' =>
+                                $lockedPayment->payment_number,
+
+                            'transaction_reference' =>
+                                $lockedPayment->transaction_reference,
+
+                            'provider_reference' =>
+                                $lockedPayment->provider_reference,
+
+                            'status' =>
+                                $this->paymentStatusValue(
+                                    $lockedPayment->status
+                                ),
+
+                            'amount' =>
+                                $lockedPayment->amount,
+
+                            'currency' =>
+                                $lockedPayment->currency,
+
+                            'payment_date' =>
+                                $lockedPayment->payment_date?->toISOString(),
+
+                            'verified_at' =>
+                                $lockedPayment->verified_at?->toISOString(),
+                        ]
+                    );
+
                     return;
                 }
 
@@ -562,6 +870,31 @@ class PaymentService
                             ),
                     ])->save();
 
+                    Log::warning(
+                        'Payment verification returned failed status.',
+                        [
+                            'payment_id' =>
+                                $lockedPayment->id,
+
+                            'payment_number' =>
+                                $lockedPayment->payment_number,
+
+                            'transaction_reference' =>
+                                $lockedPayment->transaction_reference,
+
+                            'provider_reference' =>
+                                $lockedPayment->provider_reference,
+
+                            'status' =>
+                                $this->paymentStatusValue(
+                                    $lockedPayment->status
+                                ),
+
+                            'failure_reason' =>
+                                $result->message,
+                        ]
+                    );
+
                     return;
                 }
 
@@ -585,6 +918,28 @@ class PaymentService
                             $result
                         ),
                 ])->save();
+
+                Log::info(
+                    'Payment verification remains pending.',
+                    [
+                        'payment_id' =>
+                            $lockedPayment->id,
+
+                        'payment_number' =>
+                            $lockedPayment->payment_number,
+
+                        'transaction_reference' =>
+                            $lockedPayment->transaction_reference,
+
+                        'provider_reference' =>
+                            $lockedPayment->provider_reference,
+
+                        'status' =>
+                            $this->paymentStatusValue(
+                                $lockedPayment->status
+                            ),
+                    ]
+                );
             }
         );
     }
@@ -903,5 +1258,39 @@ class PaymentService
         return $provider instanceof PaymentProvider
             ? $provider->value
             : $provider;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Status Value
+    |--------------------------------------------------------------------------
+    */
+
+    protected function paymentStatusValue(
+        PaymentStatus|string $status
+    ): string {
+
+        return $status instanceof PaymentStatus
+            ? $status->value
+            : $status;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Method Value
+    |--------------------------------------------------------------------------
+    */
+
+    protected function paymentMethodValue(
+        mixed $method
+    ): ?string {
+
+        if ($method === null) {
+            return null;
+        }
+
+        return is_object($method) && property_exists($method, 'value')
+            ? $method->value
+            : (string) $method;
     }
 }

@@ -368,6 +368,74 @@ class InvoiceService
         }
     }
 
+
+
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND INVOICE FOR DETAILS
+    |--------------------------------------------------------------------------
+    |
+    | Return one invoice with all relationships required by
+    | InvoiceDetailResource.
+    |
+    | The service owns eager loading.
+    | The resource owns the API response shape.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    public function findForDetails(
+        string $id
+    ): ?Invoice {
+        return Invoice::query()
+            ->with([
+                /*
+                |--------------------------------------------------------------------------
+                | INVOICE SOURCE / OWNER
+                |--------------------------------------------------------------------------
+                */
+
+                'citizen',
+                'assessment',
+                'administrativeUnit',
+
+                /*
+                |--------------------------------------------------------------------------
+                | INVOICE ITEMS
+                |--------------------------------------------------------------------------
+                */
+
+                'items.service',
+                'items.assessmentService',
+                'items.paymentSchedule',
+
+                /*
+                |--------------------------------------------------------------------------
+                | PAYMENTS
+                |--------------------------------------------------------------------------
+                */
+
+                'payments.receivedBy',
+                'payments.verifiedBy',
+                'payments.paymentEvidence',
+                'payments.receipts',
+
+                /*
+                |--------------------------------------------------------------------------
+                | AUDIT
+                |--------------------------------------------------------------------------
+                */
+
+                'creator',
+                'issuer',
+                'cancelledBy',
+                'voidedBy',
+            ])
+            ->find($id);
+    }
+
     /*
     |--------------------------------------------------------------------------
     | CREATE INVOICE FROM APPROVED ASSESSMENT SERVICES

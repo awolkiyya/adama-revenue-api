@@ -6,6 +6,7 @@ use Andegna\DateTimeFactory;
 use App\Models\Assessment;
 use App\Models\DocumentSequence;
 use App\Models\Invoice;
+use App\Models\Payment;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -125,7 +126,7 @@ class DocumentSequenceService
         |
         | The sequence row is locked before calculating the next value.
         |
-        | This prevents two concurrent requests from receiving the same
+        | This prevents concurrent requests from receiving the same
         | document number.
         |
         */
@@ -224,7 +225,7 @@ class DocumentSequenceService
                 | 4. Synchronize Existing Documents
                 |--------------------------------------------------------------------------
                 |
-                | This is especially important when:
+                | This is important when:
                 |
                 | - the sequence service is introduced into an existing system
                 | - old documents already exist
@@ -233,15 +234,15 @@ class DocumentSequenceService
                 |
                 | Example:
                 |
-                | invoices:
+                | payments:
                 |
-                | INV-2019-000001
-                | INV-2019-000002
-                | INV-2019-000010
+                | PAY-2019-000001
+                | PAY-2019-000002
+                | PAY-2019-000010
                 |
                 | sequence:
                 |
-                | invoice / 2019 / 0
+                | payment / 2019 / 0
                 |
                 | Existing maximum = 10
                 |
@@ -298,8 +299,7 @@ class DocumentSequenceService
                         sprintf(
                             'Document sequence for [%s/%d] has reached the maximum value of %d.',
                             $sequenceType,
-                            $year,
-                            self::MAX_SEQUENCE_VALUE
+                            $year
                         )
                     );
                 }
@@ -353,6 +353,12 @@ class DocumentSequenceService
 
             'invoice' =>
                 $this->getExistingInvoiceMaximum(
+                    $prefix,
+                    $year
+                ),
+
+            'payment' =>
+                $this->getExistingPaymentMaximum(
                     $prefix,
                     $year
                 ),
@@ -454,6 +460,55 @@ class DocumentSequenceService
             $invoiceNumber,
             $documentPrefix,
             'invoice'
+        );
+    }
+
+    /**
+     * Get the highest existing payment sequence.
+     *
+     * Example:
+     *
+     * PAY-2019-000001
+     * PAY-2019-000002
+     * PAY-2019-000015
+     *
+     * Returns:
+     *
+     * 15
+     */
+    protected function getExistingPaymentMaximum(
+        string $prefix,
+        int $year
+    ): ?int {
+        $documentPrefix =
+            sprintf(
+                '%s-%d-',
+                $prefix,
+                $year
+            );
+
+        $paymentNumber =
+            Payment::query()
+                ->where(
+                    'payment_number',
+                    'like',
+                    $documentPrefix . '%'
+                )
+                ->orderByDesc(
+                    'payment_number'
+                )
+                ->value(
+                    'payment_number'
+                );
+
+        if ($paymentNumber === null) {
+            return null;
+        }
+
+        return $this->extractSequenceValue(
+            $paymentNumber,
+            $documentPrefix,
+            'payment'
         );
     }
 

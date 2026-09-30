@@ -42,59 +42,38 @@ class Invoice extends Model
     */
 
     protected $fillable = [
-
         'invoice_number',
-
         'source_type',
-
         'assessment_id',
-
         'payment_schedule_id',
-
         'citizen_id',
-
         'administrative_unit_id',
-
         'status',
-
         'currency',
 
         'subtotal',
-
         'discount_amount',
-
         'penalty_amount',
-
         'interest_amount',
-
         'total_amount',
-
         'paid_amount',
-
         'balance_due',
 
         'issued_at',
-
         'due_date',
-
         'paid_at',
 
         'cancelled_at',
-
         'cancelled_by',
-
         'cancellation_reason',
 
         'voided_at',
-
         'voided_by',
-
         'void_reason',
 
         'notes',
 
         'created_by',
-
         'issued_by',
 
         'source_metadata',
@@ -109,29 +88,19 @@ class Invoice extends Model
     protected function casts(): array
     {
         return [
-
             'subtotal' => 'decimal:4',
-
             'discount_amount' => 'decimal:4',
-
             'penalty_amount' => 'decimal:4',
-
             'interest_amount' => 'decimal:4',
-
             'total_amount' => 'decimal:4',
-
             'paid_amount' => 'decimal:4',
-
             'balance_due' => 'decimal:4',
 
             'issued_at' => 'datetime',
-
             'due_date' => 'date',
-
             'paid_at' => 'datetime',
 
             'cancelled_at' => 'datetime',
-
             'voided_at' => 'datetime',
 
             'source_metadata' => 'array',
@@ -164,24 +133,10 @@ class Invoice extends Model
     /**
      * Payment schedule / installment that generated this invoice.
      *
-     * Important:
+     * Each payment schedule represents one installment.
      *
-     * Each row in payment_schedules represents ONE installment.
-     *
-     * Therefore:
-     *
-     *     payment_schedule_id
-     *             ↓
-     *     payment_schedules.id
-     *
-     * NULL for:
-     *
-     * - normal assessment invoices
-     * - direct collection invoices
-     *
-     * Populated for:
-     *
-     * - LIZZ / schedule-based invoices
+     * NULL for normal assessment invoices and
+     * direct collection invoices.
      */
     public function paymentSchedule(): BelongsTo
     {
@@ -221,13 +176,38 @@ class Invoice extends Model
         return $this->hasMany(
             InvoiceItem::class,
             'invoice_id'
-        )->orderBy(
-            'line_number'
+        )->orderBy('line_number');
+    }
+
+    /**
+     * Payments made against this invoice.
+     *
+     * One invoice can have multiple payments.
+     *
+     * Example:
+     *
+     * Invoice = 2,400 ETB
+     *
+     * Payment 1 = 1,000 ETB
+     * Payment 2 =   500 ETB
+     * Payment 3 =   900 ETB
+     *
+     * Total paid = 2,400 ETB
+     */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(
+            Payment::class,
+            'invoice_id'
         );
     }
 
     /**
      * User who created the invoice.
+     *
+     * Database column:
+     *
+     *     invoices.created_by
      */
     public function creator(): BelongsTo
     {
@@ -239,6 +219,10 @@ class Invoice extends Model
 
     /**
      * User who officially issued the invoice.
+     *
+     * Database column:
+     *
+     *     invoices.issued_by
      */
     public function issuer(): BelongsTo
     {
@@ -250,8 +234,16 @@ class Invoice extends Model
 
     /**
      * User who cancelled the invoice.
+     *
+     * Database column:
+     *
+     *     invoices.cancelled_by
+     *
+     * Relationship name intentionally matches:
+     *
+     *     ->with('cancelledBy')
      */
-    public function canceller(): BelongsTo
+    public function cancelledBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
@@ -261,8 +253,16 @@ class Invoice extends Model
 
     /**
      * User who voided the invoice.
+     *
+     * Database column:
+     *
+     *     invoices.voided_by
+     *
+     * Relationship name intentionally matches:
+     *
+     *     ->with('voidedBy')
      */
-    public function voider(): BelongsTo
+    public function voidedBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
@@ -381,6 +381,9 @@ class Invoice extends Model
             ->whereNotNull('payment_schedule_id');
     }
 
+    /**
+     * Invoices belonging to a specific citizen.
+     */
     public function scopeForCitizen(
         $query,
         string $citizenId
@@ -470,6 +473,11 @@ class Invoice extends Model
         return $this->payment_schedule_id !== null;
     }
 
+    /**
+     * Determine whether the invoice is fully paid.
+     *
+     * Uses BCMath to avoid floating-point comparison problems.
+     */
     public function isFullyPaid(): bool
     {
         return bccomp(

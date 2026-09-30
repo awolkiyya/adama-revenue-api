@@ -86,6 +86,13 @@ class PaymentController extends Controller
             |--------------------------------------------------------------------------
             | Resolve Authenticated User
             |--------------------------------------------------------------------------
+            |
+            | Payment initialization is a taxpayer financial operation.
+            |
+            | An authenticated taxpayer is mandatory.
+            |
+            | Never use a hard-coded citizen ID in production.
+            |
             */
 
             $user = $request->user();
@@ -107,106 +114,93 @@ class PaymentController extends Controller
                 ]
             );
 
+            if (! $user) {
+
+                Log::warning(
+                    'Payment initialization rejected because the user is unauthenticated.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'ip' =>
+                            $request->ip(),
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Authentication is required to initialize a payment.',
+                    401
+                );
+            }
+
             /*
             |--------------------------------------------------------------------------
-            | Resolve Citizen
+            | Resolve Citizen Account
             |--------------------------------------------------------------------------
             |
-            | Production:
-            |
-            | authenticated user
+            | Authenticated user
             |       ↓
             | citizen_accounts
             |       ↓
             | citizen_id
             |
-            | Never trust citizen_id from frontend.
+            | Never trust citizen_id from the frontend.
             |
             */
 
-            $citizenId = null;
+            $citizenAccount =
+                CitizenAccount::query()
+                    ->where(
+                        'user_id',
+                        $user->id
+                    )
+                    ->where(
+                        'is_active',
+                        true
+                    )
+                    ->first();
 
-            if ($user) {
+            Log::info(
+                'Citizen account lookup completed.',
+                [
+                    'request_id' =>
+                        $requestId,
 
-                $citizenAccount =
-                    CitizenAccount::query()
-                        ->where(
-                            'user_id',
-                            $user->id
-                        )
-                        ->where(
-                            'is_active',
-                            true
-                        )
-                        ->first();
+                    'user_id' =>
+                        $user->id,
 
-                Log::info(
-                    'Citizen account lookup completed.',
+                    'citizen_account_found' =>
+                        $citizenAccount !== null,
+
+                    'citizen_account_id' =>
+                        $citizenAccount?->id,
+
+                    'citizen_id' =>
+                        $citizenAccount?->citizen_id,
+                ]
+            );
+
+            if (! $citizenAccount) {
+
+                Log::warning(
+                    'Payment initialization rejected because no active citizen account exists.',
                     [
                         'request_id' =>
                             $requestId,
 
                         'user_id' =>
                             $user->id,
-
-                        'citizen_account_found' =>
-                            $citizenAccount !== null,
-
-                        'citizen_account_id' =>
-                            $citizenAccount?->id,
-
-                        'citizen_id' =>
-                            $citizenAccount?->citizen_id,
                     ]
                 );
 
-                if (!$citizenAccount) {
-
-                    Log::warning(
-                        'Payment initialization rejected because no active citizen account exists.',
-                        [
-                            'request_id' =>
-                                $requestId,
-
-                            'user_id' =>
-                                $user->id,
-                        ]
-                    );
-
-                    return ApiResponse::error(
-                        'No active citizen account is associated with this user.',
-                        403
-                    );
-                }
-
-                $citizenId =
-                    $citizenAccount->citizen_id;
-
-            } else {
-
-                /*
-                |--------------------------------------------------------------------------
-                | Temporary Testing Citizen
-                |--------------------------------------------------------------------------
-                |
-                | REMOVE BEFORE PRODUCTION.
-                |
-                */
-
-                $citizenId =
-                    'd0353d20-6066-417e-95c3-cc9d4a7a101b';
-
-                Log::warning(
-                    'Payment initialization is using a temporary hard-coded citizen ID because the request is unauthenticated.',
-                    [
-                        'request_id' =>
-                            $requestId,
-
-                        'citizen_id' =>
-                            $citizenId,
-                    ]
+                return ApiResponse::error(
+                    'No active citizen account is associated with this user.',
+                    403
                 );
             }
+
+            $citizenId =
+                $citizenAccount->citizen_id;
 
             /*
             |--------------------------------------------------------------------------
@@ -237,13 +231,16 @@ class PaymentController extends Controller
                 ]
             );
 
-            if (!$citizenExists) {
+            if (! $citizenExists) {
 
                 Log::error(
-                    'Payment initialization rejected because citizen does not exist.',
+                    'Payment initialization rejected because citizen does not exist or is inactive.',
                     [
                         'request_id' =>
                             $requestId,
+
+                        'user_id' =>
+                            $user->id,
 
                         'citizen_id' =>
                             $citizenId,
@@ -258,18 +255,163 @@ class PaymentController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Generate Internal Payment Reference
+            | Resolve Required Payment Fields
+            |--------------------------------------------------------------------------
+            */
+
+            $invoiceId =
+                $validated['invoice_id'];
+
+            $amount =
+                $validated['amount'];
+
+            $paymentMethod =
+                $validated['payment_method'];
+
+            $paymentProvider =
+                $validated['payment_provider'];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Defensive Amount Validation
             |--------------------------------------------------------------------------
             |
-            | IMPORTANT:
+            | InitializePaymentRequest should already validate these values.
             |
-            | The client should NOT generate the payment reference.
-            | The backend owns this value.
+            | These checks are intentionally repeated here because this is
+            | a financial operation and we do not want an accidental null,
+            | zero, negative, or non-numeric amount reaching the payment
+            | service/provider.
+            |
+            */
+
+            if (
+                ! is_numeric($amount)
+                ||
+                (float) $amount <= 0
+            ) {
+
+                Log::warning(
+                    'Payment initialization rejected because amount is invalid.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
+
+                        'citizen_id' =>
+                            $citizenId,
+
+                        'invoice_id' =>
+                            $invoiceId,
+
+                        'amount' =>
+                            $amount,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Payment amount must be greater than zero.',
+                    422
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Normalize Amount
+            |--------------------------------------------------------------------------
+            |
+            | Keep two decimal places for the DTO/provider boundary.
+            |
+            | The authoritative invoice balance must still be checked by
+            | the payment request/service/domain layer.
+            |
+            */
+
+            $amount =
+                number_format(
+                    (float) $amount,
+                    2,
+                    '.',
+                    ''
+                );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Server-Controlled Currency
+            |--------------------------------------------------------------------------
+            |
+            | The municipal revenue system currently operates in ETB.
+            |
+            | Do not allow the taxpayer to select another currency.
+            |
+            */
+
+            $currency = 'ETB';
+
+            /*
+            |--------------------------------------------------------------------------
+            | Log Financial Request Values
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Payment financial parameters resolved.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $user->id,
+
+                    'citizen_id' =>
+                        $citizenId,
+
+                    'invoice_id' =>
+                        $invoiceId,
+
+                    'amount' =>
+                        $amount,
+
+                    'currency' =>
+                        $currency,
+
+                    'payment_method' =>
+                        $this->safeEnumValue(
+                            $paymentMethod
+                        ),
+
+                    'payment_provider' =>
+                        $this->safeEnumValue(
+                            $paymentProvider
+                        ),
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Generate Internal Transaction Reference
+            |--------------------------------------------------------------------------
+            |
+            | This is NOT the human-readable payment_number.
+            |
+            | transaction_reference:
+            |
+            | PAY-01M3QR...
+            |
+            | payment_number:
+            |
+            | PAY-2019-000001
+            |
+            | PaymentService generates payment_number through
+            | DocumentSequenceService.
             |
             */
 
             $paymentReference =
-                'PAY-' . strtoupper(
+                'PAY-' .
+                strtoupper(
                     Str::ulid()->toBase32()
                 );
 
@@ -281,42 +423,23 @@ class PaymentController extends Controller
 
                     'payment_reference' =>
                         $paymentReference,
-                ]
-            );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Prepare DTO Data
-            |--------------------------------------------------------------------------
-            */
-
-            Log::info(
-                'Preparing payment DTO data.',
-                [
-                    'request_id' =>
-                        $requestId,
+                    'invoice_id' =>
+                        $invoiceId,
 
                     'citizen_id' =>
                         $citizenId,
-
-                    'payment_reference' =>
-                        $paymentReference,
                 ]
             );
 
             /*
             |--------------------------------------------------------------------------
-            | Normalize Customer Name
+            | Prepare Customer Name
             |--------------------------------------------------------------------------
             |
-            | Request contains:
+            | The request may provide first/last name.
             |
-            | customer_first_name
-            | customer_last_name
-            |
-            | DTO expects:
-            |
-            | customer_name
+            | These values are informational provider fields.
             |
             */
 
@@ -331,9 +454,14 @@ class PaymentController extends Controller
                     )
                 );
 
+            $customerName =
+                $customerName !== ''
+                    ? $customerName
+                    : null;
+
             /*
             |--------------------------------------------------------------------------
-            | Build DTO Payload
+            | Prepare DTO Data
             |--------------------------------------------------------------------------
             */
 
@@ -341,64 +469,76 @@ class PaymentController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | Trusted Backend Values
+                | Invoice
                 |--------------------------------------------------------------------------
                 */
 
                 'invoice_id' =>
-                    $validated['invoice_id'],
+                    $invoiceId,
+
+                /*
+                |--------------------------------------------------------------------------
+                | Trusted Backend Identity
+                |--------------------------------------------------------------------------
+                */
 
                 'citizen_id' =>
                     $citizenId,
+
+                /*
+                |--------------------------------------------------------------------------
+                | Internal Transaction Reference
+                |--------------------------------------------------------------------------
+                */
 
                 'payment_reference' =>
                     $paymentReference,
 
                 /*
                 |--------------------------------------------------------------------------
-                | Payment Configuration
+                | Payment Method
                 |--------------------------------------------------------------------------
-                |
-                | Request currently sends:
-                |
-                | payment_method
-                | payment_provider
-                |
-                | DTO expects:
-                |
-                | method
-                | provider
-                |
                 */
 
                 'method' =>
-                    $validated['payment_method'],
-
-                'provider' =>
-                    $validated['payment_provider'],
+                    $paymentMethod,
 
                 /*
                 |--------------------------------------------------------------------------
-                | Amount
+                | Payment Provider
+                |--------------------------------------------------------------------------
+                */
+
+                'provider' =>
+                    $paymentProvider,
+
+                /*
+                |--------------------------------------------------------------------------
+                | Requested Payment Amount
                 |--------------------------------------------------------------------------
                 |
                 | IMPORTANT:
                 |
-                | Ideally amount should be resolved from the invoice
-                | on the backend rather than trusted from the client.
+                | There is intentionally NO fallback such as:
                 |
-                | Your current request does not contain amount.
+                | $validated['amount'] ?? 100
                 |
-                | Therefore we leave this to InitializePaymentRequest
-                | only if it already resolves/provides it.
+                | A financial request must never silently become another
+                | amount.
                 |
                 */
 
                 'amount' =>
-                    $validated['amount'] ?? 100,
+                    $amount,
+
+                /*
+                |--------------------------------------------------------------------------
+                | Server-Controlled Currency
+                |--------------------------------------------------------------------------
+                */
 
                 'currency' =>
-                    $validated['currency'] ?? 'ETB',
+                    $currency,
 
                 /*
                 |--------------------------------------------------------------------------
@@ -410,9 +550,7 @@ class PaymentController extends Controller
                     $validated['customer_id'] ?? null,
 
                 'customer_name' =>
-                    $customerName !== ''
-                        ? $customerName
-                        : null,
+                    $customerName,
 
                 'customer_email' =>
                     $validated['customer_email'] ?? null,
@@ -450,6 +588,45 @@ class PaymentController extends Controller
                 'metadata' =>
                     $validated['metadata'] ?? [],
             ];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Log DTO Preparation
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Preparing payment DTO data.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'invoice_id' =>
+                        $invoiceId,
+
+                    'citizen_id' =>
+                        $citizenId,
+
+                    'payment_reference' =>
+                        $paymentReference,
+
+                    'amount' =>
+                        $amount,
+
+                    'currency' =>
+                        $currency,
+
+                    'provider' =>
+                        $this->safeEnumValue(
+                            $paymentProvider
+                        ),
+
+                    'method' =>
+                        $this->safeEnumValue(
+                            $paymentMethod
+                        ),
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -574,10 +751,15 @@ class PaymentController extends Controller
                         $result->message,
 
                     'provider' =>
-                        $result->provider,
+                        $this->safeEnumValue(
+                            $result->provider
+                        ),
 
                     'provider_reference' =>
                         $result->providerReference,
+
+                    'provider_transaction_id' =>
+                        $result->providerTransactionId,
 
                     'amount' =>
                         $result->amount,
@@ -589,6 +771,45 @@ class PaymentController extends Controller
                         $result->checkoutUrl,
                 ]
             );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Provider Initialization Failed
+            |--------------------------------------------------------------------------
+            */
+
+            if (! $result->isSuccessful()) {
+
+                Log::warning(
+                    'Payment initialization completed without a successful provider checkout.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'payment_reference' =>
+                            $data->paymentReference,
+
+                        'invoice_id' =>
+                            $data->invoiceId,
+
+                        'citizen_id' =>
+                            $data->citizenId,
+
+                        'provider' =>
+                            $this->safeEnumValue(
+                                $data->provider
+                            ),
+
+                        'message' =>
+                            $result->message,
+                    ]
+                );
+
+                return ApiResponse::success(
+                    $result,
+                    $result->message
+                );
+            }
 
             /*
             |--------------------------------------------------------------------------
@@ -613,6 +834,15 @@ class PaymentController extends Controller
 
                     'provider_reference' =>
                         $result->providerReference,
+
+                    'provider_transaction_id' =>
+                        $result->providerTransactionId,
+
+                    'amount' =>
+                        $data->amount,
+
+                    'currency' =>
+                        $data->currency,
 
                     'message' =>
                         $result->message,
@@ -708,6 +938,83 @@ class PaymentController extends Controller
 
         try {
 
+            /*
+            |--------------------------------------------------------------------------
+            | Authentication Required
+            |--------------------------------------------------------------------------
+            */
+
+            $user =
+                $request->user();
+
+            if (! $user) {
+
+                Log::warning(
+                    'Payment verification rejected because the user is unauthenticated.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'transaction_reference' =>
+                            $transactionReference,
+
+                        'ip' =>
+                            $request->ip(),
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Authentication is required to verify a payment.',
+                    401
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Citizen Account
+            |--------------------------------------------------------------------------
+            */
+
+            $citizenAccount =
+                CitizenAccount::query()
+                    ->where(
+                        'user_id',
+                        $user->id
+                    )
+                    ->where(
+                        'is_active',
+                        true
+                    )
+                    ->first();
+
+            if (! $citizenAccount) {
+
+                Log::warning(
+                    'Payment verification rejected because no active citizen account exists.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
+
+                        'transaction_reference' =>
+                            $transactionReference,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'No active citizen account is associated with this user.',
+                    403
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Find Payment
+            |--------------------------------------------------------------------------
+            */
+
             Log::info(
                 'Searching for payment by transaction reference.',
                 [
@@ -721,9 +1028,80 @@ class PaymentController extends Controller
 
             $payment =
                 $this->paymentService
-                    ->findByTransactionReferenceOrFail(
+                    ->findByTransactionReference(
                         $transactionReference
                     );
+
+            if (! $payment) {
+
+                Log::warning(
+                    'Payment verification rejected because payment was not found.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
+
+                        'transaction_reference' =>
+                            $transactionReference,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Payment not found.',
+                    404
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Ownership Check
+            |--------------------------------------------------------------------------
+            |
+            | Never allow one taxpayer to verify another taxpayer's payment.
+            |
+            */
+
+            if (
+                $payment->citizen_id !==
+                $citizenAccount->citizen_id
+            ) {
+
+                Log::warning(
+                    'Payment verification denied because citizen ownership check failed.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
+
+                        'authenticated_citizen_id' =>
+                            $citizenAccount->citizen_id,
+
+                        'payment_id' =>
+                            $payment->id,
+
+                        'payment_citizen_id' =>
+                            $payment->citizen_id,
+
+                        'transaction_reference' =>
+                            $transactionReference,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Payment not found.',
+                    404
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Found
+            |--------------------------------------------------------------------------
+            */
 
             Log::info(
                 'Payment found for verification.',
@@ -733,6 +1111,9 @@ class PaymentController extends Controller
 
                     'payment_id' =>
                         $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
 
                     'invoice_id' =>
                         $payment->invoice_id,
@@ -766,6 +1147,12 @@ class PaymentController extends Controller
                 ]
             );
 
+            /*
+            |--------------------------------------------------------------------------
+            | Verify With Provider
+            |--------------------------------------------------------------------------
+            */
+
             Log::info(
                 'Calling PaymentVerificationService::verify().',
                 [
@@ -774,6 +1161,9 @@ class PaymentController extends Controller
 
                     'payment_id' =>
                         $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
 
                     'transaction_reference' =>
                         $payment->transaction_reference,
@@ -790,6 +1180,12 @@ class PaymentController extends Controller
                     $payment
                 );
 
+            /*
+            |--------------------------------------------------------------------------
+            | Verification Result
+            |--------------------------------------------------------------------------
+            */
+
             Log::info(
                 'Payment provider verification completed.',
                 [
@@ -798,6 +1194,9 @@ class PaymentController extends Controller
 
                     'payment_id' =>
                         $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
 
                     'transaction_reference' =>
                         $payment->transaction_reference,
@@ -822,6 +1221,12 @@ class PaymentController extends Controller
                 ]
             );
 
+            /*
+            |--------------------------------------------------------------------------
+            | Refresh Payment
+            |--------------------------------------------------------------------------
+            */
+
             $payment->refresh();
 
             Log::info(
@@ -833,6 +1238,12 @@ class PaymentController extends Controller
                     'payment_id' =>
                         $payment->id,
 
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
+
                     'citizen_id' =>
                         $payment->citizen_id,
 
@@ -840,6 +1251,12 @@ class PaymentController extends Controller
                         $this->safeEnumValue(
                             $payment->status
                         ),
+
+                    'amount' =>
+                        $payment->amount,
+
+                    'currency' =>
+                        $payment->currency,
 
                     'provider_reference' =>
                         $payment->provider_reference,
@@ -852,15 +1269,25 @@ class PaymentController extends Controller
                 ]
             );
 
+            /*
+            |--------------------------------------------------------------------------
+            | Completed
+            |--------------------------------------------------------------------------
+            */
+
             return ApiResponse::success(
                 [
                     'payment' =>
-                        new PaymentResource($payment),
+                        new PaymentResource(
+                            $payment
+                        ),
 
                     'verification' =>
                         $result,
                 ],
-                $this->verificationMessage($result)
+                $this->verificationMessage(
+                    $result
+                )
             );
 
         } catch (Throwable $exception) {
@@ -928,91 +1355,103 @@ class PaymentController extends Controller
                 'authenticated' =>
                     $request->user() !== null,
 
-                'payment_reference' =>
+                'payment_id' =>
                     $payment,
 
                 'ip' =>
                     $request->ip(),
+
+                'user_agent' =>
+                    $request->userAgent(),
             ]
         );
 
         try {
 
-            $paymentModel =
-                $this->paymentService
-                    ->findByTransactionReferenceOrFail(
-                        $payment
-                    );
+            /*
+            |--------------------------------------------------------------------------
+            | Authentication Required
+            |--------------------------------------------------------------------------
+            */
 
-            Log::info(
-                'Payment found for retrieval.',
-                [
-                    'request_id' =>
-                        $requestId,
+            $user =
+                $request->user();
 
-                    'payment_id' =>
-                        $paymentModel->id,
-
-                    'invoice_id' =>
-                        $paymentModel->invoice_id,
-
-                    'payment_user_id' =>
-                        $paymentModel->user_id,
-
-                    'citizen_id' =>
-                        $paymentModel->citizen_id,
-
-                    'status' =>
-                        $this->safeEnumValue(
-                            $paymentModel->status
-                        ),
-                ]
-            );
-
-            $user = $request->user();
-
-            if ($user) {
-
-                $citizenAccount =
-                    CitizenAccount::query()
-                        ->where(
-                            'user_id',
-                            $user->id
-                        )
-                        ->where(
-                            'is_active',
-                            true
-                        )
-                        ->first();
-
-                $authorized =
-                    $citizenAccount
-                    && $citizenAccount->citizen_id ===
-                        $paymentModel->citizen_id;
-
-            } else {
-
-                $authorized = false;
-            }
-
-            if (!$authorized) {
+            if (! $user) {
 
                 Log::warning(
-                    'Payment retrieval denied because citizen ownership check failed.',
+                    'Payment retrieval rejected because the user is unauthenticated.',
                     [
                         'request_id' =>
                             $requestId,
 
-                        'authenticated_user_id' =>
-                            $user?->id,
+                        'payment_id' =>
+                            $payment,
+
+                        'ip' =>
+                            $request->ip(),
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Authentication is required.',
+                    401
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Find Payment For Authenticated User
+            |--------------------------------------------------------------------------
+            |
+            | The route parameter is the Payment UUID.
+            |
+            | Do NOT interpret it as transaction_reference.
+            |
+            */
+
+            $paymentModel =
+                $this->paymentService
+                    ->findForUser(
+                        $user,
+                        $payment
+                    );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Not Found / Not Owned
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Payment ownership lookup completed.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $user->id,
+
+                    'payment_id' =>
+                        $payment,
+
+                    'payment_found' =>
+                        $paymentModel !== null,
+                ]
+            );
+
+            if (! $paymentModel) {
+
+                Log::warning(
+                    'Payment retrieval denied because payment does not belong to authenticated user.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
 
                         'payment_id' =>
-                            $paymentModel->id,
-
-                        'payment_citizen_id' =>
-                            $paymentModel->citizen_id,
-
-                        'payment_reference' =>
                             $payment,
                     ]
                 );
@@ -1023,31 +1462,59 @@ class PaymentController extends Controller
                 );
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Found
+            |--------------------------------------------------------------------------
+            */
+
             Log::info(
                 'Payment retrieved successfully.',
                 [
                     'request_id' =>
                         $requestId,
 
+                    'user_id' =>
+                        $user->id,
+
                     'payment_id' =>
                         $paymentModel->id,
 
-                    'payment_reference' =>
+                    'payment_number' =>
+                        $paymentModel->payment_number,
+
+                    'transaction_reference' =>
                         $paymentModel->transaction_reference,
+
+                    'invoice_id' =>
+                        $paymentModel->invoice_id,
 
                     'citizen_id' =>
                         $paymentModel->citizen_id,
+
+                    'status' =>
+                        $this->safeEnumValue(
+                            $paymentModel->status
+                        ),
+
+                    'amount' =>
+                        $paymentModel->amount,
+
+                    'currency' =>
+                        $paymentModel->currency,
                 ]
             );
 
             return ApiResponse::success(
-                new PaymentResource($paymentModel),
+                new PaymentResource(
+                    $paymentModel
+                ),
                 'Payment retrieved successfully.'
             );
 
         } catch (Throwable $exception) {
 
-            Log::warning(
+            Log::error(
                 'Payment retrieval failed.',
                 [
                     'request_id' =>
@@ -1056,7 +1523,7 @@ class PaymentController extends Controller
                     'user_id' =>
                         $request->user()?->id,
 
-                    'payment_reference' =>
+                    'payment_id' =>
                         $payment,
 
                     'exception' =>
@@ -1070,6 +1537,9 @@ class PaymentController extends Controller
 
                     'line' =>
                         $exception->getLine(),
+
+                    'trace' =>
+                        $exception->getTraceAsString(),
                 ]
             );
 
@@ -1120,6 +1590,33 @@ class PaymentController extends Controller
                 'refresh_token',
                 'authorization',
             ])
+            ->map(
+                function ($value, $key) {
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Protect Sensitive Customer Information In Logs
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if (
+                        in_array(
+                            $key,
+                            [
+                                'customer_email',
+                                'customer_phone',
+                            ],
+                            true
+                        )
+                    ) {
+                        return filled($value)
+                            ? '[REDACTED]'
+                            : null;
+                    }
+
+                    return $value;
+                }
+            )
             ->toArray();
     }
 

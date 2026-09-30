@@ -149,6 +149,12 @@ Route::prefix('v1')->group(function () {
             'routes/Api/v1/payment-schedule.php'
         );
 
+         // Taxpayer
+
+         require base_path(
+            'routes/Api/v1/taxpayer.php'
+        );
+
 
 
         // ----------------------------------------------------
