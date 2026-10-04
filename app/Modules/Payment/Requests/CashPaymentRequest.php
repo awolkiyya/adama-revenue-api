@@ -11,7 +11,7 @@ class CashPaymentRequest extends FormRequest
      * is allowed to submit a cash payment.
      *
      * Detailed authorization should also be enforced
-     * by the PaymentService / policy layer.
+     * by the PaymentService / Policy layer.
      */
     public function authorize(): bool
     {
@@ -32,26 +32,29 @@ class CashPaymentRequest extends FormRequest
 
             'invoice_id' => [
                 'required',
-                'integer',
+                'uuid',
                 'exists:invoices,id',
             ],
 
             /*
             |--------------------------------------------------------------------------
-            | Cash Collection Information
+            | Payment Amount
             |--------------------------------------------------------------------------
+            |
+            | The PaymentService must verify that:
+            |
+            | - The amount is greater than zero.
+            | - The invoice is payable.
+            | - The amount does not exceed the outstanding balance.
+            | - Partial payments are allowed for the invoice.
+            |
             */
 
-            'received_by' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
-
-            'receipt_reference' => [
-                'nullable',
-                'string',
-                'max:100',
+            'amount' => [
+                'required',
+                'numeric',
+                'gt:0',
+                'decimal:0,4',
             ],
 
             /*
@@ -89,23 +92,53 @@ class CashPaymentRequest extends FormRequest
     public function messages(): array
     {
         return [
+            /*
+            |--------------------------------------------------------------------------
+            | Invoice
+            |--------------------------------------------------------------------------
+            */
+
             'invoice_id.required' =>
                 'An invoice is required for the cash payment.',
 
-            'invoice_id.integer' =>
-                'The invoice ID must be a valid integer.',
+            'invoice_id.uuid' =>
+                'The invoice ID must be a valid UUID.',
 
             'invoice_id.exists' =>
                 'The selected invoice does not exist.',
 
-            'received_by.max' =>
-                'The receiver name may not exceed 255 characters.',
+            /*
+            |--------------------------------------------------------------------------
+            | Amount
+            |--------------------------------------------------------------------------
+            */
 
-            'receipt_reference.max' =>
-                'The receipt reference may not exceed 100 characters.',
+            'amount.required' =>
+                'The payment amount is required.',
+
+            'amount.numeric' =>
+                'The payment amount must be a valid number.',
+
+            'amount.gt' =>
+                'The payment amount must be greater than zero.',
+
+            'amount.decimal' =>
+                'The payment amount may have up to four decimal places.',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Description
+            |--------------------------------------------------------------------------
+            */
 
             'description.max' =>
                 'The payment description may not exceed 500 characters.',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Metadata
+            |--------------------------------------------------------------------------
+            */
 
             'metadata.array' =>
                 'Payment metadata must be a valid object.',
@@ -118,12 +151,12 @@ class CashPaymentRequest extends FormRequest
     protected function prepareForValidation(): void
     {
         $this->merge([
-            'received_by' => $this->filled('received_by')
-                ? trim((string) $this->input('received_by'))
+            'invoice_id' => $this->filled('invoice_id')
+                ? trim((string) $this->input('invoice_id'))
                 : null,
 
-            'receipt_reference' => $this->filled('receipt_reference')
-                ? trim((string) $this->input('receipt_reference'))
+            'amount' => $this->filled('amount')
+                ? $this->input('amount')
                 : null,
 
             'description' => $this->filled('description')

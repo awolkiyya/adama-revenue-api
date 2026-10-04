@@ -20,6 +20,9 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Spatie\Permission\Middleware\PermissionMiddleware;
+use Spatie\Permission\Middleware\RoleMiddleware;
+use Spatie\Permission\Middleware\RoleOrPermissionMiddleware;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -67,7 +70,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->statefulApi();
 
 
-         /*
+        /*
         |--------------------------------------------------------------------------
         | Cookie Encryption
         |--------------------------------------------------------------------------
@@ -81,14 +84,57 @@ return Application::configure(basePath: dirname(__DIR__))
             'role',
         ]);
 
+
         /*
         |--------------------------------------------------------------------------
-        | Custom Middleware Aliases
+        | Middleware Aliases
         |--------------------------------------------------------------------------
         */
 
         $middleware->alias([
+
+            /*
+            |--------------------------------------------------------------------------
+            | Application Middleware
+            |--------------------------------------------------------------------------
+            */
+
             'log.auth' => \App\Http\Middleware\LogAuthenticationRequest::class,
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Spatie Permission Middleware
+            |--------------------------------------------------------------------------
+            |
+            | permission:users.view
+            | permission:agent.portal_access
+            | permission:payments.collect
+            |
+            */
+
+            'permission' => PermissionMiddleware::class,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Spatie Role Middleware
+            |--------------------------------------------------------------------------
+            |
+            | Kept available for places where role checks are explicitly
+            | required. Roles are not used as the portal authorization
+            | boundary.
+            |
+            */
+
+            'role' => RoleMiddleware::class,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Spatie Role OR Permission Middleware
+            |--------------------------------------------------------------------------
+            */
+
+            'role_or_permission' => RoleOrPermissionMiddleware::class,
         ]);
     })
 

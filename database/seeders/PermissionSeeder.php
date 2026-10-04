@@ -1302,8 +1302,432 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+            [
+                'name' => 'audit.view',
+                'label' => 'View Audit Logs',
+                'module' => 'audit',
+                'description' => 'Allows viewing audit logs and system activity history.',
+                'is_system' => true,
+            ],
+        ];
 
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Catalog Before Database Changes
+        |--------------------------------------------------------------------------
+        */
 
+        $this->validateCatalog(
+            permissions: $permissions,
+            guard: $guard
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Synchronize Catalog
+        |--------------------------------------------------------------------------
+        */
+
+        DB::transaction(function () use ($permissions, $guard): void {
+            foreach ($permissions as $permissionData) {
+                Permission::updateOrCreate(
+                    [
+                        'name' => $permissionData['name'],
+                        'guard_name' => $guard,
+                    ],
+                    [
+                        'label' => $permissionData['label'],
+                        'module' => $permissionData['module'],
+                        'description' => $permissionData['description'],
+                        'is_system' => $permissionData['is_system'],
+                    ]
+                );
+            }
+        });
+
+        /*
+        |--------------------------------------------------------------------------
+        | Clear Spatie Permission Cache
+        |--------------------------------------------------------------------------
+        */
+
+        app(PermissionRegistrar::class)
+            ->forgetCachedPermissions();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Clear Application Permission Catalog Cache
+        |--------------------------------------------------------------------------
+        */
+
+        Cache::forget('permission_catalog');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Report Result
+        |--------------------------------------------------------------------------
+        */
+
+        $this->command?->info(
+            sprintf(
+                'Permission catalog synchronized successfully. %d permissions processed.',
+                count($permissions)
+            )
+        );
+    }
+
+    /**
+     * Validate the complete permission catalog.
+     *
+     * Validation is intentionally performed before any database changes.
+     */
+    private function validateCatalog(
+        array $permissions,
+        string $guard
+    ): void {
+        /*
+        |--------------------------------------------------------------------------
+        | Guard Validation
+        |--------------------------------------------------------------------------
+        */
+
+        if ($guard !== 'api') {
+            throw new RuntimeException(
+                sprintf(
+                    'Invalid permission guard [%s]. Expected [api].',
+                    $guard
+                )
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Catalog Must Not Be Empty
+        |--------------------------------------------------------------------------
+        */
+
+        if ($permissions === []) {
+            throw new RuntimeException(
+                'Permission catalog cannot be empty.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Required Fields
+        |--------------------------------------------------------------------------
+        */
+
+        $requiredFields = [
+            'name',
+            'label',
+            'module',
+            'description',
+            'is_system',
+        ];
+
+        $permissionNames = [];
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Individual Permissions
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($permissions as $index => $permission) {
+
+            if (!is_array($permission)) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission definition at index %d must be an array.',
+                        $index
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Required Fields
+            |--------------------------------------------------------------------------
+            */
+
+            foreach ($requiredFields as $field) {
+                if (!array_key_exists($field, $permission)) {
+                    throw new RuntimeException(
+                        sprintf(
+                            'Permission definition at index %d is missing required field [%s].',
+                            $index,
+                            $field
+                        )
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Permission Name
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                !is_string($permission['name']) ||
+                trim($permission['name']) === ''
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission definition at index %d must have a valid name.',
+                        $index
+                    )
+                );
+            }
+
+            $permissionName = trim($permission['name']);
+
+            if (
+                !preg_match(
+                    '/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/',
+                    $permissionName
+                )
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Invalid permission name [%s]. Expected format module.action.',
+                        $permissionName
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Label
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                !is_string($permission['label']) ||
+                trim($permission['label']) === ''
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission [%s] must have a valid label.',
+                        $permissionName
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Module
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                !is_string($permission['module']) ||
+                trim($permission['module']) === ''
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission [%s] must have a valid module.',
+                        $permissionName
+                    )
+                );
+            }
+
+            $module = trim($permission['module']);
+
+            if (
+                !preg_match(
+                    '/^[a-z][a-z0-9_]*$/',
+                    $module
+                )
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission [%s] has invalid module [%s].',
+                        $permissionName,
+                        $module
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Description
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                !is_string($permission['description']) ||
+                trim($permission['description']) === ''
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission [%s] must have a valid description.',
+                        $permissionName
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | System Flag
+            |--------------------------------------------------------------------------
+            */
+
+            if (!is_bool($permission['is_system'])) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission [%s] must define is_system as boolean.',
+                        $permissionName
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Extract Module
+            |--------------------------------------------------------------------------
+            */
+
+            [$permissionModule] = explode(
+                '.',
+                $permissionName,
+                2
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Module Consistency
+            |--------------------------------------------------------------------------
+            */
+
+            if ($permissionModule !== $module) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Permission [%s] has inconsistent module [%s]. Expected [%s].',
+                        $permissionName,
+                        $module,
+                        $permissionModule
+                    )
+                );
+            }
+
+            $permissionNames[] = $permissionName;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Duplicate Permission Names
+        |--------------------------------------------------------------------------
+        */
+
+        $nameCounts = array_count_values($permissionNames);
+
+        $duplicateNames = [];
+
+        foreach ($nameCounts as $name => $count) {
+            if ($count > 1) {
+                $duplicateNames[] = $name;
+            }
+        }
+
+        if ($duplicateNames !== []) {
+            throw new RuntimeException(
+                'Duplicate permission names detected: ' .
+                implode(', ', $duplicateNames)
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Canonical Uniqueness Check
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            count($permissionNames) !==
+            count(array_unique($permissionNames))
+        ) {
+            throw new RuntimeException(
+                'Permission catalog contains duplicate canonical permission names.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Existing Database Guard Conflict
+        |--------------------------------------------------------------------------
+        |
+        | Spatie identifies permissions by name + guard.
+        |
+        | If the same permission name already exists under another
+        | guard, fail rather than silently creating an inconsistent
+        | permission model.
+        |
+        */
+
+        $existingWrongGuardPermissions = Permission::query()
+            ->whereIn('name', $permissionNames)
+            ->where('guard_name', '!=', $guard)
+            ->get([
+                'name',
+                'guard_name',
+            ]);
+
+        if ($existingWrongGuardPermissions->isNotEmpty()) {
+            $conflicts = $existingWrongGuardPermissions
+                ->map(
+                    fn (Permission $permission): string =>
+                        sprintf(
+                            '%s [%s]',
+                            $permission->name,
+                            $permission->guard_name
+                        )
+                )
+                ->implode(', ');
+
+            throw new RuntimeException(
+                'Permission guard conflicts detected: ' . $conflicts
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Existing System Permission Protection
+        |--------------------------------------------------------------------------
+        |
+        | Once a permission is marked as system-level, the seeder
+        | must never silently downgrade it to non-system.
+        |
+        */
+
+        $existingSystemPermissions = Permission::query()
+            ->whereIn('name', $permissionNames)
+            ->where('guard_name', $guard)
+            ->where('is_system', true)
+            ->get(['name']);
+
+        $catalogByName = [];
+
+        foreach ($permissions as $permission) {
+            $catalogByName[$permission['name']] = $permission;
+        }
+
+        foreach ($existingSystemPermissions as $existingPermission) {
+            if (
+                isset($catalogByName[$existingPermission->name]) &&
+                $catalogByName[$existingPermission->name]['is_system'] !== true
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Protected system permission [%s] cannot be changed to non-system.',
+                        $existingPermission->name
+                    )
+                );
+            }
+        }
+    }
+}
 
 
 
@@ -2313,430 +2737,3 @@ class PermissionSeeder extends Seeder
             | Audit
             |--------------------------------------------------------------------------
             */
-
-            [
-                'name' => 'audit.view',
-                'label' => 'View Audit Logs',
-                'module' => 'audit',
-                'description' => 'Allows viewing audit logs and system activity history.',
-                'is_system' => true,
-            ],
-        ];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Catalog Before Database Changes
-        |--------------------------------------------------------------------------
-        */
-
-        $this->validateCatalog(
-            permissions: $permissions,
-            guard: $guard
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Synchronize Catalog
-        |--------------------------------------------------------------------------
-        */
-
-        DB::transaction(function () use ($permissions, $guard): void {
-            foreach ($permissions as $permissionData) {
-                Permission::updateOrCreate(
-                    [
-                        'name' => $permissionData['name'],
-                        'guard_name' => $guard,
-                    ],
-                    [
-                        'label' => $permissionData['label'],
-                        'module' => $permissionData['module'],
-                        'description' => $permissionData['description'],
-                        'is_system' => $permissionData['is_system'],
-                    ]
-                );
-            }
-        });
-
-        /*
-        |--------------------------------------------------------------------------
-        | Clear Spatie Permission Cache
-        |--------------------------------------------------------------------------
-        */
-
-        app(PermissionRegistrar::class)
-            ->forgetCachedPermissions();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Clear Application Permission Catalog Cache
-        |--------------------------------------------------------------------------
-        */
-
-        Cache::forget('permission_catalog');
-
-        /*
-        |--------------------------------------------------------------------------
-        | Report Result
-        |--------------------------------------------------------------------------
-        */
-
-        $this->command?->info(
-            sprintf(
-                'Permission catalog synchronized successfully. %d permissions processed.',
-                count($permissions)
-            )
-        );
-    }
-
-    /**
-     * Validate the complete permission catalog.
-     *
-     * Validation is intentionally performed before any database changes.
-     */
-    private function validateCatalog(
-        array $permissions,
-        string $guard
-    ): void {
-        /*
-        |--------------------------------------------------------------------------
-        | Guard Validation
-        |--------------------------------------------------------------------------
-        */
-
-        if ($guard !== 'api') {
-            throw new RuntimeException(
-                sprintf(
-                    'Invalid permission guard [%s]. Expected [api].',
-                    $guard
-                )
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Catalog Must Not Be Empty
-        |--------------------------------------------------------------------------
-        */
-
-        if ($permissions === []) {
-            throw new RuntimeException(
-                'Permission catalog cannot be empty.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Required Fields
-        |--------------------------------------------------------------------------
-        */
-
-        $requiredFields = [
-            'name',
-            'label',
-            'module',
-            'description',
-            'is_system',
-        ];
-
-        $permissionNames = [];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Individual Permissions
-        |--------------------------------------------------------------------------
-        */
-
-        foreach ($permissions as $index => $permission) {
-
-            if (!is_array($permission)) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission definition at index %d must be an array.',
-                        $index
-                    )
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Required Fields
-            |--------------------------------------------------------------------------
-            */
-
-            foreach ($requiredFields as $field) {
-                if (!array_key_exists($field, $permission)) {
-                    throw new RuntimeException(
-                        sprintf(
-                            'Permission definition at index %d is missing required field [%s].',
-                            $index,
-                            $field
-                        )
-                    );
-                }
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Permission Name
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                !is_string($permission['name']) ||
-                trim($permission['name']) === ''
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission definition at index %d must have a valid name.',
-                        $index
-                    )
-                );
-            }
-
-            $permissionName = trim($permission['name']);
-
-            if (
-                !preg_match(
-                    '/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/',
-                    $permissionName
-                )
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Invalid permission name [%s]. Expected format module.action.',
-                        $permissionName
-                    )
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Label
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                !is_string($permission['label']) ||
-                trim($permission['label']) === ''
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission [%s] must have a valid label.',
-                        $permissionName
-                    )
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Module
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                !is_string($permission['module']) ||
-                trim($permission['module']) === ''
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission [%s] must have a valid module.',
-                        $permissionName
-                    )
-                );
-            }
-
-            $module = trim($permission['module']);
-
-            if (
-                !preg_match(
-                    '/^[a-z][a-z0-9_]*$/',
-                    $module
-                )
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission [%s] has invalid module [%s].',
-                        $permissionName,
-                        $module
-                    )
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Description
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                !is_string($permission['description']) ||
-                trim($permission['description']) === ''
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission [%s] must have a valid description.',
-                        $permissionName
-                    )
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | System Flag
-            |--------------------------------------------------------------------------
-            */
-
-            if (!is_bool($permission['is_system'])) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission [%s] must define is_system as boolean.',
-                        $permissionName
-                    )
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Extract Module
-            |--------------------------------------------------------------------------
-            */
-
-            [$permissionModule] = explode(
-                '.',
-                $permissionName,
-                2
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Module Consistency
-            |--------------------------------------------------------------------------
-            */
-
-            if ($permissionModule !== $module) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Permission [%s] has inconsistent module [%s]. Expected [%s].',
-                        $permissionName,
-                        $module,
-                        $permissionModule
-                    )
-                );
-            }
-
-            $permissionNames[] = $permissionName;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Duplicate Permission Names
-        |--------------------------------------------------------------------------
-        */
-
-        $nameCounts = array_count_values($permissionNames);
-
-        $duplicateNames = [];
-
-        foreach ($nameCounts as $name => $count) {
-            if ($count > 1) {
-                $duplicateNames[] = $name;
-            }
-        }
-
-        if ($duplicateNames !== []) {
-            throw new RuntimeException(
-                'Duplicate permission names detected: ' .
-                implode(', ', $duplicateNames)
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Canonical Uniqueness Check
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            count($permissionNames) !==
-            count(array_unique($permissionNames))
-        ) {
-            throw new RuntimeException(
-                'Permission catalog contains duplicate canonical permission names.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Existing Database Guard Conflict
-        |--------------------------------------------------------------------------
-        |
-        | Spatie identifies permissions by name + guard.
-        |
-        | If the same permission name already exists under another
-        | guard, fail rather than silently creating an inconsistent
-        | permission model.
-        |
-        */
-
-        $existingWrongGuardPermissions = Permission::query()
-            ->whereIn('name', $permissionNames)
-            ->where('guard_name', '!=', $guard)
-            ->get([
-                'name',
-                'guard_name',
-            ]);
-
-        if ($existingWrongGuardPermissions->isNotEmpty()) {
-            $conflicts = $existingWrongGuardPermissions
-                ->map(
-                    fn (Permission $permission): string =>
-                        sprintf(
-                            '%s [%s]',
-                            $permission->name,
-                            $permission->guard_name
-                        )
-                )
-                ->implode(', ');
-
-            throw new RuntimeException(
-                'Permission guard conflicts detected: ' . $conflicts
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Existing System Permission Protection
-        |--------------------------------------------------------------------------
-        |
-        | Once a permission is marked as system-level, the seeder
-        | must never silently downgrade it to non-system.
-        |
-        */
-
-        $existingSystemPermissions = Permission::query()
-            ->whereIn('name', $permissionNames)
-            ->where('guard_name', $guard)
-            ->where('is_system', true)
-            ->get(['name']);
-
-        $catalogByName = [];
-
-        foreach ($permissions as $permission) {
-            $catalogByName[$permission['name']] = $permission;
-        }
-
-        foreach ($existingSystemPermissions as $existingPermission) {
-            if (
-                isset($catalogByName[$existingPermission->name]) &&
-                $catalogByName[$existingPermission->name]['is_system'] !== true
-            ) {
-                throw new RuntimeException(
-                    sprintf(
-                        'Protected system permission [%s] cannot be changed to non-system.',
-                        $existingPermission->name
-                    )
-                );
-            }
-        }
-    }
-}

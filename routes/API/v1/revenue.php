@@ -16,6 +16,9 @@ use App\Modules\Revenue\Controllers\RevenueSettingController;
 use App\Modules\Revenue\Controllers\InterestRuleController;
 use App\Http\Controllers\PenaltyDiscountRequestController;
 use App\Modules\Revenue\Controllers\RevenueCodePaymentScheduleRuleController;
+use App\Modules\Revenue\Controllers\BankAccountController;
+use App\Modules\Revenue\Controllers\PaymentProviderController;
+use App\Modules\Revenue\Controllers\PaymentOptionController;
 
 
 
@@ -652,6 +655,143 @@ Route::prefix('revenue')
         [RevenueCodePaymentScheduleRuleController::class, 'deactivate']
     )
         ->name('payment-schedule-rules.deactivate');
+
+
+
+
+   /*
+|--------------------------------------------------------------------------
+| Payment Configuration
+|--------------------------------------------------------------------------
+|
+| Bank accounts and payment providers are managed as revenue
+| payment configuration.
+|
+*/
+
+
+/*
+|--------------------------------------------------------------------------
+| Bank Accounts
+|--------------------------------------------------------------------------
+|
+| Bank accounts are the municipal accounts where revenue payments
+| are deposited or settled.
+|
+| Admin can:
+|
+| GET    /revenue/bank-accounts
+| POST   /revenue/bank-accounts
+| GET    /revenue/bank-accounts/{bankAccount}
+| PUT    /revenue/bank-accounts/{bankAccount}
+| PATCH  /revenue/bank-accounts/{bankAccount}
+|
+*/
+
+Route::apiResource(
+    'bank-accounts',
+    BankAccountController::class
+)
+    ->except(['destroy'])
+    ->parameters([
+        'bank-accounts' => 'bankAccount',
+    ]);
+
+
+/*
+|--------------------------------------------------------------------------
+| Bank Account Status
+|--------------------------------------------------------------------------
+|
+| PATCH /revenue/bank-accounts/{bankAccount}/activate
+| PATCH /revenue/bank-accounts/{bankAccount}/deactivate
+|
+*/
+
+Route::patch(
+    'bank-accounts/{bankAccount}/activate',
+    [BankAccountController::class, 'activate']
+)->name('bank-accounts.activate');
+
+Route::patch(
+    'bank-accounts/{bankAccount}/deactivate',
+    [BankAccountController::class, 'deactivate']
+)->name('bank-accounts.deactivate');
+
+
+/*
+|--------------------------------------------------------------------------
+| Payment Providers
+|--------------------------------------------------------------------------
+|
+| Payment providers represent external payment services such as:
+|
+|     Telebirr
+|     CBE Birr
+|     Chapa
+|
+| Admin can manage the provider configuration.
+|
+*/
+
+Route::apiResource(
+    'payment-providers',
+    PaymentProviderController::class
+)
+    ->except(['destroy'])
+    ->parameters([
+        'payment-providers' => 'paymentProvider',
+    ]);
+
+
+/*
+|--------------------------------------------------------------------------
+| Payment Provider Status
+|--------------------------------------------------------------------------
+|
+| PATCH /revenue/payment-providers/{paymentProvider}/activate
+| PATCH /revenue/payment-providers/{paymentProvider}/deactivate
+|
+*/
+
+Route::patch(
+    'payment-providers/{paymentProvider}/activate',
+    [PaymentProviderController::class, 'activate']
+)->name('payment-providers.activate');
+
+Route::patch(
+    'payment-providers/{paymentProvider}/deactivate',
+    [PaymentProviderController::class, 'deactivate']
+)->name('payment-providers.deactivate');
+
+
+/*
+|--------------------------------------------------------------------------
+| Payment Options
+|--------------------------------------------------------------------------
+|
+| Returns the payment methods currently enabled by revenue settings,
+| together with the active bank accounts and payment providers that
+| support those methods.
+|
+| GET /revenue/payment-options
+|
+| This endpoint does NOT manage payment configuration.
+| It only reads the current configuration and composes the options
+| available to the payment process.
+|
+| Sources:
+|     - Revenue settings → enabled payment methods
+|     - Bank accounts    → active bank accounts
+|     - Payment providers → active payment providers
+|
+*/
+
+Route::get(
+    'payment-options',
+    [PaymentOptionController::class, 'index']
+)->name('payment-options.index');
+
 
 });
 

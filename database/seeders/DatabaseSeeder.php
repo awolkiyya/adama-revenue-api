@@ -16,52 +16,59 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
 
-            /*
-            |--------------------------------------------------------------------------
-            | Authorization
-            |--------------------------------------------------------------------------
-            */
+            // /*
+            // |--------------------------------------------------------------------------
+            // | Authorization
+            // |--------------------------------------------------------------------------
+            // */
 
-            PermissionSeeder::class,
-            RoleSeeder::class,
-            RolePermissionSeeder::class,
+            // PermissionSeeder::class,
+            // RoleSeeder::class,
+            // RolePermissionSeeder::class,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Administrative Structure
-            |--------------------------------------------------------------------------
-            */
+            // /*
+            // |--------------------------------------------------------------------------
+            // | Administrative Structure
+            // |--------------------------------------------------------------------------
+            // */
 
-            AdministrativeUnitSeeder::class,
-            SystemAdminSeeder::class,
-            ClusterSeeder::class,
-            SectorSeeder::class,
+            // AdministrativeUnitSeeder::class,
+            // SystemAdminSeeder::class,
+            // ClusterSeeder::class,
+            // SectorSeeder::class,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue Foundation
-            |--------------------------------------------------------------------------
-            */
+            // /*
+            // |--------------------------------------------------------------------------
+            // | Revenue Foundation
+            // |--------------------------------------------------------------------------
+            // */
 
-            RevenueCategorySeeder::class,
-            MeasurementUnitSeeder::class,
-            BaseFieldSeeder::class,
+            // RevenueCategorySeeder::class,
+            // MeasurementUnitSeeder::class,
+            // BaseFieldSeeder::class,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue Global Configuration
-            |--------------------------------------------------------------------------
-            */
+            // /*
+            // |--------------------------------------------------------------------------
+            // | Revenue Global Configuration
+            // |--------------------------------------------------------------------------
+            // */
 
-            RevenueSettingSeeder::class,
+            // RevenueSettingSeeder::class,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Citizens
-            |--------------------------------------------------------------------------
-            */
+            // /*
+            // |--------------------------------------------------------------------------
+            // | Citizens
+            // |--------------------------------------------------------------------------
+            // */
 
-            CitizenSeeder::class,
+            // CitizenSeeder::class,
+
+            // Bank Account
+            BankAccountSeeder::class,
+
+            // payment provider
+            PaymentProviderSeeder::class
+
         ]);
     }
 }

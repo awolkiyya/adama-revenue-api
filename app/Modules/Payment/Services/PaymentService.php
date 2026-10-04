@@ -1293,4 +1293,19 @@ class PaymentService
             ? $method->value
             : (string) $method;
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Find Payment
+    |--------------------------------------------------------------------------
+    */
+
+    public function find(
+        string $paymentId
+    ): ?Payment {
+
+        return Payment::query()
+            ->whereKey($paymentId)
+            ->first();
+    }
 }
