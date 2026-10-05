@@ -10,8 +10,8 @@ class BankTransferPaymentRequest extends FormRequest
      * Determine whether the authenticated user
      * can submit a bank-transfer payment.
      *
-     * Final authorization must also be enforced
-     * by the PaymentService / Policy layer.
+     * Final authorization and business authorization
+     * must also be enforced by the service/policy layer.
      */
     public function authorize(): bool
     {
@@ -20,6 +20,21 @@ class BankTransferPaymentRequest extends FormRequest
 
     /**
      * Validation rules.
+     *
+     * This request performs structural/input validation only.
+     *
+     * Financial and business rules such as:
+     *
+     * - Invoice payable status
+     * - Outstanding balance
+     * - Maximum payable amount
+     * - Partial-payment rules
+     * - Duplicate transfer reference
+     * - Payment method compatibility
+     * - Transfer-date business rules
+     * - Payment authorization
+     *
+     * are enforced by BankTransferService.
      */
     public function rules(): array
     {
@@ -40,14 +55,6 @@ class BankTransferPaymentRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Payment Amount
             |--------------------------------------------------------------------------
-            |
-            | The PaymentService must additionally verify:
-            |
-            | - The amount is greater than zero.
-            | - The invoice is payable.
-            | - The amount does not exceed the outstanding balance.
-            | - Partial payments are allowed for the invoice.
-            |
             */
 
             'amount' => [
@@ -59,26 +66,18 @@ class BankTransferPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Bank Information
+            | Destination Bank Account
             |--------------------------------------------------------------------------
+            |
+            | Identifies the municipal bank account that received
+            | the transfer.
+            |
             */
 
-            'bank_name' => [
+            'bank_account_id' => [
                 'required',
-                'string',
-                'max:150',
-            ],
-
-            'bank_account_name' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
-
-            'bank_account_number' => [
-                'nullable',
-                'string',
-                'max:100',
+                'uuid',
+                'exists:bank_accounts,id',
             ],
 
             /*
@@ -100,18 +99,33 @@ class BankTransferPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
+            | Sender Information
+            |--------------------------------------------------------------------------
+            |
+            | Information about the bank account/person that actually
+            | sent the transfer.
+            |
+            */
+
+            'sender_name' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'sender_account' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
             | Payer Information
             |--------------------------------------------------------------------------
             |
-            | The payer may be:
-            |
-            | - The taxpayer themselves.
-            | - An authorized agent.
-            | - Another person paying on behalf of the taxpayer.
-            | - A company paying on behalf of the taxpayer.
-            |
-            | This is intentionally separate from the invoice taxpayer
-            | and from the authenticated municipal employee.
+            | The payer can be different from the invoice taxpayer
+            | or the bank-transfer sender.
             |
             */
 
@@ -129,14 +143,14 @@ class BankTransferPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Description
+            | Notes
             |--------------------------------------------------------------------------
             */
 
-            'description' => [
+            'notes' => [
                 'nullable',
                 'string',
-                'max:500',
+                'max:1000',
             ],
 
             /*
@@ -145,13 +159,21 @@ class BankTransferPaymentRequest extends FormRequest
             |--------------------------------------------------------------------------
             |
             | Examples:
+            |
             | - Bank transfer receipt
             | - Deposit slip
             | - Bank statement
             | - Transfer confirmation
             |
-            | The actual file should be stored through the application's
-            | private document/file service.
+            | The request only validates the uploaded file.
+            |
+            | BankTransferService is responsible for:
+            |
+            | 1. Uploading the file through StorageService.
+            | 2. Creating the File registry record.
+            | 3. Attaching the File to BankTransferDetail.
+            |
+            | Evidence is optional at submission level.
             |
             */
 
@@ -166,6 +188,12 @@ class BankTransferPaymentRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Metadata
             |--------------------------------------------------------------------------
+            |
+            | Auxiliary application metadata only.
+            |
+            | System-controlled financial fields must never be
+            | trusted from this array.
+            |
             */
 
             'metadata' => [
@@ -220,21 +248,18 @@ class BankTransferPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Bank Information
+            | Destination Bank Account
             |--------------------------------------------------------------------------
             */
 
-            'bank_name.required' =>
-                'The bank name is required.',
+            'bank_account_id.required' =>
+                'A municipal bank account is required.',
 
-            'bank_name.max' =>
-                'The bank name may not exceed 150 characters.',
+            'bank_account_id.uuid' =>
+                'The bank account ID must be a valid UUID.',
 
-            'bank_account_name.max' =>
-                'The bank account name may not exceed 255 characters.',
-
-            'bank_account_number.max' =>
-                'The bank account number may not exceed 100 characters.',
+            'bank_account_id.exists' =>
+                'The selected municipal bank account does not exist.',
 
             /*
             |--------------------------------------------------------------------------
@@ -244,6 +269,9 @@ class BankTransferPaymentRequest extends FormRequest
 
             'transfer_reference.required' =>
                 'The bank transfer reference is required.',
+
+            'transfer_reference.string' =>
+                'The bank transfer reference must be a valid text value.',
 
             'transfer_reference.max' =>
                 'The bank transfer reference may not exceed 150 characters.',
@@ -256,24 +284,51 @@ class BankTransferPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
+            | Sender Information
+            |--------------------------------------------------------------------------
+            */
+
+            'sender_name.string' =>
+                'The sender name must be a valid text value.',
+
+            'sender_name.max' =>
+                'The sender name may not exceed 255 characters.',
+
+            'sender_account.string' =>
+                'The sender account must be a valid text value.',
+
+            'sender_account.max' =>
+                'The sender account may not exceed 100 characters.',
+
+            /*
+            |--------------------------------------------------------------------------
             | Payer Information
             |--------------------------------------------------------------------------
             */
 
+            'payer_name.string' =>
+                'The payer name must be a valid text value.',
+
             'payer_name.max' =>
                 'The payer name may not exceed 255 characters.',
+
+            'payer_phone.string' =>
+                'The payer phone number must be a valid text value.',
 
             'payer_phone.max' =>
                 'The payer phone number may not exceed 30 characters.',
 
             /*
             |--------------------------------------------------------------------------
-            | Description
+            | Notes
             |--------------------------------------------------------------------------
             */
 
-            'description.max' =>
-                'The payment description may not exceed 500 characters.',
+            'notes.string' =>
+                'The notes must be a valid text value.',
+
+            'notes.max' =>
+                'The notes may not exceed 1,000 characters.',
 
             /*
             |--------------------------------------------------------------------------
@@ -302,34 +357,78 @@ class BankTransferPaymentRequest extends FormRequest
     }
 
     /**
-     * Normalize textual input before validation.
+     * Normalize input before validation.
      */
     protected function prepareForValidation(): void
     {
         $this->merge([
+            /*
+            |--------------------------------------------------------------------------
+            | Invoice
+            |--------------------------------------------------------------------------
+            */
+
             'invoice_id' => $this->filled('invoice_id')
                 ? trim((string) $this->input('invoice_id'))
                 : null,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Amount
+            |--------------------------------------------------------------------------
+            |
+            | Keep the original numeric representation so Laravel's
+            | numeric/decimal validation can process it correctly.
+            |
+            */
 
             'amount' => $this->filled('amount')
                 ? $this->input('amount')
                 : null,
 
-            'bank_name' => $this->filled('bank_name')
-                ? trim((string) $this->input('bank_name'))
+            /*
+            |--------------------------------------------------------------------------
+            | Bank Account
+            |--------------------------------------------------------------------------
+            */
+
+            'bank_account_id' => $this->filled('bank_account_id')
+                ? trim((string) $this->input('bank_account_id'))
                 : null,
 
-            'bank_account_name' => $this->filled('bank_account_name')
-                ? trim((string) $this->input('bank_account_name'))
-                : null,
-
-            'bank_account_number' => $this->filled('bank_account_number')
-                ? trim((string) $this->input('bank_account_number'))
-                : null,
+            /*
+            |--------------------------------------------------------------------------
+            | Transfer Information
+            |--------------------------------------------------------------------------
+            */
 
             'transfer_reference' => $this->filled('transfer_reference')
                 ? trim((string) $this->input('transfer_reference'))
                 : null,
+
+            'transfer_date' => $this->filled('transfer_date')
+                ? trim((string) $this->input('transfer_date'))
+                : null,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Sender Information
+            |--------------------------------------------------------------------------
+            */
+
+            'sender_name' => $this->filled('sender_name')
+                ? trim((string) $this->input('sender_name'))
+                : null,
+
+            'sender_account' => $this->filled('sender_account')
+                ? trim((string) $this->input('sender_account'))
+                : null,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payer Information
+            |--------------------------------------------------------------------------
+            */
 
             'payer_name' => $this->filled('payer_name')
                 ? trim((string) $this->input('payer_name'))
@@ -339,8 +438,14 @@ class BankTransferPaymentRequest extends FormRequest
                 ? trim((string) $this->input('payer_phone'))
                 : null,
 
-            'description' => $this->filled('description')
-                ? trim((string) $this->input('description'))
+            /*
+            |--------------------------------------------------------------------------
+            | Notes
+            |--------------------------------------------------------------------------
+            */
+
+            'notes' => $this->filled('notes')
+                ? trim((string) $this->input('notes'))
                 : null,
         ]);
     }

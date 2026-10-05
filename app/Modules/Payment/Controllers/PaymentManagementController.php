@@ -530,14 +530,19 @@ class PaymentManagementController extends Controller
             $query->with([
                 'invoice',
                 'citizen',
+
                 'processedBy',
                 'verifiedBy',
+
                 'cashDetails.receivedBy',
+
                 'bankTransferDetails.bankAccount',
                 'bankTransferDetails.verifiedBy',
+                'bankTransferDetails.files',
+
                 'onlineDetails.paymentProvider',
+
                 'receipt.issuedBy',
-                'files',
             ]);
 
             /*
@@ -737,21 +742,30 @@ class PaymentManagementController extends Controller
             |
             */
 
-            $paymentModel =
-                Payment::query()
-                    ->with([
-                        'invoice',
-                        'citizen',
-                        'processedBy',
-                        'verifiedBy',
-                        'cashDetails.receivedBy',
-                        'bankTransferDetails.bankAccount',
-                        'bankTransferDetails.verifiedBy',
-                        'onlineDetails.paymentProvider',
-                        'receipt.issuedBy',
-                        'files',
-                    ])
-                    ->find($payment);
+            $paymentModel = Payment::query()
+                ->with([
+                    'invoice',
+                    'citizen',
+                    'processedBy',
+                    'verifiedBy',
+            
+                    // Cash payment
+                    'cashDetails.receivedBy',
+            
+                    // Bank transfer payment
+                    'bankTransferDetails.bankAccount',
+                    'bankTransferDetails.verifiedBy',
+                    'bankTransferDetails.files',
+            
+                    // Online payment
+                    'onlineDetails.paymentProvider',
+            
+                    // Receipt
+                    'receipt.issuedBy',
+                ])
+                ->find($payment);
+            
+            
 
             if (! $paymentModel) {
                 Log::warning(

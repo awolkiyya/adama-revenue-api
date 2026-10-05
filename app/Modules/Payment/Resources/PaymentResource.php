@@ -21,6 +21,10 @@ class PaymentResource extends JsonResource
      * Method-specific relationships are only returned when
      * explicitly eager-loaded.
      *
+     * Bank transfer evidence is attached to the
+     * BankTransferDetail model and is therefore exposed
+     * through bank_transfer_details.files.
+     *
      * @return array<string, mixed>
      */
     public function toArray(Request $request): array
@@ -359,6 +363,13 @@ class PaymentResource extends JsonResource
                             'notes' =>
                                 $bank->notes,
 
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Bank Account
+                            |--------------------------------------------------------------------------
+                            */
+
                             'bank_account' =>
                                 $bank->relationLoaded('bankAccount')
                                     ? (
@@ -381,6 +392,59 @@ class PaymentResource extends JsonResource
                                             ]
                                             : null
                                     )
+                                    : null,
+
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Bank Transfer Evidence
+                            |--------------------------------------------------------------------------
+                            |
+                            | Evidence is attached to BankTransferDetail
+                            | through the polymorphic files relationship.
+                            |
+                            | The relationship must be eager-loaded as:
+                            |
+                            | bankTransferDetails.files
+                            |
+                            */
+
+                            'files' =>
+                                $bank->relationLoaded('files')
+                                    ? $bank->files->map(
+                                        function ($file) {
+                                            return [
+                                                'id' =>
+                                                    $file->id,
+
+                                                'original_name' =>
+                                                    $file->original_name,
+
+                                                'mime_type' =>
+                                                    $file->mime_type,
+
+                                                'size' =>
+                                                    $file->size,
+
+                                                'storage_path' =>
+                                                    $file->storage_path,
+
+                                                'category' =>
+                                                    $file->category,
+
+                                                'visibility' =>
+                                                    $file->visibility,
+
+                                                'created_at' =>
+                                                    $file->created_at
+                                                        ?->toISOString(),
+
+                                                'updated_at' =>
+                                                    $file->updated_at
+                                                        ?->toISOString(),
+                                            ];
+                                        }
+                                    )->values()
                                     : null,
                         ];
                     }
@@ -462,14 +526,53 @@ class PaymentResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Files
+            | Payment-Level Files
             |--------------------------------------------------------------------------
+            |
+            | These are files directly attached to Payment.
+            |
+            | Bank transfer evidence is intentionally NOT duplicated here.
+            | It belongs under bank_transfer_details.files.
+            |
             */
 
             'files' =>
                 $this->whenLoaded(
                     'files',
-                    fn () => $this->files
+                    fn () => $this->files->map(
+                        function ($file) {
+                            return [
+                                'id' =>
+                                    $file->id,
+
+                                'original_name' =>
+                                    $file->original_name,
+
+                                'mime_type' =>
+                                    $file->mime_type,
+
+                                'size' =>
+                                    $file->size,
+
+                                'storage_path' =>
+                                    $file->storage_path,
+
+                                'category' =>
+                                    $file->category,
+
+                                'visibility' =>
+                                    $file->visibility,
+
+                                'created_at' =>
+                                    $file->created_at
+                                        ?->toISOString(),
+
+                                'updated_at' =>
+                                    $file->updated_at
+                                        ?->toISOString(),
+                            ];
+                        }
+                    )->values()
                 ),
 
 

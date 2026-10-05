@@ -2,31 +2,90 @@
 
 namespace App\Modules\Payment\Services;
 
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
+use App\Models\BankTransferDetail;
 use App\Models\Invoice;
 use App\Models\Payment;
-use App\Models\PaymentSchedule;
 use App\Models\User;
+use App\Services\DocumentSequenceService;
+use App\Services\Storage\StorageService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
-use Throwable;
+use RuntimeException;
 
 class BankTransferService
 {
     /**
-     * Record a bank-transfer payment.
+     * Monetary precision used throughout the payment domain.
+     */
+    protected const MONEY_SCALE = 4;
+
+    /**
+     * Invoice statuses that may receive payments.
+     */
+    protected const PAYABLE_INVOICE_STATUSES = [
+        'ISSUED',
+        'PARTIALLY_PAID',
+        'OVERDUE',
+    ];
+
+    /**
+     * Bank-transfer-specific verification states.
      *
-     * The payment is created as PENDING_VERIFICATION.
+     * These are intentionally separate from PaymentStatus.
+     */
+    protected const VERIFICATION_PENDING = 'PENDING';
+
+    protected const VERIFICATION_VERIFIED = 'VERIFIED';
+
+    protected const VERIFICATION_REJECTED = 'REJECTED';
+
+    /**
+     * File collection for bank-transfer evidence.
+     */
+    protected const EVIDENCE_COLLECTION = 'BANK_TRANSFER_EVIDENCE';
+
+    /**
+     * Bank-transfer evidence is financially sensitive.
+     */
+    protected const EVIDENCE_VISIBILITY = 'private';
+
+    /**
+     * Physical storage folder for bank-transfer evidence.
+     */
+    protected const EVIDENCE_FOLDER = 'payment/bank-transfers/evidence';
+
+    public function __construct(
+        protected DocumentSequenceService $documentSequenceService,
+        protected PaymentReceiptService $receiptService,
+        protected StorageService $storageService,
+    ) {
+    }
+
+    /**
+     * Record a new bank-transfer payment.
      *
-     * IMPORTANT:
+     * Lifecycle:
      *
-     * A submitted bank receipt/evidence does NOT mean that
-     * the municipality has received the money.
+     * Invoice
+     *     ↓
+     * Payment::PENDING
+     *     ↓
+     * BankTransferDetail::PENDING
+     *     ↓
+     * Optional File evidence
      *
-     * The payment becomes official only after verify().
+     * The invoice financial state is NOT changed here.
+     *
+     * The payment becomes financially successful only after
+     * verify() changes its status to COMPLETED.
      */
     public function record(
         User $user,
@@ -37,15 +96,15 @@ class BankTransferService
             $user,
             $data,
             $requestId
-        ) {
+        ): Payment {
             /*
-             * Lock the invoice while checking the outstanding balance.
-             *
-             * This prevents two simultaneous payment submissions from
-             * both passing the balance validation.
+             * =========================================================
+             * 1. LOCK AND LOAD INVOICE
+             * =========================================================
              */
             $invoice = Invoice::query()
-                ->whereKey($data['invoice_id'])
+                ->with('citizen')
+                ->whereKey($data['invoice_id'] ?? null)
                 ->lockForUpdate()
                 ->first();
 
@@ -57,37 +116,133 @@ class BankTransferService
                 ]);
             }
 
+            /*
+             * =========================================================
+             * 2. VALIDATE INVOICE
+             * =========================================================
+             */
             $this->validateInvoiceForPayment($invoice);
 
-            $amount = $this->normalizeAmount(
-                $data['amount'] ?? null
-            );
-
-            $outstanding = $this->calculateOutstandingAmount(
-                $invoice
-            );
-
             /*
-             * Never allow the submitted payment to exceed the
-             * current outstanding invoice balance.
+             * =========================================================
+             * 3. PREVENT MULTIPLE PENDING BANK TRANSFERS
+             * =========================================================
+             *
+             * Multiple completed payments are allowed.
+             *
+             * However, only one unverified bank-transfer submission
+             * may exist for the same invoice at a time.
              */
-            if (bccomp($amount, $outstanding, 4) === 1) {
+            $pendingPayment = Payment::query()
+                ->where('invoice_id', $invoice->id)
+                ->where(
+                    'payment_method',
+                    PaymentMethod::BANK_TRANSFER->value
+                )
+                ->where(
+                    'status',
+                    PaymentStatus::PENDING->value
+                )
+                ->lockForUpdate()
+                ->first();
+
+            if ($pendingPayment) {
                 throw ValidationException::withMessages([
-                    'amount' => [
-                        'The payment amount cannot exceed the '
-                        . 'outstanding invoice balance.',
+                    'invoice_id' => [
+                        'This invoice already has a pending bank-transfer payment awaiting verification.',
                     ],
                 ]);
             }
 
             /*
-             * Prevent duplicate bank-transfer submissions.
+             * =========================================================
+             * 4. NORMALIZE PAYMENT AMOUNT
+             * =========================================================
+             */
+            $amount = $this->normalizeAmount(
+                $data['amount'] ?? null
+            );
+
+            /*
+             * =========================================================
+             * 5. CALCULATE CURRENT OUTSTANDING BALANCE
+             * =========================================================
+             */
+            $outstanding = $this->calculateOutstandingAmount(
+                $invoice
+            );
+
+            if (
+                bccomp(
+                    $amount,
+                    $outstanding,
+                    self::MONEY_SCALE
+                ) > 0
+            ) {
+                throw ValidationException::withMessages([
+                    'amount' => [
+                        'The payment amount cannot exceed the outstanding invoice balance.',
+                    ],
+                ]);
+            }
+
+            /*
+             * =========================================================
+             * 6. VALIDATE MUNICIPAL BANK ACCOUNT
+             * =========================================================
+             */
+            $bankAccountId = trim(
+                (string) (
+                    $data['bank_account_id'] ?? ''
+                )
+            );
+
+            if ($bankAccountId === '') {
+                throw ValidationException::withMessages([
+                    'bank_account_id' => [
+                        'A municipal bank account is required.',
+                    ],
+                ]);
+            }
+
+            $bankAccount = DB::table('bank_accounts')
+                ->where('id', $bankAccountId)
+                ->first();
+
+            if (!$bankAccount) {
+                throw ValidationException::withMessages([
+                    'bank_account_id' => [
+                        'The selected municipal bank account does not exist.',
+                    ],
+                ]);
+            }
+
+            /*
+             * DB::table()->first() returns stdClass.
              *
-             * The transfer reference should identify the bank
-             * transaction.
+             * isset() safely handles installations where the
+             * is_active column exists.
+             */
+            if (
+                isset($bankAccount->is_active)
+                && !$bankAccount->is_active
+            ) {
+                throw ValidationException::withMessages([
+                    'bank_account_id' => [
+                        'The selected municipal bank account is inactive.',
+                    ],
+                ]);
+            }
+
+            /*
+             * =========================================================
+             * 7. VALIDATE BANK TRANSFER REFERENCE
+             * =========================================================
              */
             $transferReference = trim(
-                (string) ($data['transfer_reference'] ?? '')
+                (string) (
+                    $data['transfer_reference'] ?? ''
+                )
             );
 
             if ($transferReference === '') {
@@ -100,167 +255,250 @@ class BankTransferService
 
             $this->ensureTransferReferenceIsUnique(
                 transferReference: $transferReference,
-                bankName: $data['bank_name'] ?? null,
+                bankAccountId: $bankAccountId,
             );
 
             /*
-             * Generate an internal payment reference.
-             *
-             * This is different from:
-             *
-             * - transfer_reference
-             * - payment_number
-             * - receipt_number
+             * =========================================================
+             * 8. GENERATE PAYMENT NUMBER
+             * =========================================================
              */
-            $paymentReference =
-                $this->generatePaymentReference();
-
-            $payment = new Payment();
+            $paymentNumber = $this->documentSequenceService->generate(
+                sequenceType: 'payment',
+            );
 
             /*
-             * Core payment information.
+             * =========================================================
+             * 9. GENERATE MUNICIPAL TRANSACTION REFERENCE
+             * =========================================================
+             *
+             * This is different from the bank's transfer reference.
              */
+            $transactionReference =
+                $this->generateTransactionReference();
+
+            /*
+             * =========================================================
+             * 10. CREATE COMMON PAYMENT
+             * =========================================================
+             */
+            $payment = new Payment();
+
+            $payment->payment_number = $paymentNumber;
+
             $payment->invoice_id = $invoice->id;
-            $payment->amount = $amount;
+
+            /*
+             * Never trust citizen_id from the frontend.
+             */
+            $payment->citizen_id = $invoice->citizen_id;
+
+            /*
+             * Controlled by this service.
+             */
+            $payment->payment_method =
+                PaymentMethod::BANK_TRANSFER;
+
+            /*
+             * Manually recorded by municipal staff.
+             */
+            $payment->payment_source =
+                'OFFICE_RECORDED';
+
+            /*
+             * Awaiting verification.
+             */
+            $payment->status =
+                PaymentStatus::PENDING;
+
+            $payment->transaction_reference =
+                $transactionReference;
+
+            $payment->amount =
+                $amount;
+
             $payment->currency =
                 $invoice->currency ?? 'ETB';
 
-            $payment->method = 'BANK_TRANSFER';
-            $payment->status = 'PENDING_VERIFICATION';
-
-            $payment->payment_reference =
-                $paymentReference;
+            /*
+             * Officer who recorded the submission.
+             */
+            $payment->processed_by =
+                $user->id;
 
             /*
-             * Taxpayer/customer relationship should come from
-             * the invoice, not from an arbitrary frontend customer_id.
+             * Prefer explicitly supplied payer information.
+             * Otherwise use the invoice citizen.
              */
-            if ($this->paymentHasAttribute('citizen_id')) {
-                $payment->citizen_id =
-                    $invoice->citizen_id ?? null;
-            }
+            $payment->payer_name =
+                $data['payer_name']
+                ?? $invoice->citizen?->name;
 
-            /*
-             * The authenticated user is the person who submitted/
-             * recorded the payment in the municipal system.
-             */
-            if ($this->paymentHasAttribute('recorded_by_user_id')) {
-                $payment->recorded_by_user_id = $user->id;
-            }
+            $payment->payer_phone =
+                $data['payer_phone']
+                ?? $invoice->citizen?->phone;
 
-            /*
-             * Payer information.
-             *
-             * The payer may be different from the taxpayer.
-             */
-            if ($this->paymentHasAttribute('payer_name')) {
-                $payment->payer_name =
-                    $data['payer_name'] ?? null;
-            }
+            $payment->failure_reason = null;
 
-            if ($this->paymentHasAttribute('payer_phone')) {
-                $payment->payer_phone =
-                    $data['payer_phone'] ?? null;
-            }
-
-            /*
-             * Bank information.
-             */
-            if ($this->paymentHasAttribute('bank_name')) {
-                $payment->bank_name =
-                    trim((string) $data['bank_name']);
-            }
-
-            if ($this->paymentHasAttribute('bank_account_name')) {
-                $payment->bank_account_name =
-                    $data['bank_account_name'] ?? null;
-            }
-
-            if ($this->paymentHasAttribute('bank_account_number')) {
-                $payment->bank_account_number =
-                    $data['bank_account_number'] ?? null;
-            }
-
-            if ($this->paymentHasAttribute('transfer_reference')) {
-                $payment->transfer_reference =
-                    $transferReference;
-            }
-
-            if ($this->paymentHasAttribute('transfer_date')) {
-                $payment->transfer_date =
-                    $data['transfer_date'];
-            }
-
-            /*
-             * Description.
-             */
-            if ($this->paymentHasAttribute('description')) {
-                $payment->description =
-                    $data['description'] ?? null;
-            }
-
-            /*
-             * Additional metadata.
-             */
-            if ($this->paymentHasAttribute('metadata')) {
-                $payment->metadata =
-                    $data['metadata'] ?? [];
-            }
-
-            /*
-             * Evidence/file handling.
-             *
-             * The request contains an uploaded file, but the actual
-             * storage should ideally happen through a dedicated
-             * PaymentEvidenceService / Laravel Storage layer.
-             */
-            if (
-                isset($data['evidence'])
-                && $data['evidence'] instanceof
-                    \Illuminate\Http\UploadedFile
-            ) {
-                $payment->evidence_path =
-                    $this->storeEvidence(
-                        $data['evidence'],
-                        $paymentReference,
-                    );
-            }
+            $payment->metadata =
+                $data['metadata'] ?? null;
 
             $payment->save();
 
+            /*
+             * =========================================================
+             * 11. CREATE BANK TRANSFER DETAIL
+             * =========================================================
+             *
+             * This record is created before evidence because it is
+             * the polymorphic owner of the uploaded File.
+             */
+            $bankDetails = new BankTransferDetail();
+
+            $bankDetails->payment_id =
+                $payment->id;
+
+            $bankDetails->bank_account_id =
+                $bankAccountId;
+
+            $bankDetails->transfer_reference =
+                $transferReference;
+
+            $bankDetails->transfer_date =
+                $data['transfer_date'] ?? null;
+
+            $bankDetails->sender_name =
+                $data['sender_name'] ?? null;
+
+            $bankDetails->sender_account =
+                $data['sender_account'] ?? null;
+
+            $bankDetails->verification_status =
+                self::VERIFICATION_PENDING;
+
+            $bankDetails->verified_by = null;
+
+            $bankDetails->verified_at = null;
+
+            $bankDetails->notes =
+                $data['notes'] ?? null;
+
+            $bankDetails->save();
+
+            /*
+             * =========================================================
+             * 12. STORE OPTIONAL BANK TRANSFER EVIDENCE
+             * =========================================================
+             *
+             * StorageService:
+             *
+             *     physical file
+             *          +
+             *     files database record
+             *
+             * attachToModel():
+             *
+             *     files.fileable_type
+             *     files.fileable_id
+             *
+             * The evidence belongs to BankTransferDetail.
+             */
+            $hasEvidence =
+                isset($data['evidence'])
+                && $data['evidence'] instanceof UploadedFile;
+
+            if ($hasEvidence) {
+                $this->storeEvidence(
+                    file: $data['evidence'],
+                    bankDetails: $bankDetails,
+                    user: $user,
+                );
+            }
+
+            /*
+             * =========================================================
+             * 13. AUDIT LOG
+             * =========================================================
+             */
             Log::info(
-                'Bank transfer payment submitted.',
+                'Bank transfer payment recorded.',
                 [
-                    'request_id' => $requestId,
-                    'payment_id' => $payment->getKey(),
-                    'invoice_id' => $invoice->id,
-                    'amount' => $amount,
-                    'currency' => $payment->currency,
-                    'bank_name' =>
-                        $data['bank_name'] ?? null,
+                    'request_id' =>
+                        $requestId,
+
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
                     'transfer_reference' =>
                         $transferReference,
-                    'recorded_by_user_id' => $user->id,
+
+                    'invoice_id' =>
+                        $invoice->id,
+
+                    'amount' =>
+                        $payment->amount,
+
+                    'currency' =>
+                        $payment->currency,
+
+                    'payment_method' =>
+                        PaymentMethod::BANK_TRANSFER->value,
+
+                    'payment_source' =>
+                        $payment->payment_source,
+
+                    'status' =>
+                        PaymentStatus::PENDING->value,
+
+                    'verification_status' =>
+                        self::VERIFICATION_PENDING,
+
+                    'bank_account_id' =>
+                        $bankAccountId,
+
+                    'processed_by' =>
+                        $user->id,
+
+                    'has_evidence' =>
+                        $hasEvidence,
                 ]
             );
 
-            return $payment->fresh();
+            /*
+             * =========================================================
+             * 14. RETURN FULLY LOADED PAYMENT
+             * =========================================================
+             */
+            return $payment->fresh([
+                'invoice',
+                'citizen',
+                'bankTransferDetails.bankAccount',
+                'bankTransferDetails.files',
+                'processedBy',
+                'verifiedBy',
+                'receipt.issuedBy',
+            ]);
         });
     }
 
     /**
-     * Verify and post a bank-transfer payment.
+     * Verify a pending bank-transfer payment.
      *
-     * This operation should only be available to an authorized
-     * municipal revenue officer.
+     * PENDING → COMPLETED
+     * PENDING → VERIFIED
      *
-     * Flow:
+     * Only after verification:
      *
-     * PENDING_VERIFICATION
-     *          ↓
-     *       VERIFIED
-     *          ↓
-     *        POSTED
+     * - receipt is created
+     * - invoice paid_amount is recalculated
+     * - invoice balance_due is recalculated
+     * - invoice status is updated
      */
     public function verify(
         string $paymentId,
@@ -273,20 +511,67 @@ class BankTransferService
             $user,
             $verificationNotes,
             $requestId
-        ) {
+        ): Payment {
             /*
-             * Lock payment so two officers cannot verify the same
-             * payment simultaneously.
+             * =========================================================
+             * 1. FIND PAYMENT REFERENCE
+             * =========================================================
+             */
+            $paymentReference = Payment::query()
+                ->whereKey($paymentId)
+                ->first();
+
+            if (!$paymentReference) {
+                throw (new ModelNotFoundException())
+                    ->setModel(
+                        Payment::class,
+                        [$paymentId]
+                    );
+            }
+
+            $this->validateBankTransferPayment(
+                $paymentReference
+            );
+
+            /*
+             * =========================================================
+             * 2. LOCK INVOICE FIRST
+             * =========================================================
+             */
+            $invoice = Invoice::query()
+                ->with('citizen')
+                ->whereKey($paymentReference->invoice_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$invoice) {
+                throw ValidationException::withMessages([
+                    'invoice' => [
+                        'The invoice associated with this payment does not exist.',
+                    ],
+                ]);
+            }
+
+            /*
+             * =========================================================
+             * 3. LOCK PAYMENT SECOND
+             * =========================================================
              */
             $payment = Payment::query()
+                ->with([
+                    'bankTransferDetails',
+                    'bankTransferDetails.files',
+                ])
                 ->whereKey($paymentId)
                 ->lockForUpdate()
                 ->first();
 
             if (!$payment) {
-                throw new ModelNotFoundException(
-                    'Bank transfer payment not found.'
-                );
+                throw (new ModelNotFoundException())
+                    ->setModel(
+                        Payment::class,
+                        [$paymentId]
+                    );
             }
 
             $this->validateBankTransferPayment(
@@ -294,214 +579,285 @@ class BankTransferService
             );
 
             /*
-             * Idempotency.
+             * =========================================================
+             * 4. IDEMPOTENT COMPLETION
+             * =========================================================
              *
-             * If the payment is already POSTED, do not post it again.
+             * If another request already completed this payment,
+             * simply return the completed payment.
              */
-            if ($this->isPosted($payment)) {
-                return $payment->fresh();
+            if ($this->isCompleted($payment)) {
+                return $payment->fresh([
+                    'invoice',
+                    'citizen',
+                    'bankTransferDetails.bankAccount',
+                    'bankTransferDetails.files',
+                    'processedBy',
+                    'verifiedBy',
+                    'receipt.issuedBy',
+                ]);
             }
 
             /*
-             * Only pending bank transfers can be verified.
+             * =========================================================
+             * 5. ONLY PENDING PAYMENTS CAN BE VERIFIED
+             * =========================================================
              */
-            if (!$this->isPendingVerification($payment)) {
+            if (!$this->isPending($payment)) {
                 throw ValidationException::withMessages([
                     'payment' => [
-                        'Only bank transfers pending verification '
-                        . 'can be verified.',
+                        'Only pending bank-transfer payments can be verified.',
                     ],
                 ]);
             }
 
             /*
-             * Authorize the officer.
-             *
-             * Your actual permission name should match the permissions
-             * already defined in your municipal system.
+             * =========================================================
+             * 6. AUTHORIZE VERIFICATION
+             * =========================================================
              */
             $this->authorizeVerification($user);
 
             /*
-             * Load and lock invoice.
+             * =========================================================
+             * 7. GET BANK TRANSFER DETAILS
+             * =========================================================
              */
-            $invoice = Invoice::query()
-                ->whereKey($payment->invoice_id)
-                ->lockForUpdate()
-                ->first();
+            $bankDetails =
+                $payment->bankTransferDetails;
 
-            if (!$invoice) {
+            if (!$bankDetails) {
                 throw ValidationException::withMessages([
-                    'invoice' => [
-                        'The invoice associated with this payment '
-                        . 'does not exist.',
+                    'payment' => [
+                        'Bank-transfer details were not found.',
                     ],
                 ]);
             }
 
+            /*
+             * =========================================================
+             * 8. ONLY PENDING DETAILS CAN BE VERIFIED
+             * =========================================================
+             */
+            if (
+                $this->verificationStatus($bankDetails)
+                !== self::VERIFICATION_PENDING
+            ) {
+                throw ValidationException::withMessages([
+                    'payment' => [
+                        'Only bank transfers pending verification can be verified.',
+                    ],
+                ]);
+            }
+
+            /*
+             * =========================================================
+             * 9. REVALIDATE INVOICE
+             * =========================================================
+             */
             $this->validateInvoiceForPayment(
                 $invoice
             );
 
-            $amount = $this->normalizeAmount(
-                $payment->amount
-            );
+            /*
+             * =========================================================
+             * 10. RECHECK OUTSTANDING BALANCE
+             * =========================================================
+             */
+            $paymentAmount =
+                $this->normalizeAmount(
+                    $payment->amount
+                );
 
             $outstanding =
                 $this->calculateOutstandingAmount(
                     $invoice
                 );
 
-            /*
-             * Re-check the balance at verification time.
-             *
-             * The invoice could have changed since the bank transfer
-             * was originally submitted.
-             */
-            if (bccomp($amount, $outstanding, 4) === 1) {
+            if (
+                bccomp(
+                    $paymentAmount,
+                    $outstanding,
+                    self::MONEY_SCALE
+                ) > 0
+            ) {
                 throw ValidationException::withMessages([
                     'payment' => [
-                        'The bank transfer amount now exceeds '
-                        . 'the outstanding invoice balance.',
+                        'The bank transfer amount now exceeds the outstanding invoice balance.',
                     ],
                 ]);
             }
 
             /*
-             * This is the point where the municipal officer confirms
-             * that the money has actually been received according to
-             * the municipality's bank evidence.
-             *
-             * The service assumes that the officer has already reviewed:
-             *
-             * - bank name
-             * - transfer reference
-             * - amount
-             * - transfer date
-             * - beneficiary account
-             * - bank statement / confirmation
-             * - submitted evidence
+             * =========================================================
+             * 11. MARK BANK TRANSFER AS VERIFIED
+             * =========================================================
              */
-            $payment->status = 'VERIFIED';
+            $bankDetails->verification_status =
+                self::VERIFICATION_VERIFIED;
+
+            $bankDetails->verified_by =
+                $user->id;
+
+            $bankDetails->verified_at =
+                now();
 
             if (
-                $this->paymentHasAttribute(
-                    'verified_by_user_id'
-                )
+                $verificationNotes !== null
+                && trim($verificationNotes) !== ''
             ) {
-                $payment->verified_by_user_id =
-                    $user->id;
+                $existingNotes =
+                    trim(
+                        (string) (
+                            $bankDetails->notes ?? ''
+                        )
+                    );
+
+                $verificationNote =
+                    trim($verificationNotes);
+
+                $bankDetails->notes =
+                    $existingNotes !== ''
+                        ? $existingNotes
+                            . PHP_EOL
+                            . 'Verification: '
+                            . $verificationNote
+                        : 'Verification: '
+                            . $verificationNote;
             }
 
-            if (
-                $this->paymentHasAttribute(
-                    'verified_at'
-                )
-            ) {
-                $payment->verified_at = now();
-            }
-
-            if (
-                $this->paymentHasAttribute(
-                    'verification_notes'
-                )
-            ) {
-                $payment->verification_notes =
-                    $verificationNotes;
-            }
+            $bankDetails->save();
 
             /*
-             * Immediately post after successful verification.
-             *
-             * This means VERIFIED and POSTED are both represented
-             * in the audit history/fields if your schema supports it,
-             * while the final payment status becomes POSTED.
+             * =========================================================
+             * 12. COMPLETE PAYMENT
+             * =========================================================
              */
-            $payment->status = 'POSTED';
+            $payment->status =
+                PaymentStatus::COMPLETED;
 
-            if (
-                $this->paymentHasAttribute(
-                    'posted_by_user_id'
-                )
-            ) {
-                $payment->posted_by_user_id =
-                    $user->id;
-            }
+            $payment->verified_by =
+                $user->id;
 
-            if (
-                $this->paymentHasAttribute(
-                    'posted_at'
-                )
-            ) {
-                $payment->posted_at = now();
-            }
+            $payment->verified_at =
+                now();
 
-            /*
-             * Generate official payment number.
-             */
-            if (
-                $this->paymentHasAttribute(
-                    'payment_number'
-                )
-                && empty($payment->payment_number)
-            ) {
-                $payment->payment_number =
-                    $this->generatePaymentNumber();
-            }
-
-            /*
-             * Generate official receipt number.
-             */
-            if (
-                $this->paymentHasAttribute(
-                    'receipt_number'
-                )
-                && empty($payment->receipt_number)
-            ) {
-                $payment->receipt_number =
-                    $this->generateReceiptNumber();
-            }
+            $payment->failure_reason = null;
 
             $payment->save();
 
             /*
-             * Update invoice accounting.
+             * =========================================================
+             * 13. CREATE OFFICIAL RECEIPT
+             * =========================================================
              */
-            $this->applyPaymentToInvoice(
-                invoice: $invoice,
-                amount: $amount,
+            $receipt = $this->receiptService->create(
+                payment: $payment,
+                user: $user,
             );
 
             /*
-             * Update payment schedule when this payment is explicitly
-             * associated with an installment.
+             * =========================================================
+             * 14. APPLY COMPLETED PAYMENT TO INVOICE
+             * =========================================================
              */
-            $this->applyPaymentToSchedule(
-                payment: $payment,
-                amount: $amount,
+            $this->applyPaymentToInvoice(
+                invoice: $invoice,
             );
 
+            /*
+             * =========================================================
+             * 15. AUDIT LOG
+             * =========================================================
+             */
             Log::info(
-                'Bank transfer payment verified and posted.',
+                'Bank transfer payment verified and completed.',
                 [
-                    'request_id' => $requestId,
-                    'payment_id' => $payment->getKey(),
-                    'invoice_id' => $invoice->id,
-                    'amount' => $amount,
+                    'request_id' =>
+                        $requestId,
+
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
                     'transfer_reference' =>
-                        $payment->transfer_reference ?? null,
-                    'verified_by_user_id' => $user->id,
+                        $bankDetails->transfer_reference,
+
+                    'receipt_id' =>
+                        $receipt->id,
+
+                    'receipt_number' =>
+                        $receipt->receipt_number,
+
+                    'invoice_id' =>
+                        $invoice->id,
+
+                    'amount' =>
+                        $paymentAmount,
+
+                    'currency' =>
+                        $payment->currency,
+
+                    'payment_method' =>
+                        PaymentMethod::BANK_TRANSFER->value,
+
+                    'payment_source' =>
+                        $payment->payment_source,
+
+                    'status' =>
+                        PaymentStatus::COMPLETED->value,
+
+                    'verification_status' =>
+                        self::VERIFICATION_VERIFIED,
+
+                    'processed_by' =>
+                        $payment->processed_by,
+
+                    'verified_by' =>
+                        $user->id,
+
+                    'invoice_paid_amount' =>
+                        $invoice->paid_amount,
+
+                    'invoice_balance_due' =>
+                        $invoice->balance_due,
+
+                    'invoice_status' =>
+                        $invoice->status?->value
+                        ?? $invoice->status,
                 ]
             );
 
-            return $payment->fresh();
+            /*
+             * =========================================================
+             * 16. RETURN FULLY LOADED PAYMENT
+             * =========================================================
+             */
+            return $payment->fresh([
+                'invoice',
+                'citizen',
+                'bankTransferDetails.bankAccount',
+                'bankTransferDetails.files',
+                'processedBy',
+                'verifiedBy',
+                'receipt.issuedBy',
+            ]);
         });
     }
 
     /**
-     * Reject a bank-transfer payment.
+     * Reject a pending bank-transfer payment.
      *
-     * Rejection never deletes the payment.
+     * PENDING → FAILED
+     * PENDING → REJECTED
+     *
+     * Rejection does not affect invoice financial values because
+     * FAILED payments are not included in the completed-payment sum.
      */
     public function reject(
         string $paymentId,
@@ -514,89 +870,260 @@ class BankTransferService
             $user,
             $reason,
             $requestId
-        ) {
+        ): Payment {
+            /*
+             * =========================================================
+             * 1. FIND PAYMENT REFERENCE
+             * =========================================================
+             */
+            $paymentReference = Payment::query()
+                ->whereKey($paymentId)
+                ->first();
+
+            if (!$paymentReference) {
+                throw (new ModelNotFoundException())
+                    ->setModel(
+                        Payment::class,
+                        [$paymentId]
+                    );
+            }
+
+            $this->validateBankTransferPayment(
+                $paymentReference
+            );
+
+            /*
+             * =========================================================
+             * 2. LOCK INVOICE FIRST
+             * =========================================================
+             */
+            $invoice = Invoice::query()
+                ->whereKey($paymentReference->invoice_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$invoice) {
+                throw ValidationException::withMessages([
+                    'invoice' => [
+                        'The invoice associated with this payment does not exist.',
+                    ],
+                ]);
+            }
+
+            /*
+             * =========================================================
+             * 3. LOCK PAYMENT SECOND
+             * =========================================================
+             */
             $payment = Payment::query()
+                ->with([
+                    'bankTransferDetails',
+                    'bankTransferDetails.files',
+                ])
                 ->whereKey($paymentId)
                 ->lockForUpdate()
                 ->first();
 
             if (!$payment) {
-                throw new ModelNotFoundException(
-                    'Bank transfer payment not found.'
-                );
+                throw (new ModelNotFoundException())
+                    ->setModel(
+                        Payment::class,
+                        [$paymentId]
+                    );
             }
 
             $this->validateBankTransferPayment(
                 $payment
             );
 
-            if ($this->isPosted($payment)) {
+            /*
+             * =========================================================
+             * 4. COMPLETED PAYMENTS CANNOT BE REJECTED
+             * =========================================================
+             */
+            if ($this->isCompleted($payment)) {
                 throw ValidationException::withMessages([
                     'payment' => [
-                        'A posted bank transfer cannot be rejected. '
-                        . 'Use the payment reversal process instead.',
+                        'A completed bank transfer cannot be rejected. Use the payment reversal process instead.',
                     ],
                 ]);
             }
 
-            if (!$this->isPendingVerification($payment)) {
+            /*
+             * =========================================================
+             * 5. ONLY PENDING PAYMENTS CAN BE REJECTED
+             * =========================================================
+             */
+            if (!$this->isPending($payment)) {
                 throw ValidationException::withMessages([
                     'payment' => [
-                        'Only bank transfers pending verification '
-                        . 'can be rejected.',
+                        'Only pending bank-transfer payments can be rejected.',
                     ],
                 ]);
             }
 
+            /*
+             * =========================================================
+             * 6. AUTHORIZE REJECTION
+             * =========================================================
+             */
             $this->authorizeVerification($user);
 
-            $payment->status = 'REJECTED';
+            /*
+             * =========================================================
+             * 7. VALIDATE REJECTION REASON
+             * =========================================================
+             */
+            $reason = trim($reason);
 
-            if (
-                $this->paymentHasAttribute(
-                    'verified_by_user_id'
-                )
-            ) {
-                $payment->verified_by_user_id =
-                    $user->id;
+            if ($reason === '') {
+                throw ValidationException::withMessages([
+                    'reason' => [
+                        'A rejection reason is required.',
+                    ],
+                ]);
+            }
+
+            /*
+             * =========================================================
+             * 8. GET BANK TRANSFER DETAILS
+             * =========================================================
+             */
+            $bankDetails =
+                $payment->bankTransferDetails;
+
+            if (!$bankDetails) {
+                throw ValidationException::withMessages([
+                    'payment' => [
+                        'Bank-transfer details were not found.',
+                    ],
+                ]);
             }
 
             if (
-                $this->paymentHasAttribute(
-                    'verified_at'
-                )
+                $this->verificationStatus($bankDetails)
+                !== self::VERIFICATION_PENDING
             ) {
-                $payment->verified_at = now();
+                throw ValidationException::withMessages([
+                    'payment' => [
+                        'Only bank transfers pending verification can be rejected.',
+                    ],
+                ]);
             }
 
-            if (
-                $this->paymentHasAttribute(
-                    'verification_notes'
-                )
-            ) {
-                $payment->verification_notes =
-                    $reason;
-            }
+            /*
+             * =========================================================
+             * 9. RECORD REJECTION
+             * =========================================================
+             *
+             * Current bank_transfer_details migration does not have
+             * rejected_by, rejected_at, or rejection_reason columns.
+             *
+             * Therefore the reason is stored in notes.
+             */
+            $bankDetails->verification_status =
+                self::VERIFICATION_REJECTED;
+
+            $existingNotes =
+                trim(
+                    (string) (
+                        $bankDetails->notes ?? ''
+                    )
+                );
+
+            $rejectionNote =
+                'Rejection: ' . $reason;
+
+            $bankDetails->notes =
+                $existingNotes !== ''
+                    ? $existingNotes
+                        . PHP_EOL
+                        . $rejectionNote
+                    : $rejectionNote;
+
+            $bankDetails->save();
+
+            /*
+             * =========================================================
+             * 10. MARK PAYMENT AS FAILED
+             * =========================================================
+             */
+            $payment->status =
+                PaymentStatus::FAILED;
+
+            $payment->failure_reason =
+                $reason;
 
             $payment->save();
 
+            /*
+             * =========================================================
+             * 11. AUDIT LOG
+             * =========================================================
+             */
             Log::warning(
                 'Bank transfer payment rejected.',
                 [
-                    'request_id' => $requestId,
-                    'payment_id' => $payment->getKey(),
-                    'invoice_id' => $payment->invoice_id,
-                    'rejected_by_user_id' => $user->id,
-                    'reason' => $reason,
+                    'request_id' =>
+                        $requestId,
+
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
+                    'transfer_reference' =>
+                        $bankDetails->transfer_reference,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
+
+                    'amount' =>
+                        $payment->amount,
+
+                    'currency' =>
+                        $payment->currency,
+
+                    'payment_method' =>
+                        PaymentMethod::BANK_TRANSFER->value,
+
+                    'status' =>
+                        PaymentStatus::FAILED->value,
+
+                    'verification_status' =>
+                        self::VERIFICATION_REJECTED,
+
+                    'rejected_by' =>
+                        $user->id,
+
+                    'reason' =>
+                        $reason,
                 ]
             );
 
-            return $payment->fresh();
+            /*
+             * =========================================================
+             * 12. RETURN FULLY LOADED PAYMENT
+             * =========================================================
+             */
+            return $payment->fresh([
+                'invoice',
+                'citizen',
+                'bankTransferDetails.bankAccount',
+                'bankTransferDetails.files',
+                'processedBy',
+                'verifiedBy',
+                'receipt.issuedBy',
+            ]);
         });
     }
 
     /**
-     * Retrieve one bank-transfer payment.
+     * Find a bank-transfer payment.
      */
     public function find(
         string $paymentId,
@@ -605,14 +1132,22 @@ class BankTransferService
         $payment = Payment::query()
             ->with([
                 'invoice',
+                'citizen',
+                'bankTransferDetails.bankAccount',
+                'bankTransferDetails.files',
+                'processedBy',
+                'verifiedBy',
+                'receipt.issuedBy',
             ])
             ->whereKey($paymentId)
             ->first();
 
         if (!$payment) {
-            throw new ModelNotFoundException(
-                'Bank transfer payment not found.'
-            );
+            throw (new ModelNotFoundException())
+                ->setModel(
+                    Payment::class,
+                    [$paymentId]
+                );
         }
 
         $this->validateBankTransferPayment(
@@ -628,7 +1163,9 @@ class BankTransferService
     }
 
     /**
-     * Get payments waiting for verification.
+     * Get pending bank-transfer payments.
+     *
+     * This is the verification queue.
      */
     public function pending(
         User $user,
@@ -641,37 +1178,88 @@ class BankTransferService
         return Payment::query()
             ->with([
                 'invoice',
+                'citizen',
+                'bankTransferDetails.bankAccount',
+                'bankTransferDetails.files',
+                'processedBy',
             ])
-            ->where('method', 'BANK_TRANSFER')
-            ->where('status', 'PENDING_VERIFICATION')
+            ->where(
+                'payment_method',
+                PaymentMethod::BANK_TRANSFER->value
+            )
+            ->where(
+                'status',
+                PaymentStatus::PENDING->value
+            )
+            ->whereHas(
+                'bankTransferDetails',
+                function ($query) {
+                    $query->where(
+                        'verification_status',
+                        self::VERIFICATION_PENDING
+                    );
+                }
+            )
             ->latest('created_at')
             ->paginate(
-                min(max($perPage, 1), 100)
+                min(
+                    max($perPage, 1),
+                    100
+                )
             );
     }
 
     /**
-     * Validate invoice before accepting payment.
+     * Validate invoice payment eligibility.
      */
     protected function validateInvoiceForPayment(
-        Invoice $invoice
+        Invoice $invoice,
     ): void {
-        $status = strtoupper(
-            (string) (
-                $invoice->status?->value
-                ?? $invoice->status
-                ?? ''
-            )
-        );
+        $status =
+            $this->invoiceStatus($invoice);
 
-        if (in_array($status, [
-            'CANCELLED',
-            'VOID',
-        ], true)) {
+        if (
+            !in_array(
+                $status,
+                self::PAYABLE_INVOICE_STATUSES,
+                true
+            )
+        ) {
+            if ($status === 'DRAFT') {
+                throw ValidationException::withMessages([
+                    'invoice_id' => [
+                        'This invoice has not been issued and cannot receive a payment.',
+                    ],
+                ]);
+            }
+
+            if ($status === 'PAID') {
+                throw ValidationException::withMessages([
+                    'invoice_id' => [
+                        'This invoice has already been fully paid.',
+                    ],
+                ]);
+            }
+
+            if ($status === 'CANCELLED') {
+                throw ValidationException::withMessages([
+                    'invoice_id' => [
+                        'This invoice has been cancelled and cannot receive a payment.',
+                    ],
+                ]);
+            }
+
+            if ($status === 'VOID') {
+                throw ValidationException::withMessages([
+                    'invoice_id' => [
+                        'This invoice has been voided and cannot receive a payment.',
+                    ],
+                ]);
+            }
+
             throw ValidationException::withMessages([
                 'invoice_id' => [
-                    'This invoice cannot receive a payment because '
-                    . 'it is ' . strtolower($status) . '.',
+                    'This invoice is not currently payable.',
                 ],
             ]);
         }
@@ -681,7 +1269,13 @@ class BankTransferService
                 $invoice
             );
 
-        if (bccomp($outstanding, '0.0000', 4) <= 0) {
+        if (
+            bccomp(
+                $outstanding,
+                '0.0000',
+                self::MONEY_SCALE
+            ) <= 0
+        ) {
             throw ValidationException::withMessages([
                 'invoice_id' => [
                     'This invoice has no outstanding balance.',
@@ -691,20 +1285,22 @@ class BankTransferService
     }
 
     /**
-     * Validate that the payment is a bank transfer.
+     * Ensure the payment is a bank transfer.
      */
     protected function validateBankTransferPayment(
-        Payment $payment
+        Payment $payment,
     ): void {
         $method = strtoupper(
             (string) (
-                $payment->method?->value
-                ?? $payment->method
+                $payment->payment_method?->value
+                ?? $payment->payment_method
                 ?? ''
             )
         );
 
-        if ($method !== 'BANK_TRANSFER') {
+        if (
+            $method !== PaymentMethod::BANK_TRANSFER->value
+        ) {
             throw ValidationException::withMessages([
                 'payment' => [
                     'The selected payment is not a bank transfer.',
@@ -714,30 +1310,17 @@ class BankTransferService
     }
 
     /**
-     * Authorize bank-transfer verification.
-     *
-     * Replace the permission name with your exact Spatie permission.
+     * Authorize bank-transfer verification/rejection.
      */
     protected function authorizeVerification(
-        User $user
+        User $user,
     ): void {
-        /*
-         * Recommended permission:
-         *
-         * BANK_TRANSFER_PAYMENTS_VERIFY
-         *
-         * If your permission names are already established, use
-         * that exact permission here.
-         */
-
         if (
-            method_exists($user, 'can')
-            && !$user->can(
+            !$user->can(
                 'BANK_TRANSFER_PAYMENTS_VERIFY'
             )
         ) {
-            abort(
-                403,
+            throw new AuthorizationException(
                 'You are not authorized to verify bank transfer payments.'
             );
         }
@@ -748,446 +1331,386 @@ class BankTransferService
      */
     protected function authorizeView(
         Payment $payment,
-        User $user
+        User $user,
     ): void {
         if (
-            method_exists($user, 'can')
-            && !$user->can(
-                'BANK_TRANSFER_PAYMENTS_VIEW'
+            !$user->can(
+                'view',
+                $payment
             )
         ) {
-            abort(
-                403,
-                'You are not authorized to view bank transfer payments.'
+            throw new AuthorizationException(
+                'You are not authorized to view this payment.'
             );
         }
     }
 
     /**
-     * Make sure the same bank transaction is not submitted twice.
+     * Ensure a bank transfer reference is unique for the
+     * destination municipal bank account.
      */
     protected function ensureTransferReferenceIsUnique(
         string $transferReference,
-        ?string $bankName = null,
+        string $bankAccountId,
     ): void {
-        $query = Payment::query()
-            ->where('method', 'BANK_TRANSFER')
+        $exists = BankTransferDetail::query()
             ->where(
                 'transfer_reference',
                 $transferReference
-            );
+            )
+            ->where(
+                'bank_account_id',
+                $bankAccountId
+            )
+            ->exists();
 
-        /*
-         * If bank_name exists, use it to make the uniqueness
-         * check more precise.
-         */
-        if (
-            $bankName !== null
-            && $this->paymentHasAttribute('bank_name')
-        ) {
-            $query->where(
-                'bank_name',
-                trim($bankName)
-            );
-        }
-
-        if ($query->exists()) {
+        if ($exists) {
             throw ValidationException::withMessages([
                 'transfer_reference' => [
-                    'This bank transfer reference has already '
-                    . 'been submitted.',
+                    'This bank transfer reference has already been submitted for the selected municipal bank account.',
                 ],
             ]);
         }
     }
 
     /**
-     * Calculate outstanding invoice amount.
+     * Calculate authoritative outstanding invoice balance.
      *
-     * Only POSTED payments reduce the official balance.
+     * Only COMPLETED payments reduce the balance.
      */
     protected function calculateOutstandingAmount(
-        Invoice $invoice
+        Invoice $invoice,
     ): string {
-        if (
-            $this->invoiceHasAttribute(
-                $invoice,
-                'balance_due'
-            )
-            && $invoice->balance_due !== null
-        ) {
-            return $this->normalizeAmount(
-                $invoice->balance_due
-            );
-        }
-
-        if (
-            $this->invoiceHasAttribute(
-                $invoice,
-                'outstanding_amount'
-            )
-            && $invoice->outstanding_amount !== null
-        ) {
-            return $this->normalizeAmount(
-                $invoice->outstanding_amount
-            );
-        }
-
         $invoiceTotal =
             $this->invoiceTotal($invoice);
 
-        $paid = Payment::query()
-            ->where(
-                'invoice_id',
-                $invoice->getKey()
-            )
-            ->where('status', 'POSTED')
-            ->sum('amount');
-
-        $paid =
-            $this->normalizeAmount($paid);
-
-        $outstanding = bcsub(
-            $invoiceTotal,
-            $paid,
-            4
-        );
-
-        return bccomp(
-            $outstanding,
-            '0.0000',
-            4
-        ) < 0
-            ? '0.0000'
-            : $outstanding;
-    }
-
-    /**
-     * Determine invoice total.
-     */
-    protected function invoiceTotal(
-        Invoice $invoice
-    ): string {
-        foreach ([
-            'total_amount',
-            'grand_total',
-            'amount',
-            'total',
-        ] as $column) {
-            if (
-                $this->invoiceHasAttribute(
-                    $invoice,
-                    $column
+        $completedAmount =
+            Payment::query()
+                ->where(
+                    'invoice_id',
+                    $invoice->getKey()
                 )
-                && $invoice->{$column} !== null
-            ) {
-                return $this->normalizeAmount(
-                    $invoice->{$column}
-                );
-            }
+                ->where(
+                    'status',
+                    PaymentStatus::COMPLETED->value
+                )
+                ->sum('amount');
+
+        $completedAmount =
+            $this->normalizeMoney(
+                $completedAmount
+            );
+
+        if (
+            bccomp(
+                $completedAmount,
+                $invoiceTotal,
+                self::MONEY_SCALE
+            ) >= 0
+        ) {
+            return '0.0000';
         }
 
-        throw new \RuntimeException(
-            'Unable to determine the invoice total amount.'
+        $outstanding =
+            bcsub(
+                $invoiceTotal,
+                $completedAmount,
+                self::MONEY_SCALE
+            );
+
+        if (
+            bccomp(
+                $outstanding,
+                '0.0000',
+                self::MONEY_SCALE
+            ) < 0
+        ) {
+            return '0.0000';
+        }
+
+        return $outstanding;
+    }
+
+    /**
+     * Get invoice total.
+     */
+    protected function invoiceTotal(
+        Invoice $invoice,
+    ): string {
+        if ($invoice->total_amount === null) {
+            throw new RuntimeException(
+                'Unable to determine the invoice total amount.'
+            );
+        }
+
+        return $this->normalizeMoney(
+            $invoice->total_amount
         );
     }
 
     /**
-     * Apply posted payment to invoice.
+     * Recalculate invoice financial state.
+     *
+     * Only COMPLETED payments are included.
      */
     protected function applyPaymentToInvoice(
         Invoice $invoice,
-        string $amount,
     ): void {
-        if (
-            $this->invoiceHasAttribute(
-                $invoice,
-                'paid_amount'
-            )
-        ) {
-            $currentPaid =
-                $this->normalizeAmount(
-                    $invoice->paid_amount ?? 0
-                );
-
-            $invoice->paid_amount =
-                bcadd(
-                    $currentPaid,
-                    $amount,
-                    4
-                );
-        }
-
-        if (
-            $this->invoiceHasAttribute(
-                $invoice,
-                'balance_due'
-            )
-        ) {
-            $currentBalance =
-                $this->normalizeAmount(
-                    $invoice->balance_due
-                );
-
-            $newBalance =
-                bcsub(
-                    $currentBalance,
-                    $amount,
-                    4
-                );
-
-            $invoice->balance_due =
-                bccomp(
-                    $newBalance,
-                    '0.0000',
-                    4
-                ) < 0
-                    ? '0.0000'
-                    : $newBalance;
-        }
-
-        if (
-            $this->invoiceHasAttribute(
-                $invoice,
-                'outstanding_amount'
-            )
-        ) {
-            $currentOutstanding =
-                $this->normalizeAmount(
-                    $invoice->outstanding_amount
-                );
-
-            $newOutstanding =
-                bcsub(
-                    $currentOutstanding,
-                    $amount,
-                    4
-                );
-
-            $invoice->outstanding_amount =
-                bccomp(
-                    $newOutstanding,
-                    '0.0000',
-                    4
-                ) < 0
-                    ? '0.0000'
-                    : $newOutstanding;
-        }
+        /*
+         * =========================================================
+         * 1. INVOICE TOTAL
+         * =========================================================
+         */
+        $invoiceTotal =
+            $this->invoiceTotal($invoice);
 
         /*
-         * Determine final invoice status.
+         * =========================================================
+         * 2. COMPLETED PAYMENTS
+         * =========================================================
+         */
+        $completedAmount =
+            Payment::query()
+                ->where(
+                    'invoice_id',
+                    $invoice->getKey()
+                )
+                ->where(
+                    'status',
+                    PaymentStatus::COMPLETED->value
+                )
+                ->sum('amount');
+
+        $paidAmount =
+            $this->normalizeMoney(
+                $completedAmount
+            );
+
+        /*
+         * =========================================================
+         * 3. OVERPAYMENT PROTECTION
+         * =========================================================
          */
         if (
-            $this->invoiceHasAttribute(
-                $invoice,
-                'status'
-            )
+            bccomp(
+                $paidAmount,
+                $invoiceTotal,
+                self::MONEY_SCALE
+            ) > 0
         ) {
-            /*
-             * Use the stored balance if available.
-             */
-            if (
-                $this->invoiceHasAttribute(
-                    $invoice,
-                    'balance_due'
-                )
-            ) {
-                $balance =
-                    $this->normalizeAmount(
-                        $invoice->balance_due
-                    );
-            } else {
-                $balance =
-                    $this->calculateOutstandingAmount(
-                        $invoice
-                    );
-            }
-
-            $invoice->status =
-                bccomp(
-                    $balance,
-                    '0.0000',
-                    4
-                ) <= 0
-                    ? 'PAID'
-                    : 'PARTIALLY_PAID';
-        }
-
-        $invoice->save();
-    }
-
-    /**
-     * Apply payment to explicitly linked payment schedule.
-     */
-    protected function applyPaymentToSchedule(
-        Payment $payment,
-        string $amount,
-    ): void {
-        if (
-            !$this->paymentHasAttribute(
-                'payment_schedule_id'
-            )
-            || empty($payment->payment_schedule_id)
-        ) {
-            return;
-        }
-
-        $schedule =
-            PaymentSchedule::query()
-                ->whereKey(
-                    $payment->payment_schedule_id
-                )
-                ->lockForUpdate()
-                ->first();
-
-        if (!$schedule) {
             throw ValidationException::withMessages([
-                'payment_schedule_id' => [
-                    'The payment schedule associated with '
-                    . 'this payment could not be found.',
+                'payment' => [
+                    'Completed payments exceed the invoice total.',
                 ],
             ]);
         }
 
-        $amountDue =
-            $this->normalizeAmount(
-                $schedule->amount_due
+        /*
+         * =========================================================
+         * 4. BALANCE DUE
+         * =========================================================
+         */
+        $balanceDue =
+            bcsub(
+                $invoiceTotal,
+                $paidAmount,
+                self::MONEY_SCALE
             );
 
-        $amountPaid =
-            $this->normalizeAmount(
-                $schedule->amount_paid ?? 0
-            );
-
-        $newPaid =
-            bcadd(
-                $amountPaid,
-                $amount,
-                4
-            );
+        if (
+            bccomp(
+                $balanceDue,
+                '0.0000',
+                self::MONEY_SCALE
+            ) < 0
+        ) {
+            $balanceDue =
+                '0.0000';
+        }
 
         /*
-         * Never allow schedule overpayment.
+         * =========================================================
+         * 5. UPDATE FINANCIAL VALUES
+         * =========================================================
+         */
+        $invoice->paid_amount =
+            $paidAmount;
+
+        $invoice->balance_due =
+            $balanceDue;
+
+        /*
+         * =========================================================
+         * 6. UPDATE INVOICE STATUS
+         * =========================================================
          */
         if (
             bccomp(
-                $newPaid,
-                $amountDue,
-                4
-            ) >= 0
+                $balanceDue,
+                '0.0000',
+                self::MONEY_SCALE
+            ) === 0
         ) {
-            $schedule->amount_paid =
-                $amountDue;
-
-            $schedule->status =
+            $invoice->status =
                 'PAID';
 
-            $schedule->paid_at =
-                now();
+            if ($invoice->paid_at === null) {
+                $invoice->paid_at =
+                    now();
+            }
         } else {
-            $schedule->amount_paid =
-                $newPaid;
-
-            $schedule->status =
+            $invoice->status =
                 'PARTIALLY_PAID';
+
+            $invoice->paid_at =
+                null;
         }
 
-        $schedule->save();
-    }
-
-    /**
-     * Check POSTED state.
-     */
-    protected function isPosted(
-        Payment $payment
-    ): bool {
-        return strtoupper(
-            (string) (
-                $payment->status?->value
-                ?? $payment->status
-                ?? ''
-            )
-        ) === 'POSTED';
-    }
-
-    /**
-     * Check PENDING_VERIFICATION state.
-     */
-    protected function isPendingVerification(
-        Payment $payment
-    ): bool {
-        return strtoupper(
-            (string) (
-                $payment->status?->value
-                ?? $payment->status
-                ?? ''
-            )
-        ) === 'PENDING_VERIFICATION';
+        /*
+         * =========================================================
+         * 7. SAVE
+         * =========================================================
+         */
+        $invoice->save();
     }
 
     /**
      * Store bank-transfer evidence.
      *
-     * For a larger system, move this to a dedicated
-     * PaymentEvidenceService.
+     * The File belongs to BankTransferDetail through the
+     * polymorphic fileable relationship.
      */
     protected function storeEvidence(
-        \Illuminate\Http\UploadedFile $file,
-        string $paymentReference,
-    ): string {
-        return $file->store(
-            'payment-evidence/bank-transfers/' .
-            now()->format('Y/m'),
-            'private'
+        UploadedFile $file,
+        BankTransferDetail $bankDetails,
+        User $user,
+    ): void {
+        if (!$file->isValid()) {
+            throw ValidationException::withMessages([
+                'evidence' => [
+                    'The uploaded bank-transfer evidence is invalid.',
+                ],
+            ]);
+        }
+
+        /*
+         * StorageService:
+         *
+         *     UploadedFile
+         *         ↓
+         *     physical storage
+         *         +
+         *     files table
+         */
+        $storedFile = $this->storageService->upload(
+            uploadedFile: $file,
+            folder: self::EVIDENCE_FOLDER,
+            uploadedBy: $user->id,
+            category: self::EVIDENCE_COLLECTION,
+            visibility: self::EVIDENCE_VISIBILITY,
+        );
+
+        /*
+         * Establish:
+         *
+         *     files.fileable_type
+         *     files.fileable_id
+         *
+         * pointing to BankTransferDetail.
+         */
+        $this->storageService->attachToModel(
+            file: $storedFile,
+            model: $bankDetails,
         );
     }
 
     /**
-     * Generate internal payment reference.
+     * Get bank-transfer verification status.
      */
-    protected function generatePaymentReference(): string
-    {
-        return 'PAY-' .
-            strtoupper(
-                Str::ulid()->toBase32()
-            );
+    protected function verificationStatus(
+        BankTransferDetail $details,
+    ): string {
+        return strtoupper(
+            (string) (
+                $details->verification_status?->value
+                ?? $details->verification_status
+                ?? ''
+            )
+        );
     }
 
     /**
-     * Generate official payment number.
+     * Determine whether payment is pending.
+     */
+    protected function isPending(
+        Payment $payment,
+    ): bool {
+        return $this->paymentStatus($payment)
+            === PaymentStatus::PENDING->value;
+    }
+
+    /**
+     * Determine whether payment is completed.
+     */
+    protected function isCompleted(
+        Payment $payment,
+    ): bool {
+        return $this->paymentStatus($payment)
+            === PaymentStatus::COMPLETED->value;
+    }
+
+    /**
+     * Get normalized payment status.
+     */
+    protected function paymentStatus(
+        Payment $payment,
+    ): string {
+        return strtoupper(
+            (string) (
+                $payment->status?->value
+                ?? $payment->status
+                ?? ''
+            )
+        );
+    }
+
+    /**
+     * Get normalized invoice status.
+     */
+    protected function invoiceStatus(
+        Invoice $invoice,
+    ): string {
+        return strtoupper(
+            (string) (
+                $invoice->status?->value
+                ?? $invoice->status
+                ?? ''
+            )
+        );
+    }
+
+    /**
+     * Generate internal municipal transaction reference.
      *
-     * Replace this with your DocumentSequenceService when available.
-     */
-    protected function generatePaymentNumber(): string
-    {
-        return 'PAY-' .
-            now()->format('Y') .
-            '-' .
-            strtoupper(
-                Str::ulid()->toBase32()
-            );
-    }
-
-    /**
-     * Generate official receipt number.
+     * Example:
      *
-     * Replace this with your centralized receipt sequence.
+     *     TXN-01M44CA6FD18N4K3DG7VY47J4K
      */
-    protected function generateReceiptNumber(): string
+    protected function generateTransactionReference(): string
     {
-        return 'RCT-' .
-            now()->format('Y') .
-            '-' .
+        return 'TXN-' .
             strtoupper(
                 Str::ulid()->toBase32()
             );
     }
 
     /**
-     * Normalize monetary values without relying on float arithmetic.
+     * Normalize a positive payment amount.
+     *
+     * BCMath is used to avoid binary floating-point arithmetic.
      */
     protected function normalizeAmount(
-        mixed $amount
+        mixed $amount,
     ): string {
         if (
             $amount === null
@@ -1200,23 +1723,53 @@ class BankTransferService
             ]);
         }
 
-        $value = trim(
-            (string) $amount
-        );
+        $value =
+            trim((string) $amount);
 
-        if (!is_numeric($value)) {
+        /*
+         * Reject scientific notation and malformed decimals.
+         */
+        if (
+            !preg_match(
+                '/^\d+(?:\.\d+)?$/',
+                $value
+            )
+        ) {
             throw ValidationException::withMessages([
                 'amount' => [
-                    'The payment amount must be a valid number.',
+                    'The payment amount must be a valid decimal number.',
                 ],
             ]);
         }
 
+        /*
+         * Maximum four decimal places.
+         */
+        $decimalPosition =
+            strpos($value, '.');
+
+        if (
+            $decimalPosition !== false
+            && strlen($value)
+                - $decimalPosition
+                - 1
+                > self::MONEY_SCALE
+        ) {
+            throw ValidationException::withMessages([
+                'amount' => [
+                    'The payment amount may have up to four decimal places.',
+                ],
+            ]);
+        }
+
+        /*
+         * Must be greater than zero.
+         */
         if (
             bccomp(
                 $value,
                 '0',
-                4
+                self::MONEY_SCALE
             ) <= 0
         ) {
             throw ValidationException::withMessages([
@@ -1226,50 +1779,40 @@ class BankTransferService
             ]);
         }
 
-        /*
-         * Keep four decimal places because your payment and
-         * assessment system uses decimal(18,4).
-         */
-        return number_format(
-            (float) $value,
-            4,
-            '.',
-            ''
+        return bcadd(
+            $value,
+            '0',
+            self::MONEY_SCALE
         );
     }
 
     /**
-     * Check payment attribute existence.
+     * Normalize a monetary value where zero is allowed.
      */
-    protected function paymentHasAttribute(
-        string $attribute
-    ): bool {
-        $payment = new Payment();
+    protected function normalizeMoney(
+        mixed $amount,
+    ): string {
+        if (
+            $amount === null
+            || $amount === ''
+        ) {
+            return '0.0000';
+        }
 
-        return array_key_exists(
-            $attribute,
-            $payment->getAttributes()
-        ) || in_array(
-            $attribute,
-            $payment->getFillable(),
-            true
-        );
-    }
+        $value =
+            trim((string) $amount);
 
-    /**
-     * Check invoice attribute existence.
-     */
-    protected function invoiceHasAttribute(
-        Invoice $invoice,
-        string $attribute
-    ): bool {
-        return array_key_exists(
-            $attribute,
-            $invoice->getAttributes()
-        ) || in_array(
-            $attribute,
-            $invoice->getFillable(),
-            true
+        if (!is_numeric($value)) {
+            throw new RuntimeException(
+                'Invalid monetary value.'
+            );
+        }
+
+        return bcadd(
+            $value,
+            '0',
+            self::MONEY_SCALE
         );
     }
 }
+
