@@ -32,6 +32,37 @@ Route::prefix('v1')->group(function () {
 
 
     // ========================================================
+    // PUBLIC RECEIPT VERIFICATION / SEARCH
+    // ========================================================
+    //
+    // These endpoints are used by the public landing page.
+    //
+    // Anyone can verify/search a receipt without logging in.
+    //
+    // IMPORTANT:
+    // Keep this separate from authenticated payment operations.
+    //
+    // The public API must return only safe receipt information.
+    // Never expose:
+    // - internal database IDs
+    // - payment gateway credentials
+    // - access tokens
+    // - encrypted payment details
+    // - internal user information
+    // - sensitive customer information
+    //
+    // Example:
+    //
+    // GET /api/v1/public/receipts/verify?receipt_number=RCP-2019-000001
+    //
+    // ========================================================
+
+    require base_path(
+        'routes/Api/v1/public.php'
+    );
+
+
+    // ========================================================
     // PAYMENT WEBHOOKS
     // PUBLIC / GATEWAY ACCESS
     //
@@ -82,12 +113,8 @@ Route::prefix('v1')->group(function () {
         // All routes below belong to the municipal Office
         // portal.
         //
-        // office.portal_access
-        //     → determines whether the authenticated user
-        //       may access Office portal APIs.
-        //
-        // Individual route permissions
-        //     → determine what the user may do.
+        // Individual route permissions determine what
+        // authenticated users may do.
         //
         // Roles are NOT used as the authorization boundary.
         // ====================================================
@@ -95,104 +122,105 @@ Route::prefix('v1')->group(function () {
         // Route::middleware('permission:office.portal_access')
         //     ->group(function () {
 
-                // ------------------------------------------------
-                // USER
-                // ------------------------------------------------
+        // ------------------------------------------------
+        // USER
+        // ------------------------------------------------
 
-                require base_path(
-                    'routes/Api/v1/user.php'
-                );
-
-
-                // ------------------------------------------------
-                // ADMINISTRATIVE
-                // ------------------------------------------------
-
-                require base_path(
-                    'routes/Api/v1/administrative.php'
-                );
+        require base_path(
+            'routes/Api/v1/user.php'
+        );
 
 
-                // ------------------------------------------------
-                // CITIZEN
-                // ------------------------------------------------
+        // ------------------------------------------------
+        // ADMINISTRATIVE
+        // ------------------------------------------------
 
-                require base_path(
-                    'routes/Api/v1/citizen.php'
-                );
-
-
-                // ------------------------------------------------
-                // SYSTEM
-                // ------------------------------------------------
-
-                require base_path(
-                    'routes/Api/v1/system.php'
-                );
+        require base_path(
+            'routes/Api/v1/administrative.php'
+        );
 
 
-                // ------------------------------------------------
-                // REVENUE
-                // ------------------------------------------------
+        // ------------------------------------------------
+        // CITIZEN
+        // ------------------------------------------------
 
-                require base_path(
-                    'routes/Api/v1/revenue.php'
-                );
-
-
-                // ------------------------------------------------
-                // ASSESSMENT
-                // ------------------------------------------------
-
-                require base_path(
-                    'routes/Api/v1/assessment.php'
-                );
+        require base_path(
+            'routes/Api/v1/citizen.php'
+        );
 
 
-                // ------------------------------------------------
-                // INVOICE
-                // ------------------------------------------------
+        // ------------------------------------------------
+        // SYSTEM
+        // ------------------------------------------------
 
-                require base_path(
-                    'routes/Api/v1/invoice.php'
-                );
-
-
-                // ------------------------------------------------
-                // AUDIT
-                // ------------------------------------------------
-
-                require base_path(
-                    'routes/Api/v1/audit.php'
-                );
+        require base_path(
+            'routes/Api/v1/system.php'
+        );
 
 
-                // ------------------------------------------------
-                // DIRECT COLLECTION
-                // ------------------------------------------------
+        // ------------------------------------------------
+        // REVENUE
+        // ------------------------------------------------
 
-                require base_path(
-                    'routes/Api/v1/direct-collection.php'
-                );
-
-
-                // ------------------------------------------------
-                // PAYMENT SCHEDULE
-                // ------------------------------------------------
-
-                require base_path(
-                    'routes/Api/v1/payment-schedule.php'
-                );
+        require base_path(
+            'routes/Api/v1/revenue.php'
+        );
 
 
-                // ------------------------------------------------
-                // TAXPAYER
-                // ------------------------------------------------
+        // ------------------------------------------------
+        // ASSESSMENT
+        // ------------------------------------------------
 
-                require base_path(
-                    'routes/Api/v1/taxpayer.php'
-                );
-            // });
+        require base_path(
+            'routes/Api/v1/assessment.php'
+        );
+
+
+        // ------------------------------------------------
+        // INVOICE
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/invoice.php'
+        );
+
+
+        // ------------------------------------------------
+        // AUDIT
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/audit.php'
+        );
+
+
+        // ------------------------------------------------
+        // DIRECT COLLECTION
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/direct-collection.php'
+        );
+
+
+        // ------------------------------------------------
+        // PAYMENT SCHEDULE
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/payment-schedule.php'
+        );
+
+
+        // ------------------------------------------------
+        // TAXPAYER
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/taxpayer.php'
+        );
+
+        // });
 
 
         // ====================================================

@@ -3,50 +3,48 @@
 namespace App\Modules\Payment\Services;
 
 use App\Models\Payment;
+use App\Models\Receipt;
+use App\Models\User;
+use App\Services\DocumentSequenceService;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class PaymentReceiptService
 {
-    /*
-    |--------------------------------------------------------------------------
-    | Receipt Prefix
-    |--------------------------------------------------------------------------
-    */
-
-    private const RECEIPT_PREFIX = 'REC';
+    public function __construct(
+        protected DocumentSequenceService $documentSequenceService,
+    ) {
+    }
 
     /*
     |--------------------------------------------------------------------------
     | Create Receipt
     |--------------------------------------------------------------------------
     |
-    | Creates the official municipal receipt identity for a successful
-    | payment.
+    | Creates the official municipal receipt for a completed payment.
     |
-    | This method does NOT generate a PDF.
+    | This method:
     |
-    | It is intentionally idempotent:
+    | - only works for successful/completed payments
+    | - is idempotent
+    | - prevents duplicate receipts
+    | - uses the central document sequence
+    | - records which user issued the receipt
     |
-    | - First call  -> creates receipt number
-    | - Later calls -> returns existing receipt
+    | It does NOT generate a PDF.
     |
     */
 
-    public function create(Payment $payment): Payment
-    {
-        return DB::transaction(function () use ($payment): Payment {
+    public function create(
+        Payment $payment,
+        User $user,
+    ): Receipt {
+        return DB::transaction(function () use ($payment, $user): Receipt {
 
             /*
             |--------------------------------------------------------------------------
             | Lock Payment
             |--------------------------------------------------------------------------
-            |
-            | Important for webhook/concurrent-request safety.
-            |
-            | Two requests could theoretically try to create the receipt
-            | at exactly the same time.
-            |
             */
 
             $lockedPayment = Payment::query()
@@ -68,99 +66,48 @@ class PaymentReceiptService
 
             /*
             |--------------------------------------------------------------------------
-            | Idempotency
+            | Check Existing Receipt
             |--------------------------------------------------------------------------
             |
-            | If a receipt already exists, do not create another one.
+            | One completed payment = one official receipt.
             |
             */
 
-            if (
-                filled(
-                    $lockedPayment->receipt_number
-                )
-            ) {
-                return $lockedPayment;
+            $existingReceipt = Receipt::query()
+                ->where('payment_id', $lockedPayment->id)
+                ->first();
+
+            if ($existingReceipt) {
+                return $existingReceipt;
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Generate Receipt Number
+            | Generate Official Receipt Number
             |--------------------------------------------------------------------------
+            |
+            | Uses the centralized document numbering system.
+            |
             */
 
-            $lockedPayment->forceFill([
-                'receipt_number' =>
-                    $this->generateReceiptNumber(),
-
-                'receipt_issued_at' =>
-                    now(),
-            ])->save();
+            $receiptNumber = $this->documentSequenceService->generate(
+                sequenceType: 'receipt',
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | Return Fresh Payment
+            | Create Receipt
             |--------------------------------------------------------------------------
             */
 
-            return $lockedPayment->refresh();
+            return Receipt::query()->create([
+                'payment_id' => $lockedPayment->id,
+                'receipt_number' => $receiptNumber,
+                'issued_by' => $user->id,
+                'issued_at' => now(),
+                'status' => 'ISSUED',
+            ]);
         });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Generate Receipt Number
-    |--------------------------------------------------------------------------
-    |
-    | Format:
-    |
-    | REC-2026-00000001
-    |
-    | REC = Receipt
-    | 2026 = Gregorian year
-    | 00000001 = sequential receipt number
-    |
-    */
-
-    protected function generateReceiptNumber(): string
-    {
-        /*
-        |--------------------------------------------------------------------------
-        | Generate Next Receipt Sequence
-        |--------------------------------------------------------------------------
-        |
-        | For now we generate a random numeric suffix.
-        |
-        | This avoids depending on a separate receipt_sequences table.
-        |
-        */
-
-        do {
-            $number = sprintf(
-                '%s-%s-%s',
-                self::RECEIPT_PREFIX,
-                now()->format('Y'),
-                str_pad(
-                    (string) random_int(
-                        1,
-                        99999999
-                    ),
-                    8,
-                    '0',
-                    STR_PAD_LEFT
-                )
-            );
-
-        } while (
-            Payment::query()
-                ->where(
-                    'receipt_number',
-                    $number
-                )
-                ->exists()
-        );
-
-        return $number;
     }
 
     /*
@@ -170,11 +117,68 @@ class PaymentReceiptService
     */
 
     public function hasReceipt(
-        Payment $payment
+        Payment $payment,
     ): bool {
-        return filled(
-            $payment->receipt_number
-        );
+        return Receipt::query()
+            ->where('payment_id', $payment->id)
+            ->exists();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Get Receipt
+    |--------------------------------------------------------------------------
+    |
+    | Returns the official receipt for a successful payment.
+    |
+    | A missing receipt is treated as a data-integrity problem rather than
+    | silently creating a new financial record during a read operation.
+    |
+    */
+
+    public function getReceipt(
+        Payment $payment,
+    ): Receipt {
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Must Be Successful
+        |--------------------------------------------------------------------------
+        */
+
+        if (!$payment->isSuccessful()) {
+            throw new RuntimeException(
+                'A receipt is only available for a successful payment.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Get Existing Receipt
+        |--------------------------------------------------------------------------
+        */
+
+        $receipt = Receipt::query()
+            ->where('payment_id', $payment->id)
+            ->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Receipt Must Exist
+        |--------------------------------------------------------------------------
+        |
+        | A successful payment should always have a receipt because receipt
+        | creation happens during the payment completion/verification
+        | transaction.
+        |
+        */
+
+        if (!$receipt) {
+            throw new RuntimeException(
+                'The completed payment does not have an official receipt.'
+            );
+        }
+
+        return $receipt;
     }
 
     /*
@@ -184,39 +188,10 @@ class PaymentReceiptService
     */
 
     public function getReceiptNumber(
-        Payment $payment
+        Payment $payment,
     ): ?string {
-        return $payment->receipt_number;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Get Receipt Payment
-    |--------------------------------------------------------------------------
-    |
-    | Ensures the payment has a valid receipt before returning it.
-    |
-    */
-
-    public function getReceipt(
-        Payment $payment
-    ): Payment {
-        if (!$payment->isSuccessful()) {
-            throw new RuntimeException(
-                'A receipt is only available for a successful payment.'
-            );
-        }
-
-        if (
-            !filled(
-                $payment->receipt_number
-            )
-        ) {
-            return $this->create(
-                $payment
-            );
-        }
-
-        return $payment;
+        return Receipt::query()
+            ->where('payment_id', $payment->id)
+            ->value('receipt_number');
     }
 }

@@ -29,22 +29,29 @@ class CashPaymentController extends Controller
         $requestId = $request->header('X-Request-ID')
             ?: (string) Str::uuid();
 
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Authentication is required.',
+                'request_id' => $requestId,
+            ], 401);
+        }
+
         try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Authentication is required.',
-                    'request_id' => $requestId,
-                ], 401);
-            }
-
             /*
-             * IMPORTANT:
+             * The authenticated user is passed to the service.
              *
-             * The collector is derived from the authenticated user.
-             * Do NOT accept collector_id from the frontend.
+             * Do not accept:
+             * - received_by
+             * - processed_by
+             * - verified_by
+             * - payment_number
+             * - transaction_reference
+             * - cash_receipt_number
+             *
+             * from the frontend.
              */
             $payment = $this->cashPaymentService->record(
                 user: $user,
@@ -61,7 +68,7 @@ class CashPaymentController extends Controller
         } catch (Throwable $e) {
             Log::error('Failed to record cash payment.', [
                 'request_id' => $requestId,
-                'user_id' => $request->user()?->id,
+                'user_id' => $user->id,
                 'invoice_id' => $request->input('invoice_id'),
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
@@ -76,45 +83,46 @@ class CashPaymentController extends Controller
     }
 
     /**
-     * Confirm and post a cash payment.
+     * Confirm and complete a cash payment.
      *
-     * POST /api/cash-payments/{payment}/post
+     * POST /api/cash-payments/{payment}/complete
      */
-    public function post(
+    public function complete(
         Request $request,
         string $payment
     ): JsonResponse {
         $requestId = $request->header('X-Request-ID')
             ?: (string) Str::uuid();
 
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Authentication is required.',
+                'request_id' => $requestId,
+            ], 401);
+        }
+
         try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Authentication is required.',
-                    'request_id' => $requestId,
-                ], 401);
-            }
-
             /*
-             * The service must:
+             * The service is responsible for:
              *
-             * 1. Find the payment.
-             * 2. Verify it belongs to CASH channel.
-             * 3. Verify its current status.
-             * 4. Check authorization of the authenticated user.
-             * 5. Confirm the cash.
-             * 6. Mark the payment as POSTED.
-             * 7. Update invoice balance.
-             * 8. Update payment schedule if applicable.
-             * 9. Generate the official receipt.
-             * 10. Record audit information.
+             * 1. Finding the payment.
+             * 2. Verifying that the payment method is CASH.
+             * 3. Verifying the payment status.
+             * 4. Checking the user's authorization.
+             * 5. Confirming the cash.
+             * 6. Marking the payment as COMPLETED.
+             * 7. Setting verified_by / verified_at.
+             * 8. Updating the invoice balance.
+             * 9. Updating the payment schedule if applicable.
+             * 10. Generating the official receipt.
+             * 11. Recording audit information.
              *
-             * These operations should happen transactionally.
+             * These operations must be transactional.
              */
-            $postedPayment = $this->cashPaymentService->post(
+            $completedPayment = $this->cashPaymentService->complete(
                 paymentId: $payment,
                 user: $user,
                 requestId: $requestId,
@@ -122,14 +130,14 @@ class CashPaymentController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Cash payment confirmed and posted successfully.',
-                'data' => new PaymentResource($postedPayment),
+                'message' => 'Cash payment completed successfully.',
+                'data' => new PaymentResource($completedPayment),
                 'request_id' => $requestId,
             ]);
         } catch (Throwable $e) {
-            Log::error('Failed to post cash payment.', [
+            Log::error('Failed to complete cash payment.', [
                 'request_id' => $requestId,
-                'user_id' => $request->user()?->id,
+                'user_id' => $user->id,
                 'payment_id' => $payment,
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
@@ -137,7 +145,7 @@ class CashPaymentController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Unable to post the cash payment.',
+                'message' => 'Unable to complete the cash payment.',
                 'request_id' => $requestId,
             ], 500);
         }

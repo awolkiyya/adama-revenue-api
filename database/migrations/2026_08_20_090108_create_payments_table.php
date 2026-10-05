@@ -33,11 +33,11 @@ return new class extends Migration
                 ->cascadeOnUpdate()
                 ->restrictOnDelete();
 
-            $table->foreignUuid('assessment_id')
-                ->nullable()
-                ->constrained('assessments')
-                ->cascadeOnUpdate()
-                ->nullOnDelete();
+            // $table->foreignUuid('assessment_id')
+            //     ->nullable()
+            //     ->constrained('assessments')
+            //     ->cascadeOnUpdate()
+            //     ->nullOnDelete();
 
 
             /*

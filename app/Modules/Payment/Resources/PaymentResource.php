@@ -8,7 +8,18 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class PaymentResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
+     * Transform the payment into an API representation.
+     *
+     * Payment is the common financial transaction.
+     *
+     * Method-specific information is exposed through:
+     *
+     * - cash_details
+     * - bank_transfer_details
+     * - online_details
+     *
+     * Method-specific relationships are only returned when
+     * explicitly eager-loaded.
      *
      * @return array<string, mixed>
      */
@@ -21,13 +32,14 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'id' => $this->id,
+            'id' =>
+                $this->id,
 
-            'payment_number' => $this->payment_number,
+            'payment_number' =>
+                $this->payment_number,
 
-            'transaction_reference' => $this->transaction_reference,
-
-            'provider_reference' => $this->provider_reference,
+            'transaction_reference' =>
+                $this->transaction_reference,
 
 
             /*
@@ -36,11 +48,11 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'invoice_id' => $this->invoice_id,
+            'invoice_id' =>
+                $this->invoice_id,
 
-            'assessment_id' => $this->assessment_id,
-
-            'citizen_id' => $this->citizen_id,
+            'citizen_id' =>
+                $this->citizen_id,
 
 
             /*
@@ -49,35 +61,33 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'payment_method' => $this->enumValue(
-                $this->payment_method
-            ),
+            'payment_method' =>
+                $this->enumValue(
+                    $this->payment_method
+                ),
 
-            'payment_provider' => $this->enumValue(
-                $this->payment_provider
-            ),
+            'payment_source' =>
+                $this->payment_source,
 
-            'status' => $this->enumValue(
-                $this->status
-            ),
+            'status' =>
+                $this->enumValue(
+                    $this->status
+                ),
 
 
             /*
             |--------------------------------------------------------------------------
             | Financial Information
             |--------------------------------------------------------------------------
-            |
-            | amount is cast by the model as decimal:2.
-            |
-            | We return it as a numeric value for the frontend.
-            |
             */
 
-            'amount' => $this->amount !== null
-                ? (float) $this->amount
-                : null,
+            'amount' =>
+                $this->amount !== null
+                    ? (float) $this->amount
+                    : null,
 
-            'currency' => $this->currency,
+            'currency' =>
+                $this->currency,
 
 
             /*
@@ -86,31 +96,68 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'payer_name' => $this->payer_name,
+            'payer' => [
+                'name' =>
+                    $this->payer_name,
 
-            'payer_email' => $this->payer_email,
+                'email' =>
+                    $this->payer_email,
 
-            'payer_phone' => $this->payer_phone,
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Payment Dates
-            |--------------------------------------------------------------------------
-            */
-
-            'payment_date' => $this->payment_date?->toISOString(),
-
-            'verified_at' => $this->verified_at?->toISOString(),
+                'phone' =>
+                    $this->payer_phone,
+            ],
 
 
             /*
             |--------------------------------------------------------------------------
-            | Online Checkout
+            | Processing / Verification
             |--------------------------------------------------------------------------
             */
 
-            'checkout_url' => $this->checkout_url,
+            'processed_by' =>
+                $this->processed_by,
+
+            'processed_by_user' =>
+                $this->whenLoaded(
+                    'processedBy',
+                    function () {
+                        $user = $this->processedBy;
+
+                        return $user
+                            ? [
+                                'id' =>
+                                    $user->id,
+
+                                'name' =>
+                                    $user->name ?? null,
+                            ]
+                            : null;
+                    }
+                ),
+
+            'verified_by' =>
+                $this->verified_by,
+
+            'verified_by_user' =>
+                $this->whenLoaded(
+                    'verifiedBy',
+                    function () {
+                        $user = $this->verifiedBy;
+
+                        return $user
+                            ? [
+                                'id' =>
+                                    $user->id,
+
+                                'name' =>
+                                    $user->name ?? null,
+                            ]
+                            : null;
+                    }
+                ),
+
+            'verified_at' =>
+                $this->verified_at?->toISOString(),
 
 
             /*
@@ -119,91 +166,298 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'failure_reason' => $this->failure_reason,
+            'failure_reason' =>
+                $this->failure_reason,
 
 
             /*
             |--------------------------------------------------------------------------
-            | Audit
+            | Application Metadata
             |--------------------------------------------------------------------------
             */
 
-            'received_by' => $this->received_by,
-
-            'verified_by' => $this->verified_by,
+            'metadata' =>
+                $this->metadata,
 
 
             /*
             |--------------------------------------------------------------------------
-            | Provider / Application Data
+            | Invoice
             |--------------------------------------------------------------------------
             */
 
-            'metadata' => $this->metadata,
+            'invoice' =>
+                $this->whenLoaded(
+                    'invoice',
+                    function () {
+                        $invoice = $this->invoice;
 
-            'provider_response' => $this->provider_response,
+                        if (!$invoice) {
+                            return null;
+                        }
+
+                        return [
+                            'id' =>
+                                $invoice->id,
+
+                            'invoice_number' =>
+                                $invoice->invoice_number ?? null,
+
+                            'status' =>
+                                $this->enumValue(
+                                    $invoice->status
+                                ),
+
+                            'total_amount' =>
+                                $invoice->total_amount !== null
+                                    ? (float) $invoice->total_amount
+                                    : null,
+
+                            'paid_amount' =>
+                                $invoice->paid_amount !== null
+                                    ? (float) $invoice->paid_amount
+                                    : null,
+
+                            'balance_due' =>
+                                $invoice->balance_due !== null
+                                    ? (float) $invoice->balance_due
+                                    : null,
+                        ];
+                    }
+                ),
 
 
             /*
             |--------------------------------------------------------------------------
-            | Relationships
+            | Citizen
             |--------------------------------------------------------------------------
-            |
-            | These are only included when explicitly eager-loaded.
-            |
-            | This prevents the payment list endpoint from accidentally
-            | generating N+1 queries.
-            |
             */
 
-            'invoice' => $this->whenLoaded(
-                'invoice',
-                fn () => $this->invoice
-                    ? [
-                        'id' => $this->invoice->id,
-                    ]
-                    : null
-            ),
+            'citizen' =>
+                $this->whenLoaded(
+                    'citizen',
+                    function () {
+                        $citizen = $this->citizen;
 
-            'assessment' => $this->whenLoaded(
-                'assessment',
-                fn () => $this->assessment
-                    ? [
-                        'id' => $this->assessment->id,
-                    ]
-                    : null
-            ),
+                        if (!$citizen) {
+                            return null;
+                        }
 
-            'citizen' => $this->whenLoaded(
-                'citizen',
-                fn () => $this->citizen
-                    ? [
-                        'id' => $this->citizen->id,
-                    ]
-                    : null
-            ),
+                        return [
+                            'id' =>
+                                $citizen->id,
 
-            'received_by_user' => $this->whenLoaded(
-                'receivedBy',
-                fn () => $this->receivedBy
-                    ? [
-                        'id' => $this->receivedBy->id,
-                        'name' => $this->receivedBy->name
-                            ?? null,
-                    ]
-                    : null
-            ),
+                            'name' =>
+                                $citizen->name ?? null,
+                        ];
+                    }
+                ),
 
-            'verified_by_user' => $this->whenLoaded(
-                'verifiedBy',
-                fn () => $this->verifiedBy
-                    ? [
-                        'id' => $this->verifiedBy->id,
-                        'name' => $this->verifiedBy->name
-                            ?? null,
-                    ]
-                    : null
-            ),
+
+            /*
+            |--------------------------------------------------------------------------
+            | Cash Payment Details
+            |--------------------------------------------------------------------------
+            */
+
+            'cash_details' =>
+                $this->whenLoaded(
+                    'cashDetails',
+                    function () {
+                        $cash = $this->cashDetails;
+
+                        if (!$cash) {
+                            return null;
+                        }
+
+                        return [
+                            'id' =>
+                                $cash->id,
+
+                            'cash_receipt_number' =>
+                                $cash->cash_receipt_number,
+
+                            'cash_received_at' =>
+                                $cash->cash_received_at
+                                    ?->toISOString(),
+
+                            'cashier_session_id' =>
+                                $cash->cashier_session_id,
+
+                            'received_by' =>
+                                $cash->received_by,
+
+                            'received_by_user' =>
+                                $cash->relationLoaded('receivedBy')
+                                    ? (
+                                        $cash->receivedBy
+                                            ? [
+                                                'id' =>
+                                                    $cash->receivedBy->id,
+
+                                                'name' =>
+                                                    $cash->receivedBy->name
+                                                    ?? null,
+                                            ]
+                                            : null
+                                    )
+                                    : null,
+
+                            'notes' =>
+                                $cash->notes,
+                        ];
+                    }
+                ),
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Bank Transfer Details
+            |--------------------------------------------------------------------------
+            */
+
+            'bank_transfer_details' =>
+                $this->whenLoaded(
+                    'bankTransferDetails',
+                    function () {
+                        $bank = $this->bankTransferDetails;
+
+                        if (!$bank) {
+                            return null;
+                        }
+
+                        return [
+                            'id' =>
+                                $bank->id,
+
+                            'bank_account_id' =>
+                                $bank->bank_account_id,
+
+                            'transfer_reference' =>
+                                $bank->transfer_reference,
+
+                            'transfer_date' =>
+                                $bank->transfer_date
+                                    ?->toISOString(),
+
+                            'sender_name' =>
+                                $bank->sender_name,
+
+                            'sender_account' =>
+                                $bank->sender_account,
+
+                            'verification_status' =>
+                                $bank->verification_status,
+
+                            'verified_by' =>
+                                $bank->verified_by,
+
+                            'verified_at' =>
+                                $bank->verified_at
+                                    ?->toISOString(),
+
+                            'notes' =>
+                                $bank->notes,
+
+                            'bank_account' =>
+                                $bank->relationLoaded('bankAccount')
+                                    ? (
+                                        $bank->bankAccount
+                                            ? [
+                                                'id' =>
+                                                    $bank->bankAccount->id,
+
+                                                'bank_name' =>
+                                                    $bank->bankAccount->bank_name,
+
+                                                'account_name' =>
+                                                    $bank->bankAccount->account_name,
+
+                                                'account_number' =>
+                                                    $bank->bankAccount->account_number,
+
+                                                'currency' =>
+                                                    $bank->bankAccount->currency,
+                                            ]
+                                            : null
+                                    )
+                                    : null,
+                        ];
+                    }
+                ),
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Online Payment Details
+            |--------------------------------------------------------------------------
+            */
+
+            'online_details' =>
+                $this->whenLoaded(
+                    'onlineDetails',
+                    function () {
+                        $online = $this->onlineDetails;
+
+                        if (!$online) {
+                            return null;
+                        }
+
+                        return [
+                            'id' =>
+                                $online->id,
+
+                            'payment_provider_id' =>
+                                $online->payment_provider_id,
+
+                            'checkout_reference' =>
+                                $online->checkout_reference,
+
+                            'provider_transaction_id' =>
+                                $online->provider_transaction_id,
+
+                            'checkout_url' =>
+                                $online->checkout_url,
+
+                            'provider_status' =>
+                                $online->provider_status,
+
+                            'callback_received_at' =>
+                                $online->callback_received_at
+                                    ?->toISOString(),
+
+                            'paid_at' =>
+                                $online->paid_at
+                                    ?->toISOString(),
+
+                            'payment_provider' =>
+                                $online->relationLoaded(
+                                    'paymentProvider'
+                                )
+                                    ? (
+                                        $online->paymentProvider
+                                            ? [
+                                                'id' =>
+                                                    $online
+                                                        ->paymentProvider
+                                                        ->id,
+
+                                                'code' =>
+                                                    $online
+                                                        ->paymentProvider
+                                                        ->code,
+
+                                                'name' =>
+                                                    $online
+                                                        ->paymentProvider
+                                                        ->name,
+                                            ]
+                                            : null
+                                    )
+                                    : null,
+                        ];
+                    }
+                ),
 
 
             /*
@@ -212,20 +466,11 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'payment_evidence' => $this->whenLoaded(
-                'paymentEvidence',
-                fn () => $this->paymentEvidence
-            ),
-
-            'receipts' => $this->whenLoaded(
-                'receipts',
-                fn () => $this->receipts
-            ),
-
-            'refund_evidence' => $this->whenLoaded(
-                'refundEvidence',
-                fn () => $this->refundEvidence
-            ),
+            'files' =>
+                $this->whenLoaded(
+                    'files',
+                    fn () => $this->files
+                ),
 
 
             /*
@@ -234,20 +479,21 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'created_at' => $this->created_at?->toISOString(),
+            'created_at' =>
+                $this->created_at?->toISOString(),
 
-            'updated_at' => $this->updated_at?->toISOString(),
+            'updated_at' =>
+                $this->updated_at?->toISOString(),
         ];
     }
-
 
     /**
      * Safely return the backing value of a PHP enum.
      *
-     * Supports both:
+     * Supports:
      *
-     * - BackedEnum
-     * - plain scalar values
+     * - BackedEnum instances
+     * - scalar values
      */
     private function enumValue(mixed $value): mixed
     {

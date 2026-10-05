@@ -18,12 +18,15 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
+use App\Modules\Payment\Services\PaymentReceiptService;
+use App\Models\Payment;
 
 class PaymentController extends Controller
 {
     public function __construct(
         protected PaymentService $paymentService,
         protected PaymentVerificationService $verificationService,
+        protected PaymentReceiptService $receiptService,
     ) {
     }
 
@@ -1656,4 +1659,246 @@ public function show(
 
         return $value;
     }
+
+
+    /*
+|--------------------------------------------------------------------------
+| Get Payment Receipt
+|--------------------------------------------------------------------------
+|
+| Returns the official receipt associated with a completed payment.
+|
+| IMPORTANT:
+| - This endpoint NEVER creates a receipt.
+| - A receipt is created when the payment becomes COMPLETED.
+| - If the payment is not completed, no receipt is available.
+|
+*/
+
+public function receipt(
+    Request $request,
+    string $payment
+): JsonResponse {
+
+    $requestId =
+        $request->header('X-Request-ID')
+        ?? (string) Str::uuid();
+
+    Log::info(
+        'Payment receipt retrieval request started.',
+        [
+            'request_id' =>
+                $requestId,
+
+            'user_id' =>
+                $request->user()?->id,
+
+            'authenticated' =>
+                $request->user() !== null,
+
+            'payment_id' =>
+                $payment,
+
+            'ip' =>
+                $request->ip(),
+
+            'user_agent' =>
+                $request->userAgent(),
+        ]
+    );
+
+    try {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Authentication Required
+        |--------------------------------------------------------------------------
+        */
+
+        $user =
+            $request->user();
+
+        if (! $user) {
+
+            Log::warning(
+                'Payment receipt retrieval rejected because the user is unauthenticated.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'payment_id' =>
+                        $payment,
+
+                    'ip' =>
+                        $request->ip(),
+                ]
+            );
+
+            return ApiResponse::error(
+                'Authentication is required.',
+                401
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Find Payment
+        |--------------------------------------------------------------------------
+        |
+        | The route parameter is the internal Payment UUID.
+        |
+        */
+
+        $paymentModel =
+            $this->paymentService->find($payment);
+
+        if (! $paymentModel) {
+
+            Log::warning(
+                'Payment receipt retrieval failed because the payment was not found.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $user->id,
+
+                    'payment_id' =>
+                        $payment,
+                ]
+            );
+
+            return ApiResponse::error(
+                'Payment not found.',
+                404
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Receipt Is Available Only For Completed Payments
+        |--------------------------------------------------------------------------
+        */
+
+        if (! $paymentModel->isSuccessful()) {
+
+            Log::info(
+                'Payment receipt is unavailable because payment is not completed.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $user->id,
+
+                    'payment_id' =>
+                        $paymentModel->id,
+
+                    'payment_number' =>
+                        $paymentModel->payment_number,
+
+                    'status' =>
+                        $this->safeEnumValue(
+                            $paymentModel->status
+                        ),
+                ]
+            );
+
+            return ApiResponse::error(
+                'A receipt is only available for a completed payment.',
+                422
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Get Existing Official Receipt
+        |--------------------------------------------------------------------------
+        |
+        | IMPORTANT:
+        |
+        | getReceipt() only retrieves the official receipt.
+        | It does NOT create one.
+        |
+        */
+
+        $receipt =
+            $this->receiptService->getReceipt(
+                $paymentModel
+            );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Response
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info(
+            'Payment receipt retrieved successfully.',
+            [
+                'request_id' =>
+                    $requestId,
+
+                'user_id' =>
+                    $user->id,
+
+                'payment_id' =>
+                    $paymentModel->id,
+
+                'payment_number' =>
+                    $paymentModel->payment_number,
+
+                'receipt_id' =>
+                    $receipt->id,
+
+                'receipt_number' =>
+                    $receipt->receipt_number,
+
+                'issued_at' =>
+                    $receipt->issued_at,
+            ]
+        );
+
+        return ApiResponse::success(
+            $receipt,
+            'Payment receipt retrieved successfully.'
+        );
+
+    } catch (Throwable $exception) {
+
+        Log::error(
+            'Payment receipt retrieval failed.',
+            [
+                'request_id' =>
+                    $requestId,
+
+                'user_id' =>
+                    $request->user()?->id,
+
+                'payment_id' =>
+                    $payment,
+
+                'exception' =>
+                    $exception::class,
+
+                'message' =>
+                    $exception->getMessage(),
+
+                'file' =>
+                    $exception->getFile(),
+
+                'line' =>
+                    $exception->getLine(),
+
+                'trace' =>
+                    $exception->getTraceAsString(),
+            ]
+        );
+
+        return ApiResponse::error(
+            'Unable to retrieve payment receipt.',
+            500
+        );
+    }
+}
 }

@@ -3,27 +3,18 @@
 namespace App\Models;
 
 use App\Enums\PaymentMethod;
-use App\Enums\PaymentProvider;
 use App\Enums\PaymentStatus;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class Payment extends Model
 {
+    use HasFactory;
     use HasUuids;
-
-    /*
-    |--------------------------------------------------------------------------
-    | Primary Key
-    |--------------------------------------------------------------------------
-    */
-
-    protected $keyType = 'string';
-
-    public $incrementing = false;
-
 
     /*
     |--------------------------------------------------------------------------
@@ -32,6 +23,19 @@ class Payment extends Model
     */
 
     protected $table = 'payments';
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Primary Key
+    |--------------------------------------------------------------------------
+    */
+
+    protected $primaryKey = 'id';
+
+    protected $keyType = 'string';
+
+    public $incrementing = false;
 
 
     /*
@@ -48,31 +52,11 @@ class Payment extends Model
         |--------------------------------------------------------------------------
         */
 
-        'invoice_id',
-
         'payment_number',
 
-        'assessment_id',
+        'invoice_id',
 
         'citizen_id',
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Audit
-        |--------------------------------------------------------------------------
-        |
-        | received_by:
-        | The user who recorded/received the payment.
-        |
-        | verified_by:
-        | The user who verified, approved, or rejected the payment.
-        |
-        */
-
-        'received_by',
-
-        'verified_by',
 
 
         /*
@@ -83,30 +67,18 @@ class Payment extends Model
 
         'payment_method',
 
-        'payment_provider',
+        'payment_source',
 
         'status',
 
 
         /*
         |--------------------------------------------------------------------------
-        | Transaction References
+        | Transaction
         |--------------------------------------------------------------------------
-        |
-        | payment_number:
-        | Municipal/business-facing payment identifier.
-        |
-        | transaction_reference:
-        | Application/payment transaction reference.
-        |
-        | provider_reference:
-        | Reference returned by the external payment provider.
-        |
         */
 
         'transaction_reference',
-
-        'provider_reference',
 
 
         /*
@@ -122,22 +94,22 @@ class Payment extends Model
 
         /*
         |--------------------------------------------------------------------------
-        | Payment Dates
+        | Processing
         |--------------------------------------------------------------------------
         */
 
-        'payment_date',
-
-        'verified_at',
+        'processed_by',
 
 
         /*
         |--------------------------------------------------------------------------
-        | Online Checkout
+        | Verification
         |--------------------------------------------------------------------------
         */
 
-        'checkout_url',
+        'verified_by',
+
+        'verified_at',
 
 
         /*
@@ -164,11 +136,9 @@ class Payment extends Model
 
         /*
         |--------------------------------------------------------------------------
-        | Provider / Application Data
+        | Metadata
         |--------------------------------------------------------------------------
         */
-
-        'provider_response',
 
         'metadata',
     ];
@@ -192,8 +162,6 @@ class Payment extends Model
 
             'payment_method' => PaymentMethod::class,
 
-            'payment_provider' => PaymentProvider::class,
-
             'status' => PaymentStatus::class,
 
 
@@ -214,8 +182,6 @@ class Payment extends Model
 
             'metadata' => 'array',
 
-            'provider_response' => 'array',
-
 
             /*
             |--------------------------------------------------------------------------
@@ -223,9 +189,11 @@ class Payment extends Model
             |--------------------------------------------------------------------------
             */
 
-            'payment_date' => 'datetime',
-
             'verified_at' => 'datetime',
+
+            'created_at' => 'datetime',
+
+            'updated_at' => 'datetime',
         ];
     }
 
@@ -239,30 +207,15 @@ class Payment extends Model
     /**
      * Invoice this payment belongs to.
      *
-     * Every payment belongs to exactly one invoice.
+     * One invoice can have many payments.
+     *
+     * This supports partial payments.
      */
     public function invoice(): BelongsTo
     {
         return $this->belongsTo(
             Invoice::class,
             'invoice_id'
-        );
-    }
-
-
-    /**
-     * Assessment associated with this payment.
-     *
-     * Nullable because an invoice can originate from:
-     *
-     * - Assessment
-     * - Direct Collection
-     */
-    public function assessment(): BelongsTo
-    {
-        return $this->belongsTo(
-            Assessment::class,
-            'assessment_id'
         );
     }
 
@@ -280,19 +233,19 @@ class Payment extends Model
 
 
     /**
-     * User who received or recorded the payment.
+     * User who processed or recorded the payment.
      */
-    public function receivedBy(): BelongsTo
+    public function processedBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
-            'received_by'
+            'processed_by'
         );
     }
 
 
     /**
-     * User who verified, approved, or rejected the payment.
+     * User who verified the payment.
      */
     public function verifiedBy(): BelongsTo
     {
@@ -305,82 +258,63 @@ class Payment extends Model
 
     /*
     |--------------------------------------------------------------------------
-    | Files
-    |--------------------------------------------------------------------------
-    |
-    | Uses the application's generic polymorphic files table.
-    |
-    | Supported collections:
-    |
-    | - payment_evidence
-    | - payment_receipt
-    | - payment_refund_evidence
-    |
+    | Payment Method Details
     |--------------------------------------------------------------------------
     */
 
     /**
-     * All files attached to this payment.
+     * Cash payment information.
+     */
+    public function cashDetails(): HasOne
+    {
+        return $this->hasOne(
+            CashPaymentDetail::class,
+            'payment_id'
+        );
+    }
+
+
+    /**
+     * Bank transfer information.
+     */
+    public function bankTransferDetails(): HasOne
+    {
+        return $this->hasOne(
+            BankTransferDetail::class,
+            'payment_id'
+        );
+    }
+
+
+    /**
+     * Online payment information.
+     */
+    public function onlineDetails(): HasOne
+    {
+        return $this->hasOne(
+            OnlinePaymentDetail::class,
+            'payment_id'
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Files
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Generic files attached directly to the payment.
+     *
+     * Method-specific supporting documents should preferably
+     * be attached to the corresponding payment detail.
      */
     public function files(): MorphMany
     {
         return $this->morphMany(
             File::class,
             'fileable'
-        );
-    }
-
-
-    /**
-     * Payment evidence.
-     *
-     * Examples:
-     *
-     * - Bank transfer slip
-     * - Bank deposit receipt
-     * - POS evidence
-     * - Other supporting documents
-     */
-    public function paymentEvidence(): MorphMany
-    {
-        return $this->morphMany(
-            File::class,
-            'fileable'
-        )->where(
-            'collection',
-            'payment_evidence'
-        );
-    }
-
-
-    /**
-     * Official receipts generated by the system.
-     */
-    public function receipts(): MorphMany
-    {
-        return $this->morphMany(
-            File::class,
-            'fileable'
-        )->where(
-            'collection',
-            'payment_receipt'
-        );
-    }
-
-
-    /**
-     * Refund evidence.
-     *
-     * Used when a successful payment is refunded.
-     */
-    public function refundEvidence(): MorphMany
-    {
-        return $this->morphMany(
-            File::class,
-            'fileable'
-        )->where(
-            'collection',
-            'payment_refund_evidence'
         );
     }
 
@@ -393,9 +327,6 @@ class Payment extends Model
 
     /**
      * Determine whether the payment is pending.
-     *
-     * PENDING means the payment has been recorded but
-     * has not yet been successfully verified/completed.
      */
     public function isPending(): bool
     {
@@ -404,16 +335,25 @@ class Payment extends Model
 
 
     /**
-     * Determine whether the payment was successfully completed.
+     * Determine whether the payment is processing.
      */
-    public function isSuccessful(): bool
+    public function isProcessing(): bool
     {
-        return $this->status === PaymentStatus::SUCCESS;
+        return $this->status === PaymentStatus::PROCESSING;
     }
 
 
     /**
-     * Determine whether the payment failed or was rejected.
+     * Determine whether the payment is completed.
+     */
+    public function isCompleted(): bool
+    {
+        return $this->status === PaymentStatus::COMPLETED;
+    }
+
+
+    /**
+     * Determine whether the payment failed.
      */
     public function isFailed(): bool
     {
@@ -431,29 +371,35 @@ class Payment extends Model
 
 
     /**
-     * Determine whether the payment was refunded.
+     * Determine whether the payment was reversed.
      */
-    public function isRefunded(): bool
+    public function isReversed(): bool
     {
-        return $this->status === PaymentStatus::REFUNDED;
+        return $this->status === PaymentStatus::REVERSED;
+    }
+
+
+    /**
+     * Determine whether the payment successfully completed.
+     */
+    public function isSuccessful(): bool
+    {
+        return $this->status === PaymentStatus::COMPLETED;
     }
 
 
     /**
      * Determine whether the payment has reached a final state.
-     *
-     * SUCCESS, FAILED, CANCELLED and REFUNDED are treated
-     * as final payment states.
      */
     public function isFinal(): bool
     {
         return in_array(
             $this->status,
             [
-                PaymentStatus::SUCCESS,
+                PaymentStatus::COMPLETED,
                 PaymentStatus::FAILED,
                 PaymentStatus::CANCELLED,
-                PaymentStatus::REFUNDED,
+                PaymentStatus::REVERSED,
             ],
             true
         );
@@ -467,26 +413,16 @@ class Payment extends Model
     */
 
     /**
-     * Mark the payment as successfully verified.
+     * Mark payment as completed.
      *
-     * IMPORTANT:
-     *
-     * This method changes only the payment record.
-     *
-     * It does NOT update:
-     *
-     * - invoice.paid_amount
-     * - invoice.balance_due
-     * - invoice.status
-     *
-     * Those financial changes must be handled by PaymentService
-     * inside a database transaction.
+     * Invoice financial updates must be handled by
+     * PaymentService inside a database transaction.
      */
-    public function markAsVerified(
+    public function markAsCompleted(
         string $verifiedBy
     ): bool {
         return $this->forceFill([
-            'status' => PaymentStatus::SUCCESS,
+            'status' => PaymentStatus::COMPLETED,
 
             'verified_by' => $verifiedBy,
 
@@ -498,15 +434,9 @@ class Payment extends Model
 
 
     /**
-     * Reject / fail the payment.
+     * Mark payment as failed.
      *
-     * A failed payment MUST NOT affect invoice financial totals.
-     *
-     * The rejection is recorded with:
-     *
-     * - rejection reason
-     * - user who reviewed/rejected it
-     * - review timestamp
+     * Failed payments must not affect invoice balances.
      */
     public function markAsFailed(
         string $reason,
@@ -526,15 +456,6 @@ class Payment extends Model
 
     /**
      * Cancel the payment.
-     *
-     * FAILED:
-     * The payment was reviewed and could not be accepted.
-     *
-     * CANCELLED:
-     * The payment process was intentionally cancelled or
-     * abandoned before successful completion.
-     *
-     * Existing audit information is preserved.
      */
     public function markAsCancelled(): bool
     {
@@ -545,18 +466,20 @@ class Payment extends Model
 
 
     /**
-     * Mark the payment as refunded.
+     * Mark the payment as reversed.
      *
-     * The actual invoice balance reversal must be handled
-     * by PaymentService inside a database transaction.
-     *
-     * Existing payment verification information is preserved
-     * for audit purposes.
+     * Any invoice balance reversal must be handled by
+     * PaymentService inside a database transaction.
      */
-    public function markAsRefunded(): bool
+    public function markAsReversed(): bool
     {
         return $this->forceFill([
-            'status' => PaymentStatus::REFUNDED,
+            'status' => PaymentStatus::REVERSED,
         ])->save();
+    }
+
+    public function receipt(): HasOne
+    {
+        return $this->hasOne(Receipt::class, 'payment_id');
     }
 }

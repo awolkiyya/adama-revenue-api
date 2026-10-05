@@ -3,24 +3,33 @@
 namespace App\Modules\Payment\Services;
 
 use App\Models\Payment;
+use App\Models\Receipt;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Response;
 use RuntimeException;
 
 class PaymentReceiptPdfService
 {
-    public function __construct(
-        protected PaymentReceiptService $receiptService,
-    ) {
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | PDF Configuration
+    |--------------------------------------------------------------------------
+    */
+
+    private const VIEW = 'payments.receipts.pdf';
+
+    private const PAPER = 'a4';
+
+    private const ORIENTATION = 'portrait';
+
+    private const DEFAULT_FONT = 'DejaVu Sans';
 
     /*
     |--------------------------------------------------------------------------
-    | Generate PDF Download
+    | Download PDF
     |--------------------------------------------------------------------------
     |
-    | Generates the official municipal payment receipt PDF and returns
-    | it as a downloadable HTTP response.
+    | Generates the official receipt PDF and downloads it.
     |
     */
 
@@ -39,13 +48,7 @@ class PaymentReceiptPdfService
     | Stream PDF
     |--------------------------------------------------------------------------
     |
-    | Opens the receipt in the browser instead of forcing a download.
-    |
-    | This is useful for:
-    |
-    | - View Receipt
-    | - Print Receipt
-    | - Browser PDF preview
+    | Generates the official receipt PDF and streams it to the browser.
     |
     */
 
@@ -64,15 +67,16 @@ class PaymentReceiptPdfService
     | Generate PDF
     |--------------------------------------------------------------------------
     |
-    | This method only generates the PDF object.
+    | Read-only operation.
     |
-    | It does NOT return a response, which makes it reusable for:
+    | This method does NOT:
     |
-    | - HTTP download
-    | - HTTP stream
-    | - Email attachments
-    | - Storage
-    | - Background jobs
+    | - create payments
+    | - create receipts
+    | - modify payments
+    | - modify invoices
+    | - modify receipt records
+    | - change payment status
     |
     */
 
@@ -89,64 +93,67 @@ class PaymentReceiptPdfService
 
         /*
         |--------------------------------------------------------------------------
-        | Ensure Receipt Exists
-        |--------------------------------------------------------------------------
-        |
-        | Receipt generation is idempotent.
-        |
-        | If receipt_number already exists, nothing is changed.
-        |
-        */
-
-        $payment = $this->receiptService->create(
-            $payment
-        );
-
-        /*
-        |--------------------------------------------------------------------------
         | Load Required Relationships
         |--------------------------------------------------------------------------
-        |
-        | Prevent N+1 queries when the Blade template accesses
-        | invoice/citizen information.
-        |
         */
 
         $payment->loadMissing([
             'invoice',
             'citizen',
+            'receipt',
+            'receipt.issuedBy',
+            'bankTransferDetails',
+            'onlineDetails',
         ]);
 
         /*
         |--------------------------------------------------------------------------
-        | Build Receipt Data
+        | Require Official Receipt
         |--------------------------------------------------------------------------
-        |
-        | Keep the Blade template presentation-focused.
-        |
-        | Business logic belongs here.
-        |
         */
 
-        $receipt = $this->buildReceiptData(
-            $payment
+        $receipt = $payment->receipt;
+
+        if (! $receipt instanceof Receipt) {
+            throw new RuntimeException(
+                'The completed payment does not have an official receipt.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Receipt
+        |--------------------------------------------------------------------------
+        */
+
+        $this->validateReceipt($receipt);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Build Stable PDF DTO
+        |--------------------------------------------------------------------------
+        */
+
+        $receiptData = $this->buildReceiptData(
+            payment: $payment,
+            receipt: $receipt,
         );
 
         /*
         |--------------------------------------------------------------------------
-        | Generate PDF
+        | Render PDF
         |--------------------------------------------------------------------------
         */
 
         return Pdf::loadView(
-            'payments.receipts.pdf',
+            self::VIEW,
             [
-                'receipt' => $receipt,
+                'receipt' => $receiptData,
             ]
         )
             ->setPaper(
-                'a4',
-                'portrait'
+                self::PAPER,
+                self::ORIENTATION
             )
             ->setOption(
                 'isRemoteEnabled',
@@ -158,7 +165,7 @@ class PaymentReceiptPdfService
             )
             ->setOption(
                 'defaultFont',
-                'DejaVu Sans'
+                self::DEFAULT_FONT
             );
     }
 
@@ -167,165 +174,165 @@ class PaymentReceiptPdfService
     | Build Receipt Data
     |--------------------------------------------------------------------------
     |
-    | Convert the Payment model into a stable structure for the
-    | PDF template.
+    | This is the contract consumed by:
+    |
+    | resources/views/payments/receipts/pdf.blade.php
+    |
+    | IMPORTANT:
+    |
+    | Monetary values returned here are already presentation-ready.
     |
     */
 
     protected function buildReceiptData(
-        Payment $payment
+        Payment $payment,
+        Receipt $receipt
     ): array {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Customer
-        |--------------------------------------------------------------------------
-        */
-
-        $customerName =
-            $payment->payer_name
-            ?: $this->resolveCitizenName($payment);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Receipt
-        |--------------------------------------------------------------------------
-        */
-
         return [
-
             /*
             |--------------------------------------------------------------------------
-            | Receipt Information
+            | Municipality
             |--------------------------------------------------------------------------
             */
 
-            'receipt_number' =>
-                $payment->receipt_number,
+            'municipality' => [
+                'name' => $this->municipalityName(),
 
-            'receipt_issued_at' =>
-                $payment->receipt_issued_at,
+                'address' => $this->configString(
+                    'app.municipality_address'
+                ),
+
+                'phone' => $this->configString(
+                    'app.municipality_phone'
+                ),
+
+                'email' => $this->configString(
+                    'app.municipality_email'
+                ),
+
+                'website' => $this->configString(
+                    'app.municipality_website'
+                ),
+            ],
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Information
+            | Receipt
             |--------------------------------------------------------------------------
             */
 
-            'payment_reference' =>
-                $payment->transaction_reference,
+            'receipt_number' => $this->stringOrNull(
+                $receipt->receipt_number
+            ),
 
-            'provider_reference' =>
-                $payment->provider_reference,
+            'receipt_issued_at' => $receipt->issued_at,
 
-            'payment_method' =>
-                $this->enumValue(
-                    $payment->payment_method
-                ),
+            'receipt_status' => $this->enumValue(
+                $receipt->status
+            ),
 
-            'payment_provider' =>
-                $this->enumValue(
-                    $payment->payment_provider
-                ),
+            'receipt_issued_by' => $this->stringOrNull(
+                $receipt->issuedBy?->name
+            ),
 
-            'payment_date' =>
-                $payment->payment_date
-                ?? $payment->verified_at
+            /*
+            |--------------------------------------------------------------------------
+            | Payment
+            |--------------------------------------------------------------------------
+            */
+
+            'payment_number' => $this->stringOrNull(
+                $payment->payment_number
+            ),
+
+            'payment_reference' => $this->stringOrNull(
+                $payment->transaction_reference
+            ),
+
+            'method_reference' => $this->resolveMethodReference(
+                $payment
+            ),
+
+            'payment_method' => $this->enumValue(
+                $payment->payment_method
+            ),
+
+            'payment_date' => $payment->verified_at
                 ?? $payment->updated_at,
 
-            'status' =>
-                $this->enumValue(
-                    $payment->status
-                ),
+            'status' => $this->enumValue(
+                $payment->status
+            ),
 
             /*
             |--------------------------------------------------------------------------
-            | Financial Information
+            | Amount
             |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            |
+            | formatMoney() returns a STRING.
+            |
+            | Example:
+            |
+            | 73260
+            |
+            | becomes:
+            |
+            | "73,260.00"
+            |
+            | Blade MUST NOT call number_format() on this value again.
+            |
             */
 
-            'amount' =>
-                (float) $payment->amount,
+            'amount' => $this->formatMoney(
+                $payment->amount
+            ),
 
-            'currency' =>
-                $payment->currency,
+            'currency' => $this->stringOrNull(
+                $payment->currency
+            ),
 
             /*
             |--------------------------------------------------------------------------
-            | Customer Information
+            | Customer
             |--------------------------------------------------------------------------
             */
 
             'customer' => [
+                'id' => $payment->citizen?->id,
 
-                'name' =>
-                    $customerName,
+                'name' => $this->resolveCustomerName(
+                    $payment
+                ),
 
-                'email' =>
-                    $payment->payer_email,
+                'email' => $this->stringOrNull(
+                    $payment->payer_email
+                ),
 
-                'phone' =>
-                    $payment->payer_phone,
+                'phone' => $this->stringOrNull(
+                    $payment->payer_phone
+                ),
             ],
 
             /*
             |--------------------------------------------------------------------------
-            | Invoice Information
+            | Invoice
             |--------------------------------------------------------------------------
             */
 
             'invoice' => [
-                'id' =>
-                    $payment->invoice?->id,
+                'id' => $payment->invoice?->id,
 
-                'reference' =>
-                    $this->resolveInvoiceReference(
-                        $payment
-                    ),
+                'reference' => $this->resolveInvoiceNumber(
+                    $payment
+                ),
 
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Municipal Information
-            |--------------------------------------------------------------------------
-            |
-            | Keep these configurable instead of hard-coding them
-            | into the PDF service.
-            |
-            */
-
-            'municipality' => [
-
-                'name' =>
-                    config(
-                        'app.municipality_name',
-                        'Adama City Administration'
-                    ),
-
-                'address' =>
-                    config(
-                        'app.municipality_address',
-                        ''
-                    ),
-
-                'phone' =>
-                    config(
-                        'app.municipality_phone',
-                        ''
-                    ),
-
-                'email' =>
-                    config(
-                        'app.municipality_email',
-                        ''
-                    ),
-
-                'website' =>
-                    config(
-                        'app.municipality_website',
-                        ''
-                    ),
+                'status' => $payment->invoice
+                    ? $this->enumValue(
+                        $payment->invoice->status
+                    )
+                    : null,
             ],
         ];
     }
@@ -339,32 +346,43 @@ class PaymentReceiptPdfService
     protected function validatePayment(
         Payment $payment
     ): void {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Must Be Successful
-        |--------------------------------------------------------------------------
-        */
-
-        if (!$payment->isSuccessful()) {
+        if (! $payment->exists) {
             throw new RuntimeException(
-                'A payment receipt can only be generated for a successful payment.'
+                'The payment does not exist.'
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Receipt Must Exist After Creation
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            !$payment->receipt_number
-            &&
-            !$payment->exists
-        ) {
+        if (! $payment->isSuccessful()) {
             throw new RuntimeException(
-                'The payment must exist before generating a receipt.'
+                'A payment receipt is only available for a completed payment.'
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Receipt
+    |--------------------------------------------------------------------------
+    */
+
+    protected function validateReceipt(
+        Receipt $receipt
+    ): void {
+        if (! $receipt->exists) {
+            throw new RuntimeException(
+                'The official receipt does not exist.'
+            );
+        }
+
+        if (blank($receipt->receipt_number)) {
+            throw new RuntimeException(
+                'The official receipt does not have a receipt number.'
+            );
+        }
+
+        if (blank($receipt->issued_at)) {
+            throw new RuntimeException(
+                'The official receipt does not have an issue date.'
             );
         }
     }
@@ -375,82 +393,209 @@ class PaymentReceiptPdfService
     |--------------------------------------------------------------------------
     */
 
-    protected function resolveCitizenName(
+    protected function resolveCustomerName(
         Payment $payment
     ): ?string {
+        /*
+        |--------------------------------------------------------------------------
+        | Payer Name
+        |--------------------------------------------------------------------------
+        */
 
-        if (!$payment->citizen) {
+        if (filled($payment->payer_name)) {
+            return trim(
+                (string) $payment->payer_name
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Citizen
+        |--------------------------------------------------------------------------
+        */
+
+        $citizen = $payment->citizen;
+
+        if (! $citizen) {
             return null;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Prefer Full Name
+        | Citizen Full Name
         |--------------------------------------------------------------------------
         */
 
         if (
-            isset($payment->citizen->name)
-            &&
-            filled($payment->citizen->name)
+            isset($citizen->name)
+            && filled($citizen->name)
         ) {
-            return $payment->citizen->name;
+            return trim(
+                (string) $citizen->name
+            );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | First + Middle + Last
+        | Citizen Name Components
         |--------------------------------------------------------------------------
         */
 
-        $parts = array_filter([
-            $payment->citizen->first_name ?? null,
-            $payment->citizen->middle_name ?? null,
-            $payment->citizen->last_name ?? null,
-        ]);
+        $parts = array_filter(
+            [
+                $citizen->first_name ?? null,
+                $citizen->middle_name ?? null,
+                $citizen->last_name ?? null,
+            ],
+            static fn ($value): bool => filled($value)
+        );
 
-        return $parts
-            ? implode(' ', $parts)
-            : null;
+        if ($parts === []) {
+            return null;
+        }
+
+        return implode(
+            ' ',
+            array_map(
+                static fn ($value): string => trim(
+                    (string) $value
+                ),
+                $parts
+            )
+        );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Resolve Invoice Reference
+    | Resolve Invoice Number
     |--------------------------------------------------------------------------
     */
 
-    protected function resolveInvoiceReference(
+    protected function resolveInvoiceNumber(
         Payment $payment
     ): ?string {
+        $invoice = $payment->invoice;
 
-        if (!$payment->invoice) {
+        if (! $invoice) {
             return null;
+        }
+
+        if (
+            isset($invoice->invoice_number)
+            && filled($invoice->invoice_number)
+        ) {
+            return trim(
+                (string) $invoice->invoice_number
+            );
+        }
+
+        if (
+            isset($invoice->reference)
+            && filled($invoice->reference)
+        ) {
+            return trim(
+                (string) $invoice->reference
+            );
+        }
+
+        return (string) $invoice->id;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Payment Method Reference
+    |--------------------------------------------------------------------------
+    */
+
+    protected function resolveMethodReference(
+        Payment $payment
+    ): ?string {
+        /*
+        |--------------------------------------------------------------------------
+        | Bank Transfer
+        |--------------------------------------------------------------------------
+        */
+
+        $bankDetails = $payment->bankTransferDetails;
+
+        if (
+            $bankDetails
+            && filled($bankDetails->transfer_reference)
+        ) {
+            return trim(
+                (string) $bankDetails->transfer_reference
+            );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Preferred Invoice Reference
+        | Online Payment
+        |--------------------------------------------------------------------------
+        */
+
+        $onlineDetails = $payment->onlineDetails;
+
+        if (
+            $onlineDetails
+            && filled(
+                $onlineDetails->provider_transaction_id
+            )
+        ) {
+            return trim(
+                (string) $onlineDetails->provider_transaction_id
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Common Transaction Reference
         |--------------------------------------------------------------------------
         */
 
         if (
-            isset($payment->invoice->invoice_number)
-            &&
-            filled($payment->invoice->invoice_number)
+            filled($payment->transaction_reference)
         ) {
-            return $payment->invoice->invoice_number;
+            return trim(
+                (string) $payment->transaction_reference
+            );
         }
 
+        return null;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Format Money
+    |--------------------------------------------------------------------------
+    |
+    | This method is ONLY for PDF presentation.
+    |
+    | Do not use this method for financial calculations.
+    |
+    */
+
+    protected function formatMoney(
+        mixed $amount
+    ): string {
         if (
-            isset($payment->invoice->reference)
-            &&
-            filled($payment->invoice->reference)
+            $amount === null
+            || $amount === ''
         ) {
-            return $payment->invoice->reference;
+            return '0.00';
         }
 
-        return $payment->invoice->id;
+        if (! is_numeric($amount)) {
+            throw new RuntimeException(
+                'The payment amount is not a valid numeric value.'
+            );
+        }
+
+        return number_format(
+            (float) $amount,
+            2,
+            '.',
+            ','
+        );
     }
 
     /*
@@ -462,13 +607,12 @@ class PaymentReceiptPdfService
     protected function enumValue(
         mixed $value
     ): ?string {
-
         if ($value === null) {
             return null;
         }
 
         if ($value instanceof \BackedEnum) {
-            return $value->value;
+            return (string) $value->value;
         }
 
         if ($value instanceof \UnitEnum) {
@@ -480,6 +624,78 @@ class PaymentReceiptPdfService
 
     /*
     |--------------------------------------------------------------------------
+    | Nullable String
+    |--------------------------------------------------------------------------
+    */
+
+    protected function stringOrNull(
+        mixed $value
+    ): ?string {
+        if (
+            $value === null
+            || $value === ''
+        ) {
+            return null;
+        }
+
+        $value = trim(
+            (string) $value
+        );
+
+        return $value === ''
+            ? null
+            : $value;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Municipality Name
+    |--------------------------------------------------------------------------
+    */
+
+    protected function municipalityName(): string
+    {
+        $name = config(
+            'app.municipality_name'
+        );
+
+        if (
+            $name === null
+            || $name === ''
+        ) {
+            return 'Adama City Administration';
+        }
+
+        return trim(
+            (string) $name
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Configuration String
+    |--------------------------------------------------------------------------
+    */
+
+    protected function configString(
+        string $key
+    ): string {
+        $value = config($key);
+
+        if (
+            $value === null
+            || $value === ''
+        ) {
+            return '';
+        }
+
+        return trim(
+            (string) $value
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | PDF Filename
     |--------------------------------------------------------------------------
     */
@@ -487,26 +703,37 @@ class PaymentReceiptPdfService
     protected function filename(
         Payment $payment
     ): string {
+        $payment->loadMissing(
+            'receipt'
+        );
 
         $receiptNumber =
-            $payment->receipt_number
-            ?: 'payment-' . $payment->id;
+            $payment->receipt?->receipt_number;
 
-        /*
-        |--------------------------------------------------------------------------
-        | Sanitize Filename
-        |--------------------------------------------------------------------------
-        */
+        if (blank($receiptNumber)) {
+            $receiptNumber =
+                'payment-' . $payment->id;
+        }
 
-        $receiptNumber = preg_replace(
+        $safeReceiptNumber = preg_replace(
             '/[^A-Za-z0-9\-_]/',
             '-',
-            $receiptNumber
+            (string) $receiptNumber
         );
+
+        $safeReceiptNumber = trim(
+            (string) $safeReceiptNumber,
+            '-'
+        );
+
+        if ($safeReceiptNumber === '') {
+            $safeReceiptNumber =
+                'payment-' . $payment->id;
+        }
 
         return sprintf(
             'payment-receipt-%s.pdf',
-            $receiptNumber
+            $safeReceiptNumber
         );
     }
 }

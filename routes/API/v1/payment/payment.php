@@ -2,7 +2,6 @@
 
 use Illuminate\Support\Facades\Route;
 
-use App\Modules\Payment\Controllers\PaymentController;
 use App\Modules\Payment\Controllers\PaymentManagementController;
 
 Route::prefix('payments')->group(function () {
@@ -11,6 +10,9 @@ Route::prefix('payments')->group(function () {
     |--------------------------------------------------------------------------
     | Administrative Payment List
     |--------------------------------------------------------------------------
+    |
+    | Lists payments for authorized municipal staff.
+    |
     */
 
     Route::get('/', [
@@ -23,10 +25,13 @@ Route::prefix('payments')->group(function () {
     |--------------------------------------------------------------------------
     | Payment Details
     |--------------------------------------------------------------------------
+    |
+    | Returns the complete administrative view of a payment.
+    |
     */
 
     Route::get('/{payment}', [
-        PaymentController::class,
+        PaymentManagementController::class,
         'show',
     ])
         ->whereUuid('payment')
@@ -35,23 +40,66 @@ Route::prefix('payments')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Payment Receipt
+    | Official Payment Receipt
     |--------------------------------------------------------------------------
+    |
+    | Returns the official receipt record belonging to a
+    | completed payment.
+    |
+    | This endpoint does not create a receipt.
+    |
     */
 
     Route::get('/{payment}/receipt', [
-        PaymentController::class,
+        PaymentManagementController::class,
         'receipt',
     ])
         ->whereUuid('payment')
         ->name('payments.receipt');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Receipt PDF Download
+    |--------------------------------------------------------------------------
+    |
+    | Downloads the existing official receipt as an A4 PDF.
+    |
+    */
+
+    Route::get('/{payment}/receipt/pdf', [
+        PaymentManagementController::class,
+        'receiptPdf',
+    ])
+        ->whereUuid('payment')
+        ->name('payments.receipt.pdf');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment Receipt PDF Stream
+    |--------------------------------------------------------------------------
+    |
+    | Opens the existing official receipt PDF in the browser.
+    |
+    */
+
+    Route::get('/{payment}/receipt/pdf/stream', [
+        PaymentManagementController::class,
+        'receiptPdfStream',
+    ])
+        ->whereUuid('payment')
+        ->name('payments.receipt.pdf.stream');
 });
 
 
 /*
 |--------------------------------------------------------------------------
-| Channel-Specific Routes
+| Channel-Specific Payment Routes
 |--------------------------------------------------------------------------
+|
+| Each payment channel owns its own transaction workflow.
+|
 */
 
 require __DIR__ . '/online-payment.php';

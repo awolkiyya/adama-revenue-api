@@ -41,12 +41,13 @@ class CashPaymentRequest extends FormRequest
             | Payment Amount
             |--------------------------------------------------------------------------
             |
-            | The PaymentService must verify that:
+            | Business validation must also verify:
             |
-            | - The amount is greater than zero.
-            | - The invoice is payable.
-            | - The amount does not exceed the outstanding balance.
-            | - Partial payments are allowed for the invoice.
+            | - Invoice is payable.
+            | - Invoice is not cancelled or void.
+            | - Amount is greater than zero.
+            | - Amount does not exceed outstanding balance.
+            | - Partial payments are allowed.
             |
             */
 
@@ -59,14 +60,14 @@ class CashPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Description
+            | Cash Payment Notes
             |--------------------------------------------------------------------------
             */
 
-            'description' => [
+            'notes' => [
                 'nullable',
                 'string',
-                'max:500',
+                'max:1000',
             ],
 
             /*
@@ -127,12 +128,15 @@ class CashPaymentRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Description
+            | Notes
             |--------------------------------------------------------------------------
             */
 
-            'description.max' =>
-                'The payment description may not exceed 500 characters.',
+            'notes.string' =>
+                'The payment notes must be valid text.',
+
+            'notes.max' =>
+                'The payment notes may not exceed 1000 characters.',
 
             /*
             |--------------------------------------------------------------------------
@@ -159,8 +163,8 @@ class CashPaymentRequest extends FormRequest
                 ? $this->input('amount')
                 : null,
 
-            'description' => $this->filled('description')
-                ? trim((string) $this->input('description'))
+            'notes' => $this->filled('notes')
+                ? trim((string) $this->input('notes'))
                 : null,
         ]);
     }

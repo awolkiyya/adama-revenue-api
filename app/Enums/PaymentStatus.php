@@ -5,24 +5,35 @@ namespace App\Enums;
 enum PaymentStatus: string
 {
     /**
-     * Payment record has been created but
-     * payment processing has not started.
+     * Payment record has been created but has not
+     * been financially completed yet.
+     *
+     * Cash:
+     * - Cash payment recorded
+     * - Waiting for completion/verification
+     *
+     * Bank:
+     * - Transfer recorded
+     * - Waiting for verification
      */
     case PENDING = 'PENDING';
 
     /**
-     * Payment has been submitted to an external
-     * provider and is currently being processed.
+     * Payment is currently being processed.
+     *
+     * Mainly used for online payments while the
+     * payment provider is processing the transaction.
      */
     case PROCESSING = 'PROCESSING';
 
     /**
-     * Payment has been successfully completed.
+     * Payment has been successfully completed
+     * and is financially counted against the invoice.
      */
-    case PAID = 'PAID';
+    case COMPLETED = 'COMPLETED';
 
     /**
-     * Payment attempt failed.
+     * Payment processing failed.
      */
     case FAILED = 'FAILED';
 
@@ -32,34 +43,21 @@ enum PaymentStatus: string
     case CANCELLED = 'CANCELLED';
 
     /**
-     * Payment expired before completion.
+     * Payment attempt expired before completion.
+     *
+     * Mainly applicable to online payments.
      */
     case EXPIRED = 'EXPIRED';
 
     /**
-     * A previously successful payment was refunded
-     * completely.
-     */
-    case REFUNDED = 'REFUNDED';
-
-    /**
-     * A payment was partially refunded.
-     */
-    case PARTIALLY_REFUNDED = 'PARTIALLY_REFUNDED';
-
-    /**
-     * Payment is waiting for manual verification.
+     * A previously completed payment was reversed.
      *
-     * Typical examples:
-     * - Bank transfer
-     * - Cash payment
+     * This is preferable to REFUNDED for the current
+     * municipal revenue payment model because a reversal
+     * represents cancellation of a previously recognized
+     * payment transaction.
      */
-    case AWAITING_VERIFICATION = 'AWAITING_VERIFICATION';
-
-    /**
-     * Payment was rejected during manual verification.
-     */
-    case REJECTED = 'REJECTED';
+    case REVERSED = 'REVERSED';
 
     /**
      * Human-readable payment status.
@@ -67,67 +65,82 @@ enum PaymentStatus: string
     public function label(): string
     {
         return match ($this) {
-            self::PENDING => 'Pending',
-            self::PROCESSING => 'Processing',
-            self::PAID => 'Paid',
-            self::FAILED => 'Failed',
-            self::CANCELLED => 'Cancelled',
-            self::EXPIRED => 'Expired',
-            self::REFUNDED => 'Refunded',
-            self::PARTIALLY_REFUNDED => 'Partially Refunded',
-            self::AWAITING_VERIFICATION => 'Awaiting Verification',
-            self::REJECTED => 'Rejected',
+            self::PENDING =>
+                'Pending',
+
+            self::PROCESSING =>
+                'Processing',
+
+            self::COMPLETED =>
+                'Completed',
+
+            self::FAILED =>
+                'Failed',
+
+            self::CANCELLED =>
+                'Cancelled',
+
+            self::EXPIRED =>
+                'Expired',
+
+            self::REVERSED =>
+                'Reversed',
         };
     }
 
     /**
-     * Determine whether the payment is considered
-     * financially successful.
+     * Determine whether the payment is financially
+     * successful.
+     *
+     * Only COMPLETED payments are counted when
+     * calculating the invoice paid amount.
      */
     public function isSuccessful(): bool
     {
-        return $this === self::PAID;
+        return $this === self::COMPLETED;
     }
 
     /**
-     * Determine whether the payment can still
-     * transition into another state.
+     * Determine whether this status is final.
+     *
+     * Final payments cannot continue through the
+     * normal payment-processing lifecycle.
      */
     public function isFinal(): bool
     {
         return match ($this) {
-            self::PAID,
+            self::COMPLETED,
             self::FAILED,
             self::CANCELLED,
             self::EXPIRED,
-            self::REFUNDED,
-            self::PARTIALLY_REFUNDED,
-            self::REJECTED => true,
+            self::REVERSED => true,
 
             self::PENDING,
-            self::PROCESSING,
-            self::AWAITING_VERIFICATION => false,
+            self::PROCESSING => false,
         };
     }
 
     /**
-     * Determine whether payment processing
-     * is currently in progress.
+     * Determine whether payment is currently active
+     * in the processing lifecycle.
      */
     public function isProcessing(): bool
     {
         return match ($this) {
             self::PENDING,
-            self::PROCESSING,
-            self::AWAITING_VERIFICATION => true,
+            self::PROCESSING => true,
 
-            default => false,
+            self::COMPLETED,
+            self::FAILED,
+            self::CANCELLED,
+            self::EXPIRED,
+            self::REVERSED => false,
         };
     }
 
     /**
-     * Determine whether the payment failed
-     * or was rejected.
+     * Determine whether the payment failed or can no
+     * longer be completed successfully.
      */
     public function isFailed(): bool
     {
@@ -135,32 +148,22 @@ enum PaymentStatus: string
             self::FAILED,
             self::CANCELLED,
             self::EXPIRED,
-            self::REJECTED => true,
+            self::REVERSED => true,
 
-            default => false,
+            self::PENDING,
+            self::PROCESSING,
+            self::COMPLETED => false,
         };
     }
 
     /**
-     * Determine whether the payment can be refunded.
+     * Determine whether the payment can be reversed.
+     *
+     * Only a completed payment can be reversed.
      */
-    public function isRefundable(): bool
+    public function isReversible(): bool
     {
-        return match ($this) {
-            self::PAID,
-            self::PARTIALLY_REFUNDED => true,
-
-            default => false,
-        };
-    }
-
-    /**
-     * Determine whether the payment is waiting
-     * for an officer/manual verification.
-     */
-    public function requiresVerification(): bool
-    {
-        return $this === self::AWAITING_VERIFICATION;
+        return $this === self::COMPLETED;
     }
 
     /**

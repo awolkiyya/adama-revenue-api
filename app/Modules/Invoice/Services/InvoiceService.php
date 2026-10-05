@@ -417,10 +417,11 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                'payments.receivedBy',
-                'payments.verifiedBy',
-                'payments.paymentEvidence',
-                'payments.receipts',
+                // 'payments.processedBy',
+                // 'payments.verifiedBy',
+                // 'payments.cashDetails',
+                // 'payments.cashDetails.receivedBy',
+                // 'payments.files',
 
                 /*
                 |--------------------------------------------------------------------------

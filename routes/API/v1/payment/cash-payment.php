@@ -29,11 +29,11 @@ use App\Modules\Payment\Controllers\CashPaymentController;
 |         ↓
 |     Collector records payment
 |         ↓
-|     RECORDED
+|     PENDING
 |         ↓
-|     Cash confirmation / operational control
+|     Cash payment completed
 |         ↓
-|     POSTED
+|     COMPLETED
 |         ↓
 |     Invoice updated
 |         ↓
@@ -56,14 +56,18 @@ Route::prefix('cash-payments')->group(function () {
     |
     | Records a cash payment against an invoice.
     |
+    | The payment is initially created as PENDING.
+    |
     | The backend determines:
     |
-    | - authenticated collector
-    | - payment reference
+    | - authenticated user
+    | - payment number
+    | - transaction reference
     | - payment status
-    | - recorded_by_user
+    | - processed_by
+    | - cash_received_at
     |
-    | The frontend must NOT submit these audit fields.
+    | The frontend must NOT submit these audit/system fields.
     |
     */
     Route::post('/', [
@@ -73,38 +77,40 @@ Route::prefix('cash-payments')->group(function () {
 
 
     // ============================================================
-    // POST / CONFIRM CASH PAYMENT
+    // COMPLETE CASH PAYMENT
     // ============================================================
 
     /*
     |--------------------------------------------------------------------------
-    | Post Cash Payment
+    | Complete Cash Payment
     |--------------------------------------------------------------------------
     |
-    | POST /api/v1/cash-payments/{payment}/post
+    | POST /api/v1/cash-payments/{payment}/complete
     |
-    | Confirms the recorded cash payment and makes it an official
-    | posted financial transaction.
+    | Completes a pending cash payment.
     |
-    | Typical workflow:
+    | Workflow:
     |
-    |     RECORDED
+    |     PENDING
     |         ↓
-    |     Physical cash confirmed
+    |     Complete
     |         ↓
-    |     POST
+    |     COMPLETED
     |         ↓
-    |     POSTED
+    |     Invoice updated
+    |         ↓
+    |     Receipt generated
     |
-    | Depending on segregation-of-duties policy, this operation may
-    | be performed by the collector, cashier, or another authorized
-    | revenue officer.
+    | This endpoint should be idempotent where possible. If the
+    | payment is already COMPLETED, the backend can return the
+    | existing completed payment rather than creating another
+    | financial transaction.
     |
     */
-    Route::post('/{payment}/post', [
+    Route::post('/{payment}/complete', [
         CashPaymentController::class,
-        'post',
+        'complete',
     ])
         ->whereUuid('payment')
-        ->name('cash-payments.post');
+        ->name('cash-payments.complete');
 });
