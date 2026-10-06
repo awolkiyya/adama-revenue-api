@@ -85,76 +85,76 @@ class InitializePaymentRequest extends FormRequest
                 Rule::enum(PaymentProvider::class),
             ],
 
-            /*
-             * ---------------------------------------------------------
-             * Customer information
-             * ---------------------------------------------------------
-             */
-            'customer_first_name' => [
-                'nullable',
-                'string',
-                'max:100',
-            ],
+            // /*
+            //  * ---------------------------------------------------------
+            //  * Customer information
+            //  * ---------------------------------------------------------
+            //  */
+            // 'customer_first_name' => [
+            //     'nullable',
+            //     'string',
+            //     'max:100',
+            // ],
 
-            'customer_last_name' => [
-                'nullable',
-                'string',
-                'max:100',
-            ],
+            // 'customer_last_name' => [
+            //     'nullable',
+            //     'string',
+            //     'max:100',
+            // ],
 
-            'customer_email' => [
-                'nullable',
-                'email',
-                'max:255',
-            ],
+            // 'customer_email' => [
+            //     'nullable',
+            //     'email',
+            //     'max:255',
+            // ],
 
-            'customer_phone' => [
-                'nullable',
-                'string',
-                'max:30',
-            ],
+            // 'customer_phone' => [
+            //     'nullable',
+            //     'string',
+            //     'max:30',
+            // ],
 
             /*
              * ---------------------------------------------------------
              * Provider URLs
              * ---------------------------------------------------------
              */
-            'return_url' => [
-                'nullable',
-                'url',
-                'max:2048',
-            ],
+            // 'return_url' => [
+            //     'nullable',
+            //     'url',
+            //     'max:2048',
+            // ],
 
-            'callback_url' => [
-                'nullable',
-                'url',
-                'max:2048',
-            ],
+            // 'callback_url' => [
+            //     'nullable',
+            //     'url',
+            //     'max:2048',
+            // ],
 
             /*
              * ---------------------------------------------------------
              * Description
              * ---------------------------------------------------------
              */
-            'description' => [
-                'nullable',
-                'string',
-                'max:500',
-            ],
+            // 'description' => [
+            //     'nullable',
+            //     'string',
+            //     'max:500',
+            // ],
 
             /*
              * ---------------------------------------------------------
              * Metadata
              * ---------------------------------------------------------
              */
-            'metadata' => [
-                'nullable',
-                'array',
-            ],
+            // 'metadata' => [
+            //     'nullable',
+            //     'array',
+            // ],
 
-            'metadata.*' => [
-                'nullable',
-            ],
+            // 'metadata.*' => [
+            //     'nullable',
+            // ],
         ];
     }
 

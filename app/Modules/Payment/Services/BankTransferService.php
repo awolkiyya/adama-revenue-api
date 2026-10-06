@@ -616,7 +616,7 @@ class BankTransferService
              * 6. AUTHORIZE VERIFICATION
              * =========================================================
              */
-            $this->authorizeVerification($user);
+            // $this->authorizeVerification($user);
 
             /*
              * =========================================================
