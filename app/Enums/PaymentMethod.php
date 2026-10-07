@@ -4,9 +4,10 @@ namespace App\Enums;
 
 enum PaymentMethod: string
 {
-    case CHAPA = 'CHAPA';
-    case TELEBIRR = 'TELEBIRR';
+    case ONLINE = 'ONLINE';
+
     case BANK_TRANSFER = 'BANK_TRANSFER';
+
     case CASH = 'CASH';
 
     /**
@@ -15,8 +16,7 @@ enum PaymentMethod: string
     public function label(): string
     {
         return match ($this) {
-            self::CHAPA => 'Chapa',
-            self::TELEBIRR => 'Telebirr',
+            self::ONLINE => 'Online Payment',
             self::BANK_TRANSFER => 'Bank Transfer',
             self::CASH => 'Cash',
         };
@@ -24,13 +24,25 @@ enum PaymentMethod: string
 
     /**
      * Determine whether the payment method
-     * requires an external payment provider.
+     * uses an external online payment provider.
+     *
+     * Examples:
+     *
+     * ONLINE
+     *     → Telebirr
+     *     → Chapa
+     *     → CBE Birr
+     *
+     * BANK_TRANSFER
+     *     → Bank account transfer
+     *
+     * CASH
+     *     → Cashier / field collection
      */
     public function isOnline(): bool
     {
         return match ($this) {
-            self::CHAPA,
-            self::TELEBIRR => true,
+            self::ONLINE => true,
 
             self::BANK_TRANSFER,
             self::CASH => false,
@@ -40,12 +52,14 @@ enum PaymentMethod: string
     /**
      * Determine whether the payment method
      * requires webhook/callback processing.
+     *
+     * ONLINE payments are confirmed asynchronously
+     * by the external provider.
      */
     public function requiresWebhook(): bool
     {
         return match ($this) {
-            self::CHAPA,
-            self::TELEBIRR => true,
+            self::ONLINE => true,
 
             self::BANK_TRANSFER,
             self::CASH => false,
@@ -55,6 +69,16 @@ enum PaymentMethod: string
     /**
      * Determine whether the payment requires
      * manual verification by an authorized officer.
+     *
+     * CASH:
+     *     Verified/recorded through municipal cash
+     *     collection processes.
+     *
+     * BANK_TRANSFER:
+     *     Requires verification against bank evidence.
+     *
+     * ONLINE:
+     *     Provider confirmation/webhook is used.
      */
     public function requiresManualVerification(): bool
     {
@@ -62,8 +86,7 @@ enum PaymentMethod: string
             self::BANK_TRANSFER,
             self::CASH => true,
 
-            self::CHAPA,
-            self::TELEBIRR => false,
+            self::ONLINE => false,
         };
     }
 
@@ -83,7 +106,7 @@ enum PaymentMethod: string
     }
 
     /**
-     * Return all methods with labels.
+     * Return all methods with labels and behavior.
      *
      * @return array<int, array{
      *     value: string,
@@ -97,11 +120,20 @@ enum PaymentMethod: string
     {
         return array_map(
             static fn (self $method): array => [
-                'value' => $method->value,
-                'label' => $method->label(),
-                'online' => $method->isOnline(),
-                'requires_webhook' => $method->requiresWebhook(),
-                'requires_manual_verification' => $method->requiresManualVerification(),
+                'value' =>
+                    $method->value,
+
+                'label' =>
+                    $method->label(),
+
+                'online' =>
+                    $method->isOnline(),
+
+                'requires_webhook' =>
+                    $method->requiresWebhook(),
+
+                'requires_manual_verification' =>
+                    $method->requiresManualVerification(),
             ],
             self::cases()
         );

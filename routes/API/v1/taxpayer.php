@@ -1,4 +1,4 @@
-<!-- taxpayer routes --><?php
+<?php
 
 use Illuminate\Support\Facades\Route;
 use App\Modules\Taxpayer\Controllers\TaxpayerDashboardController;

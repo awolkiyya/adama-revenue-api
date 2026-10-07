@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\PaymentMethod;
+use App\Enums\PaymentProvider;
 use App\Enums\PaymentStatus;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -67,6 +68,8 @@ class Payment extends Model
 
         'payment_method',
 
+        'payment_provider',
+
         'payment_source',
 
         'status',
@@ -79,6 +82,8 @@ class Payment extends Model
         */
 
         'transaction_reference',
+
+        'provider_reference',
 
 
         /*
@@ -127,6 +132,17 @@ class Payment extends Model
 
         /*
         |--------------------------------------------------------------------------
+        | Provider / Checkout
+        |--------------------------------------------------------------------------
+        */
+
+        'checkout_url',
+
+        'provider_response',
+
+
+        /*
+        |--------------------------------------------------------------------------
         | Failure Information
         |--------------------------------------------------------------------------
         */
@@ -162,6 +178,8 @@ class Payment extends Model
 
             'payment_method' => PaymentMethod::class,
 
+            'payment_provider' => PaymentProvider::class,
+
             'status' => PaymentStatus::class,
 
 
@@ -181,6 +199,8 @@ class Payment extends Model
             */
 
             'metadata' => 'array',
+
+            'provider_response' => 'array',
 
 
             /*
@@ -321,6 +341,21 @@ class Payment extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | Receipt
+    |--------------------------------------------------------------------------
+    */
+
+    public function receipt(): HasOne
+    {
+        return $this->hasOne(
+            Receipt::class,
+            'payment_id'
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
     | Status Helpers
     |--------------------------------------------------------------------------
     */
@@ -436,11 +471,14 @@ class Payment extends Model
     /**
      * Mark payment as failed.
      *
+     * A payment can fail automatically because of a provider/system
+     * error, or manually during verification.
+     *
      * Failed payments must not affect invoice balances.
      */
     public function markAsFailed(
         string $reason,
-        string $verifiedBy
+        ?string $verifiedBy = null
     ): bool {
         return $this->forceFill([
             'status' => PaymentStatus::FAILED,
@@ -449,10 +487,12 @@ class Payment extends Model
 
             'verified_by' => $verifiedBy,
 
-            'verified_at' => now(),
+            'verified_at' => $verifiedBy !== null
+                ? now()
+                : null,
         ])->save();
     }
-
+   
 
     /**
      * Cancel the payment.
@@ -476,10 +516,5 @@ class Payment extends Model
         return $this->forceFill([
             'status' => PaymentStatus::REVERSED,
         ])->save();
-    }
-
-    public function receipt(): HasOne
-    {
-        return $this->hasOne(Receipt::class, 'payment_id');
     }
 }

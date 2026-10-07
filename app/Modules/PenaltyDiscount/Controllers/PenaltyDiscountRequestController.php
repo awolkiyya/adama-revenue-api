@@ -1,6 +1,9 @@
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Modules\PenaltyDiscount\Controllers;
+use App\Http\Controllers\Controller;
+
+
 
 use App\Http\Requests\PenaltyDiscount\CancelPenaltyDiscountRequest;
 use App\Http\Requests\PenaltyDiscount\DecidePenaltyDiscountRequest;

@@ -14,7 +14,7 @@ use App\Modules\Revenue\Controllers\TariffFormulaVariableController;
 use App\Modules\Revenue\Controllers\PenaltyRuleController;
 use App\Modules\Revenue\Controllers\RevenueSettingController;
 use App\Modules\Revenue\Controllers\InterestRuleController;
-use App\Http\Controllers\PenaltyDiscountRequestController;
+use App\Modules\PenaltyDiscount\Controllers\PenaltyDiscountRequestController;
 use App\Modules\Revenue\Controllers\RevenueCodePaymentScheduleRuleController;
 use App\Modules\Revenue\Controllers\BankAccountController;
 use App\Modules\Revenue\Controllers\PaymentProviderController;

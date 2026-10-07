@@ -15,8 +15,8 @@ class InitializePaymentRequest extends FormRequest
     /**
      * Determine whether the user is authorized to make this request.
      *
-     * Authentication/ownership is additionally enforced by the
-     * PaymentController and PaymentService.
+     * Authentication and invoice ownership/access are additionally
+     * enforced by the PaymentController and PaymentService.
      */
     public function authorize(): bool
     {
@@ -25,6 +25,24 @@ class InitializePaymentRequest extends FormRequest
 
     /**
      * Validation rules.
+     *
+     * This request is specifically for initializing an ONLINE payment.
+     *
+     * Client-controlled values:
+     *
+     * - invoice_id
+     * - amount
+     * - payment_provider
+     *
+     * Server-controlled values:
+     *
+     * - payment_method
+     * - currency
+     * - customer information
+     * - payment reference
+     * - description
+     * - callback/return URLs
+     * - metadata
      */
     public function rules(): array
     {
@@ -45,19 +63,16 @@ class InitializePaymentRequest extends FormRequest
              * Payment amount
              * ---------------------------------------------------------
              *
-             * This is the AMOUNT THE TAXPAYER WANTS TO PAY NOW.
+             * This is the amount the taxpayer wants to pay NOW.
              *
-             * It is NOT necessarily the invoice total.
+             * It can be:
              *
-             * Example:
+             * - the full outstanding balance
+             * - a partial payment
              *
-             * invoice total = 5,000.00
-             * paid amount    = 2,000.00
-             * balance due    = 3,000.00
-             * requested      = 1,410.00
-             *
-             * The controller/service must additionally verify that
-             * requested amount <= the CURRENT invoice balance.
+             * The PaymentService must additionally verify that the
+             * requested amount does not exceed the CURRENT outstanding
+             * invoice balance.
              */
             'amount' => [
                 'required',
@@ -67,94 +82,24 @@ class InitializePaymentRequest extends FormRequest
 
             /*
              * ---------------------------------------------------------
-             * Payment method
-             * ---------------------------------------------------------
-             */
-            'payment_method' => [
-                'required',
-                Rule::enum(PaymentMethod::class),
-            ],
-
-            /*
-             * ---------------------------------------------------------
              * Payment provider
              * ---------------------------------------------------------
+             *
+             * The frontend selects the online payment provider.
+             *
+             * Example:
+             *
+             * - CHAPA
+             * - TELEBIRR
+             * - CBE_BIRR
+             *
+             * The provider is validated against the PaymentProvider
+             * enum.
              */
             'payment_provider' => [
                 'required',
                 Rule::enum(PaymentProvider::class),
             ],
-
-            // /*
-            //  * ---------------------------------------------------------
-            //  * Customer information
-            //  * ---------------------------------------------------------
-            //  */
-            // 'customer_first_name' => [
-            //     'nullable',
-            //     'string',
-            //     'max:100',
-            // ],
-
-            // 'customer_last_name' => [
-            //     'nullable',
-            //     'string',
-            //     'max:100',
-            // ],
-
-            // 'customer_email' => [
-            //     'nullable',
-            //     'email',
-            //     'max:255',
-            // ],
-
-            // 'customer_phone' => [
-            //     'nullable',
-            //     'string',
-            //     'max:30',
-            // ],
-
-            /*
-             * ---------------------------------------------------------
-             * Provider URLs
-             * ---------------------------------------------------------
-             */
-            // 'return_url' => [
-            //     'nullable',
-            //     'url',
-            //     'max:2048',
-            // ],
-
-            // 'callback_url' => [
-            //     'nullable',
-            //     'url',
-            //     'max:2048',
-            // ],
-
-            /*
-             * ---------------------------------------------------------
-             * Description
-             * ---------------------------------------------------------
-             */
-            // 'description' => [
-            //     'nullable',
-            //     'string',
-            //     'max:500',
-            // ],
-
-            /*
-             * ---------------------------------------------------------
-             * Metadata
-             * ---------------------------------------------------------
-             */
-            // 'metadata' => [
-            //     'nullable',
-            //     'array',
-            // ],
-
-            // 'metadata.*' => [
-            //     'nullable',
-            // ],
         ];
     }
 
@@ -164,6 +109,9 @@ class InitializePaymentRequest extends FormRequest
     public function messages(): array
     {
         return [
+            /*
+             * Invoice
+             */
             'invoice_id.required' =>
                 'An invoice is required for payment.',
 
@@ -186,15 +134,6 @@ class InitializePaymentRequest extends FormRequest
                 'The payment amount must be greater than zero.',
 
             /*
-             * Payment method
-             */
-            'payment_method.required' =>
-                'A payment method is required.',
-
-            'payment_method.enum' =>
-                'The selected payment method is invalid.',
-
-            /*
              * Payment provider
              */
             'payment_provider.required' =>
@@ -202,47 +141,13 @@ class InitializePaymentRequest extends FormRequest
 
             'payment_provider.enum' =>
                 'The selected payment provider is invalid.',
-
-            /*
-             * Customer
-             */
-            'customer_first_name.string' =>
-                'The customer first name must be a valid string.',
-
-            'customer_last_name.string' =>
-                'The customer last name must be a valid string.',
-
-            'customer_email.email' =>
-                'Please provide a valid customer email address.',
-
-            'customer_phone.string' =>
-                'The customer phone number must be a valid string.',
-
-            /*
-             * URLs
-             */
-            'return_url.url' =>
-                'The return URL must be a valid URL.',
-
-            'callback_url.url' =>
-                'The callback URL must be a valid URL.',
-
-            /*
-             * Description
-             */
-            'description.string' =>
-                'The payment description must be a valid string.',
-
-            /*
-             * Metadata
-             */
-            'metadata.array' =>
-                'Payment metadata must be an object or array.',
         ];
     }
 
     /**
      * Normalize user-provided values before validation.
+     *
+     * Only values accepted from the frontend are normalized here.
      */
     protected function prepareForValidation(): void
     {
@@ -250,25 +155,28 @@ class InitializePaymentRequest extends FormRequest
             /*
              * Normalize amount without converting it to float.
              *
-             * Keeping the original decimal representation avoids
-             * unnecessary floating-point manipulation at this layer.
+             * Keeping the decimal representation as a string during
+             * validation avoids unnecessary floating-point
+             * manipulation at the request layer.
              */
             'amount' =>
                 $this->filled('amount')
-                    ? trim((string) $this->input('amount'))
-                    : null,
-
-            'payment_method' =>
-                $this->filled('payment_method')
-                    ? strtoupper(
-                        trim(
-                            (string) $this->input(
-                                'payment_method'
-                            )
-                        )
+                    ? trim(
+                        (string) $this->input('amount')
                     )
                     : null,
 
+            /*
+             * Normalize payment provider.
+             *
+             * Example:
+             *
+             *     telebirr
+             *
+             * becomes:
+             *
+             *     TELEBIRR
+             */
             'payment_provider' =>
                 $this->filled('payment_provider')
                     ? strtoupper(
@@ -276,53 +184,6 @@ class InitializePaymentRequest extends FormRequest
                             (string) $this->input(
                                 'payment_provider'
                             )
-                        )
-                    )
-                    : null,
-
-            'customer_first_name' =>
-                $this->filled('customer_first_name')
-                    ? trim(
-                        (string) $this->input(
-                            'customer_first_name'
-                        )
-                    )
-                    : null,
-
-            'customer_last_name' =>
-                $this->filled('customer_last_name')
-                    ? trim(
-                        (string) $this->input(
-                            'customer_last_name'
-                        )
-                    )
-                    : null,
-
-            'customer_email' =>
-                $this->filled('customer_email')
-                    ? strtolower(
-                        trim(
-                            (string) $this->input(
-                                'customer_email'
-                            )
-                        )
-                    )
-                    : null,
-
-            'customer_phone' =>
-                $this->filled('customer_phone')
-                    ? trim(
-                        (string) $this->input(
-                            'customer_phone'
-                        )
-                    )
-                    : null,
-
-            'description' =>
-                $this->filled('description')
-                    ? trim(
-                        (string) $this->input(
-                            'description'
                         )
                     )
                     : null,
@@ -334,27 +195,30 @@ class InitializePaymentRequest extends FormRequest
      *
      * IMPORTANT:
      *
-     * The frontend-selected amount is the amount to pay NOW.
+     * The amount supplied by the frontend is the amount to pay NOW.
      *
      * The invoice total is NOT used as the payment amount.
      *
-     * The PaymentController/PaymentService must still perform the
-     * authoritative current-balance and ownership checks.
+     * The PaymentService remains responsible for:
+     *
+     * - invoice ownership/access
+     * - invoice status
+     * - current outstanding balance
+     * - amount <= outstanding balance
+     * - provider compatibility
+     * - duplicate/active payment attempts
      */
     public function toDTO(): InitializePaymentData
     {
         $validated = $this->validated();
 
         /*
-         * Retrieve the invoice.
+         * ---------------------------------------------------------
+         * Retrieve invoice
+         * ---------------------------------------------------------
          *
-         * This is used for server-side invoice information such as:
-         *
-         * - invoice ID
-         * - currency
-         * - customer ID
-         *
-         * The payment amount itself comes from the validated request.
+         * The invoice is retrieved from the database so trusted
+         * server-side invoice information is used.
          */
         $invoice = Invoice::query()
             ->findOrFail(
@@ -362,51 +226,40 @@ class InitializePaymentRequest extends FormRequest
             );
 
         /*
-         * IMPORTANT:
+         * ---------------------------------------------------------
+         * Payment amount
+         * ---------------------------------------------------------
          *
-         * Do NOT use:
+         * This is the amount requested by the taxpayer.
+         *
+         * Do NOT replace this with:
          *
          *     $invoice->total_amount
          *
-         * here.
-         *
-         * That would make partial payments impossible.
+         * because partial payments must be supported.
          */
         $amount = (float) $validated['amount'];
 
         /*
-         * Build customer name from first and last name.
-         */
-        $customerName = trim(
-            implode(
-                ' ',
-                array_filter([
-                    $validated['customer_first_name'] ?? null,
-                    $validated['customer_last_name'] ?? null,
-                ])
-            )
-        );
-
-        /*
-         * Create the DTO.
+         * ---------------------------------------------------------
+         * Payment DTO
+         * ---------------------------------------------------------
          */
         return InitializePaymentData::fromArray([
             /*
+             * -----------------------------------------------------
              * Invoice
+             * -----------------------------------------------------
              */
             'invoice_id' =>
                 $invoice->id,
 
             /*
-             * Generate internal transaction reference.
+             * -----------------------------------------------------
+             * Internal payment reference
+             * -----------------------------------------------------
              *
-             * This is different from payment_number.
-             *
-             * payment_number:
-             *     PAY-2019-000001
-             *
-             * payment_reference / transaction_reference:
-             *     PAY-<unique-reference>
+             * This identifies this payment initialization attempt.
              */
             'payment_reference' =>
                 'PAY-' .
@@ -415,87 +268,114 @@ class InitializePaymentRequest extends FormRequest
                 ),
 
             /*
-             * The amount being paid NOW.
+             * -----------------------------------------------------
+             * Payment amount
+             * -----------------------------------------------------
              *
-             * This may be:
+             * This is the amount being paid NOW.
              *
-             * - full balance
-             * - partial balance
+             * Supports:
+             *
+             * - full payment
+             * - partial payment
              */
             'amount' =>
                 $amount,
 
             /*
-             * Currency comes from the invoice.
+             * -----------------------------------------------------
+             * Currency
+             * -----------------------------------------------------
              *
-             * The client must not be trusted to determine the
-             * currency of the invoice.
+             * The currency comes from the invoice.
+             *
+             * The frontend cannot choose the currency.
              */
             'currency' =>
                 $invoice->currency ?? 'ETB',
 
             /*
-             * Payment method/provider come from validated input.
+             * -----------------------------------------------------
+             * Payment method
+             * -----------------------------------------------------
              *
-             * The controller should additionally enforce the
-             * CHAPA endpoint contract.
+             * This endpoint is specifically for ONLINE payments.
+             *
+             * Therefore the backend determines the method.
+             *
+             * The frontend does NOT send payment_method.
              */
             'method' =>
-                $validated['payment_method'],
+                PaymentMethod::ONLINE,
 
+            /*
+             * -----------------------------------------------------
+             * Payment provider
+             * -----------------------------------------------------
+             *
+             * Selected by the frontend and validated above.
+             */
             'provider' =>
                 $validated['payment_provider'],
 
             /*
+             * -----------------------------------------------------
+             * Customer
+             * -----------------------------------------------------
+             *
              * Customer identity comes from the invoice.
              *
-             * This should never be used as the authorization
-             * mechanism. Ownership must be checked separately.
+             * It must not be used as the authorization mechanism.
+             * Ownership/access must be checked separately.
              */
             'customer_id' =>
                 $invoice->customer_id ?? null,
 
             /*
-             * Optional customer display information.
-             */
-            'customer_name' =>
-                $customerName !== ''
-                    ? $customerName
-                    : null,
-
-            'customer_email' =>
-                $validated['customer_email'] ?? null,
-
-            'customer_phone' =>
-                $validated['customer_phone'] ?? null,
-
-            /*
-             * Provider URLs.
-             */
-            'return_url' =>
-                $validated['return_url'] ?? null,
-
-            'callback_url' =>
-                $validated['callback_url'] ?? null,
-
-            /*
-             * Description.
+             * Customer details are not accepted from the frontend.
              *
-             * If the client does not provide one, create a useful
-             * server-side description.
+             * If your payment provider requires these values,
+             * they should be resolved by the payment service from
+             * trusted municipal/customer records.
+             */
+            'customer_name' => null,
+
+            'customer_email' => null,
+
+            'customer_phone' => null,
+
+            /*
+             * -----------------------------------------------------
+             * Provider URLs
+             * -----------------------------------------------------
+             *
+             * These are backend/provider configuration values,
+             * not frontend-controlled values.
+             */
+            'return_url' => null,
+
+            'callback_url' => null,
+
+            /*
+             * -----------------------------------------------------
+             * Description
+             * -----------------------------------------------------
+             *
+             * Generated server-side from the invoice.
              */
             'description' =>
-                $validated['description']
-                    ?? (
-                        'Payment for invoice ' .
-                        $invoice->invoice_number
-                    ),
+                'Payment for invoice ' .
+                $invoice->invoice_number,
 
             /*
-             * Metadata.
+             * -----------------------------------------------------
+             * Metadata
+             * -----------------------------------------------------
+             *
+             * Internal metadata can be added later by the
+             * payment service/provider integration.
              */
-            'metadata' =>
-                $validated['metadata'] ?? [],
+            'metadata' => [],
         ]);
     }
 }

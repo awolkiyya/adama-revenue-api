@@ -22,22 +22,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     |--------------------------------------------------------------------------
     */
 
-    private const BASE_URL = 'https://api.chapa.co/v1';
-
-    private const TIMEOUT = 30;
-
-    private const RETRIES = 3;
-
-    /*
-    |--------------------------------------------------------------------------
-    | Chapa Constraints
-    |--------------------------------------------------------------------------
-    |
-    | Keep the customization title within Chapa's supported
-    | character limit.
-    |
-    */
-
     private const CUSTOMIZATION_TITLE = 'Municipal Pay';
 
     /*
@@ -73,42 +57,92 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     ): PaymentResult {
         /*
         |--------------------------------------------------------------------------
-        | Internal Payment Reference
+        | Local Transaction Reference
         |--------------------------------------------------------------------------
         |
-        | Your internal payment reference is used as Chapa's tx_ref.
+        | This is the municipality's transaction reference.
+        |
+        | It is sent to Chapa as:
+        |
+        |     tx_ref
+        |
+        | Do NOT confuse this with Chapa's provider reference.
         |
         */
 
-        $paymentReference =
-            $data->paymentReference;
+        $paymentReference = $data->paymentReference;
 
-        $txRef =
-            $paymentReference;
+        $txRef = $paymentReference;
+
+        Log::info(
+            'Chapa payment initialization started.',
+            [
+                'provider' => $this->provider()->value,
+                'payment_reference' => $paymentReference,
+                'tx_ref' => $txRef,
+                'invoice_id' => $data->invoiceId,
+                'citizen_id' => $data->citizenId,
+                'amount' => $data->amount,
+                'currency' => $data->currency,
+                'payment_method' => $data->method->value,
+                'payment_provider' => $data->provider->value,
+                'customer_id' => $data->customerId,
+                'customer_name' => $data->customerName,
+                'customer_email_present' => !empty($data->customerEmail),
+                'customer_phone_present' => !empty($data->customerPhone),
+                'description' => $data->description,
+                'callback_url' => $data->callbackUrl,
+                'return_url' => $data->returnUrl,
+                'metadata' => $data->metadata,
+            ]
+        );
 
         /*
         |--------------------------------------------------------------------------
-        | Split Customer Name
+        | Validate Callback URL
+        |--------------------------------------------------------------------------
+        */
+
+        if (!filled($data->callbackUrl)) {
+            throw new RuntimeException(
+                'Chapa callback URL is not configured.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Return URL
+        |--------------------------------------------------------------------------
+        */
+
+        if (!filled($data->returnUrl)) {
+            throw new RuntimeException(
+                'Chapa return URL is not configured.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Customer Name
         |--------------------------------------------------------------------------
         */
 
         [
             $firstName,
-            $lastName
+            $lastName,
         ] = $this->splitCustomerName(
             $data->customerName
         );
 
         /*
         |--------------------------------------------------------------------------
-        | Normalize Phone
+        | Customer Phone
         |--------------------------------------------------------------------------
         */
 
-        $phone =
-            $this->normalizePhone(
-                $data->customerPhone
-            );
+        $phone = $this->normalizePhone(
+            $data->customerPhone
+        );
 
         /*
         |--------------------------------------------------------------------------
@@ -117,99 +151,108 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         $payload = [
-            'amount' =>
-                $this->formatAmount(
-                    (float) $data->amount
-                ),
+            'amount' => $this->formatAmount(
+                (float) $data->amount
+            ),
 
-            'currency' =>
-                $data->currency,
+            'currency' => strtoupper(
+                (string) $data->currency
+            ),
 
-            'email' =>
-                $data->customerEmail,
+            'email' => $data->customerEmail,
 
-            'first_name' =>
-                $firstName,
+            'first_name' => $firstName,
 
-            'last_name' =>
-                $lastName,
+            'last_name' => $lastName,
 
-            'phone_number' =>
-                $phone,
+            'phone_number' => $phone,
 
-            'tx_ref' =>
-                $txRef,
+            /*
+             * Municipality transaction reference.
+             */
+            'tx_ref' => $txRef,
 
-            'callback_url' =>
-                $data->callbackUrl,
+            'callback_url' => $data->callbackUrl,
 
-            'return_url' =>
-                $data->returnUrl,
+            'return_url' => $data->returnUrl,
 
             'customization' => [
-                'title' =>
-                    self::CUSTOMIZATION_TITLE,
+                'title' => self::CUSTOMIZATION_TITLE,
 
-                'description' =>
-                    $this->truncateDescription(
-                        $data->description
-                        ?? 'Municipal invoice payment'
-                    ),
+                'description' => $this->truncateDescription(
+                    $data->description
+                    ?? 'Municipal invoice payment'
+                ),
             ],
 
-            'meta' =>
-                $data->metadata ?: null,
+            'meta' => $data->metadata ?: null,
         ];
 
+        $payload = $this->removeNullValues(
+            $payload
+        );
+
         /*
         |--------------------------------------------------------------------------
-        | Remove Null Values
+        | Final URL Validation
         |--------------------------------------------------------------------------
         */
 
-        $payload =
-            $this->removeNullValues(
-                $payload
+        if (
+            !isset($payload['callback_url'])
+            || !filled($payload['callback_url'])
+        ) {
+            throw new RuntimeException(
+                'Chapa callback URL was removed from the payment payload.'
             );
+        }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Log Initialization
-        |--------------------------------------------------------------------------
-        */
+        if (
+            !isset($payload['return_url'])
+            || !filled($payload['return_url'])
+        ) {
+            throw new RuntimeException(
+                'Chapa return URL was removed from the payment payload.'
+            );
+        }
 
         Log::info(
-            'Initializing payment with Chapa.',
+            'Chapa payment payload prepared.',
             [
-                'provider' =>
-                    $this->provider()->value,
-
-                'tx_ref' =>
-                    $txRef,
-
-                'amount' =>
-                    $data->amount,
-
-                'currency' =>
-                    $data->currency,
+                'tx_ref' => $txRef,
+                'amount' => $payload['amount'] ?? null,
+                'currency' => $payload['currency'] ?? null,
+                'callback_url' => $payload['callback_url'] ?? null,
+                'return_url' => $payload['return_url'] ?? null,
+                'payload' => $payload,
             ]
         );
 
         try {
             /*
             |--------------------------------------------------------------------------
-            | Call Chapa
+            | Initialize With Chapa
             |--------------------------------------------------------------------------
             */
 
-            $response =
-                $this->client()->post(
-                    '/transaction/initialize',
-                    $payload
-                );
+            $endpoint = '/transaction/initialize';
 
-            $body =
-                $response->json();
+            $response = $this->client()->post(
+                $endpoint,
+                $payload
+            );
+
+            $body = $response->json();
+
+            Log::info(
+                'Chapa initialization response received.',
+                [
+                    'tx_ref' => $txRef,
+                    'http_status' => $response->status(),
+                    'successful' => $response->successful(),
+                    'response' => $body,
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -218,25 +261,8 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             */
 
             if (!$response->successful()) {
-
-                Log::error(
-                    'Chapa payment initialization HTTP failure.',
-                    [
-                        'tx_ref' =>
-                            $txRef,
-
-                        'status' =>
-                            $response->status(),
-
-                        'response' =>
-                            $body,
-                    ]
-                );
-
                 throw new RuntimeException(
-                    $this->extractErrorMessage(
-                        $body
-                    )
+                    $this->extractErrorMessage($body)
                 );
             }
 
@@ -247,38 +273,21 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             */
 
             if (
-                ($body['status'] ?? null)
-                !== 'success'
+                ($body['status'] ?? null) !== 'success'
             ) {
-
-                Log::error(
-                    'Chapa rejected payment initialization.',
-                    [
-                        'tx_ref' =>
-                            $txRef,
-
-                        'response' =>
-                            $body,
-                    ]
-                );
-
                 throw new RuntimeException(
-                    $this->extractErrorMessage(
-                        $body
-                    )
+                    $this->extractErrorMessage($body)
                 );
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Extract Provider Data
+            | Provider Data
             |--------------------------------------------------------------------------
             */
 
             $providerData =
-                is_array(
-                    $body['data'] ?? null
-                )
+                is_array($body['data'] ?? null)
                     ? $body['data']
                     : [];
 
@@ -293,7 +302,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                 ?? null;
 
             if (!$checkoutUrl) {
-
                 throw new RuntimeException(
                     'Chapa did not return a checkout URL.'
                 );
@@ -303,11 +311,15 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             |--------------------------------------------------------------------------
             | Provider Reference
             |--------------------------------------------------------------------------
+            |
+            | Chapa initialization normally does not provide the final
+            | provider transaction reference.
+            |
+            | Therefore this remains NULL.
+            |
             */
 
-            $providerReference =
-                $providerData['tx_ref']
-                ?? $txRef;
+            $providerReference = null;
 
             /*
             |--------------------------------------------------------------------------
@@ -316,28 +328,34 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             */
 
             $providerTransactionId =
-                $providerData['reference']
-                ?? $providerData['transaction_reference']
+                $providerData['transaction_reference']
+                ?? $providerData['reference']
                 ?? null;
+
+            Log::info(
+                'Chapa initialization references resolved.',
+                [
+                    'tx_ref' => $txRef,
+
+                    'transaction_reference' =>
+                        $txRef,
+
+                    'provider_reference' =>
+                        $providerReference,
+
+                    'provider_transaction_id' =>
+                        $providerTransactionId,
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | Return Normalized Result
+            | Return Result
             |--------------------------------------------------------------------------
-            |
-            | PaymentResult::success() now supports amount and currency.
-            |
-            | This allows PaymentService to safely access:
-            |
-            | $result->amount
-            | $result->currency
-            | $result->isSuccessful()
-            |
             */
 
             return PaymentResult::success(
-                provider:
-                    $this->provider(),
+                provider: $this->provider(),
 
                 paymentReference:
                     $paymentReference,
@@ -368,18 +386,16 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             );
 
         } catch (Throwable $exception) {
-
             Log::error(
                 'Chapa payment initialization exception.',
                 [
-                    'tx_ref' =>
-                        $txRef,
-
-                    'exception' =>
-                        $exception::class,
-
-                    'message' =>
-                        $exception->getMessage(),
+                    'tx_ref' => $txRef,
+                    'invoice_id' => $data->invoiceId,
+                    'payment_reference' => $paymentReference,
+                    'exception' => $exception::class,
+                    'message' => $exception->getMessage(),
+                    'file' => $exception->getFile(),
+                    'line' => $exception->getLine(),
                 ]
             );
 
@@ -396,28 +412,123 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     public function verify(
         Payment $payment
     ): PaymentVerificationResult {
+        /*
+        |--------------------------------------------------------------------------
+        | IMPORTANT
+        |--------------------------------------------------------------------------
+        |
+        | Chapa verification MUST use the original municipality
+        | transaction reference.
+        |
+        |     transaction_reference = Chapa tx_ref
+        |
+        | provider_reference is Chapa's provider-side reference and
+        | must NEVER be used as the verification URL reference.
+        |
+        */
 
-        $txRef =
-            $payment->provider_reference
-            ?? $payment->transaction_reference;
+        $txRef = $payment->transaction_reference;
 
-        if (!$txRef) {
+        Log::info(
+            'Chapa payment verification started.',
+            [
+                'payment_id' => $payment->id,
+                'payment_number' => $payment->payment_number,
+                'invoice_id' => $payment->invoice_id,
 
+                'transaction_reference' =>
+                    $payment->transaction_reference,
+
+                'provider_reference' =>
+                    $payment->provider_reference,
+
+                'tx_ref' =>
+                    $txRef,
+
+                'amount' =>
+                    $payment->amount,
+
+                'currency' =>
+                    $payment->currency,
+
+                'status' =>
+                    $payment->status?->value
+                    ?? $payment->status,
+            ]
+        );
+
+        if (!filled($txRef)) {
             throw new RuntimeException(
                 'Payment does not contain a Chapa transaction reference.'
             );
         }
 
         try {
+            /*
+            |--------------------------------------------------------------------------
+            | Verification Endpoint
+            |--------------------------------------------------------------------------
+            */
+
+            $endpoint =
+                '/transaction/verify/'
+                . urlencode($txRef);
+
+            Log::info(
+                'Sending payment verification request to Chapa.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'tx_ref' =>
+                        $txRef,
+
+                    'endpoint' =>
+                        $this->baseUrl() . $endpoint,
+
+                    'method' =>
+                        'GET',
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Call Chapa
+            |--------------------------------------------------------------------------
+            */
 
             $response =
                 $this->client()->get(
-                    '/transaction/verify/'
-                    . urlencode($txRef)
+                    $endpoint
                 );
 
-            $body =
-                $response->json();
+            $body = $response->json();
+
+            Log::info(
+                'Chapa verification response received.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'tx_ref' =>
+                        $txRef,
+
+                    'http_status' =>
+                        $response->status(),
+
+                    'successful' =>
+                        $response->successful(),
+
+                    'response' =>
+                        $body,
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -426,49 +537,73 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             */
 
             if (!$response->successful()) {
-
-                Log::error(
-                    'Chapa payment verification HTTP failure.',
-                    [
-                        'payment_id' =>
-                            $payment->id,
-
-                        'tx_ref' =>
-                            $txRef,
-
-                        'status' =>
-                            $response->status(),
-
-                        'response' =>
-                            $body,
-                    ]
-                );
-
                 throw new RuntimeException(
-                    $this->extractErrorMessage(
-                        $body
-                    )
+                    $this->extractErrorMessage($body)
                 );
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Map Response
+            | Map + Validate
             |--------------------------------------------------------------------------
             */
 
-            return $this->mapVerificationResponse(
-                $payment,
-                $body
+            $result =
+                $this->mapVerificationResponse(
+                    $payment,
+                    $body
+                );
+
+            Log::info(
+                'Chapa payment verification completed.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'tx_ref' =>
+                        $txRef,
+
+                    'verification_status' =>
+                        $result->status?->value
+                        ?? $result->status,
+
+                    'message' =>
+                        $result->message,
+
+                    'amount' =>
+                        $result->amount,
+
+                    'currency' =>
+                        $result->currency,
+
+                    'provider_reference' =>
+                        $result->providerReference,
+
+                    'transaction_reference' =>
+                        $result->transactionReference,
+
+                    'is_successful' =>
+                        $result->isSuccessful(),
+                ]
             );
 
-        } catch (Throwable $exception) {
+            return $result;
 
+        } catch (Throwable $exception) {
             Log::error(
                 'Chapa payment verification exception.',
                 [
                     'payment_id' =>
                         $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
 
                     'tx_ref' =>
                         $txRef,
@@ -478,6 +613,12 @@ class ChapaPaymentProvider implements PaymentProviderInterface
 
                     'message' =>
                         $exception->getMessage(),
+
+                    'file' =>
+                        $exception->getFile(),
+
+                    'line' =>
+                        $exception->getLine(),
                 ]
             );
 
@@ -495,24 +636,31 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         array $payload,
         ?string $signature = null
     ): PaymentVerificationResult {
+        Log::info(
+            'Chapa webhook received.',
+            [
+                'payload' =>
+                    $payload,
 
-        /*
-        |--------------------------------------------------------------------------
-        | Verify Signature
-        |--------------------------------------------------------------------------
-        */
+                'payload_keys' =>
+                    array_keys($payload),
 
-        if (
-            !$this->verifyWebhookSignature(
-                $payload,
-                $signature
-            )
-        ) {
+                'signature_present' =>
+                    !empty($signature),
 
-            throw new RuntimeException(
-                'Invalid Chapa webhook signature.'
-            );
-        }
+                'trx_ref' =>
+                    $payload['trx_ref'] ?? null,
+
+                'tx_ref' =>
+                    $payload['tx_ref'] ?? null,
+
+                'ref_id' =>
+                    $payload['ref_id'] ?? null,
+
+                'status' =>
+                    $payload['status'] ?? null,
+            ]
+        );
 
         /*
         |--------------------------------------------------------------------------
@@ -521,13 +669,74 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         $txRef =
-            $payload['tx_ref']
+            $payload['trx_ref']
+            ?? $payload['tx_ref']
+            ?? $payload['reference']
             ?? null;
 
-        if (!$txRef) {
+        /*
+        | Support nested payloads as well.
+        */
 
+        if (
+            !filled($txRef)
+            && is_array($payload['data'] ?? null)
+        ) {
+            $data = $payload['data'];
+
+            $txRef =
+                $data['trx_ref']
+                ?? $data['tx_ref']
+                ?? $data['reference']
+                ?? null;
+        }
+
+        if (!filled($txRef)) {
             throw new RuntimeException(
-                'Chapa webhook does not contain tx_ref.'
+                'Chapa webhook does not contain a transaction reference.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Webhook Signature
+        |--------------------------------------------------------------------------
+        |
+        | IMPORTANT:
+        |
+        | Do not invent a signature scheme for Chapa.
+        |
+        | The actual security mechanism must match Chapa's documented
+        | webhook signature format.
+        |
+        | For this reason signature validation is disabled by default.
+        |
+        | Even without trusting the webhook status, we immediately perform
+        | independent verification against Chapa's API.
+        |
+        */
+
+        $signatureRequired = (bool) config(
+            'services.chapa.verify_webhook_signature',
+            false
+        );
+
+        if ($signatureRequired) {
+            if (!$this->verifyWebhookSignature(
+                $payload,
+                $signature
+            )) {
+                throw new RuntimeException(
+                    'Invalid Chapa webhook signature.'
+                );
+            }
+        } else {
+            Log::warning(
+                'Chapa webhook signature verification is disabled.',
+                [
+                    'tx_ref' =>
+                        $txRef,
+                ]
             );
         }
 
@@ -543,14 +752,39 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                     'transaction_reference',
                     $txRef
                 )
-                ->orWhere(
-                    'provider_reference',
-                    $txRef
-                )
                 ->first();
 
-        if (!$payment) {
+        Log::info(
+            'Chapa webhook payment lookup completed.',
+            [
+                'tx_ref' =>
+                    $txRef,
 
+                'payment_found' =>
+                    $payment !== null,
+
+                'payment_id' =>
+                    $payment?->id,
+
+                'payment_number' =>
+                    $payment?->payment_number,
+
+                'invoice_id' =>
+                    $payment?->invoice_id,
+
+                'transaction_reference' =>
+                    $payment?->transaction_reference,
+
+                'provider_reference' =>
+                    $payment?->provider_reference,
+
+                'payment_status' =>
+                    $payment?->status?->value
+                    ?? $payment?->status,
+            ]
+        );
+
+        if (!$payment) {
             throw new RuntimeException(
                 'Payment associated with Chapa webhook was not found.'
             );
@@ -558,18 +792,77 @@ class ChapaPaymentProvider implements PaymentProviderInterface
 
         /*
         |--------------------------------------------------------------------------
-        | Never Trust Webhook Alone
+        | NEVER TRUST WEBHOOK STATUS
         |--------------------------------------------------------------------------
         |
-        | The webhook is only an event notification.
+        | The webhook only tells us that a provider-side event occurred.
         |
-        | We independently call Chapa's verification API.
+        | The authoritative result comes from Chapa's verification API.
         |
         */
 
-        return $this->verify(
-            $payment
+        Log::info(
+            'Chapa webhook accepted. Starting independent payment verification.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number,
+
+                'invoice_id' =>
+                    $payment->invoice_id,
+
+                'tx_ref' =>
+                    $txRef,
+
+                'webhook_provider_reference' =>
+                    $payload['ref_id'] ?? null,
+
+                'webhook_status' =>
+                    $payload['status'] ?? null,
+            ]
         );
+
+        $result =
+            $this->verify(
+                $payment
+            );
+
+        Log::info(
+            'Chapa webhook processing completed.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number,
+
+                'invoice_id' =>
+                    $payment->invoice_id,
+
+                'tx_ref' =>
+                    $txRef,
+
+                'verification_status' =>
+                    $result->status?->value
+                    ?? $result->status,
+
+                'is_successful' =>
+                    $result->isSuccessful(),
+
+                'message' =>
+                    $result->message,
+
+                'amount' =>
+                    $result->amount,
+
+                'currency' =>
+                    $result->currency,
+            ]
+        );
+
+        return $result;
     }
 
     /*
@@ -604,10 +897,28 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         Payment $payment,
         ?float $amount = null
     ): PaymentResult {
-
         throw new RuntimeException(
             'Automated refunds are not currently supported by the Chapa payment provider.'
         );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Base URL
+    |--------------------------------------------------------------------------
+    */
+
+    protected function baseUrl(): string
+    {
+        $baseUrl = config(
+            'services.chapa.base_url',
+            'https://api.chapa.co'
+        );
+
+        return rtrim(
+            $baseUrl,
+            '/'
+        ) . '/v1';
     }
 
     /*
@@ -624,14 +935,28 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             );
 
         if (!$secretKey) {
-
             throw new RuntimeException(
                 'Chapa secret key is not configured.'
             );
         }
 
+        $timeout = (int) config(
+            'services.chapa.timeout',
+            30
+        );
+
+        $connectTimeout = (int) config(
+            'services.chapa.connect_timeout',
+            10
+        );
+
+        $retries = (int) config(
+            'services.chapa.retries',
+            3
+        );
+
         return Http::baseUrl(
-            self::BASE_URL
+            $this->baseUrl()
         )
             ->withToken(
                 $secretKey
@@ -639,10 +964,13 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             ->acceptJson()
             ->asJson()
             ->timeout(
-                self::TIMEOUT
+                $timeout
+            )
+            ->connectTimeout(
+                $connectTimeout
             )
             ->retry(
-                self::RETRIES,
+                $retries,
                 200,
                 throw: false
             );
@@ -658,44 +986,75 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         Payment $payment,
         array $body
     ): PaymentVerificationResult {
+        /*
+        |--------------------------------------------------------------------------
+        | Extract Provider Data
+        |--------------------------------------------------------------------------
+        */
 
         $data =
-            is_array(
-                $body['data'] ?? null
-            )
+            is_array($body['data'] ?? null)
                 ? $body['data']
                 : [];
 
         /*
         |--------------------------------------------------------------------------
-        | Normalize Status
+        | IMPORTANT:
+        |
+        | The top-level:
+        |
+        |     status = success
+        |
+        | can represent successful API communication.
+        |
+        | We therefore prefer transaction status from data.
         |--------------------------------------------------------------------------
         */
 
+        $statusRaw =
+            $data['status']
+            ?? $data['payment_status']
+            ?? $data['transaction_status']
+            ?? null;
+
         $status =
             strtolower(
-                (string) (
-                    $data['status']
-                    ?? $body['status']
-                    ?? 'pending'
+                trim(
+                    (string) $statusRaw
                 )
             );
 
         /*
         |--------------------------------------------------------------------------
-        | References
+        | Transaction Reference
         |--------------------------------------------------------------------------
+        |
+        | Chapa should return the same tx_ref that was supplied during
+        | initialization.
+        |
         */
-
-        $providerReference =
-            $data['tx_ref']
-            ?? $payment->provider_reference
-            ?? $payment->transaction_reference;
 
         $transactionReference =
             $data['tx_ref']
-            ?? $payment->transaction_reference
-            ?? $providerReference;
+            ?? $data['trx_ref']
+            ?? $data['transaction_reference']
+            ?? null;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider Reference
+        |--------------------------------------------------------------------------
+        |
+        | Chapa's provider-side reference is normally returned as
+        | reference. Some responses may expose ref_id instead.
+        |
+        */
+
+        $providerReference =
+            $data['ref_id']
+            ?? $data['reference']
+            ?? $data['provider_reference']
+            ?? null;
 
         /*
         |--------------------------------------------------------------------------
@@ -704,9 +1063,12 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         $amount =
-            isset($data['amount'])
+            array_key_exists(
+                'amount',
+                $data
+            )
                 ? (float) $data['amount']
-                : (float) $payment->amount;
+                : null;
 
         /*
         |--------------------------------------------------------------------------
@@ -715,8 +1077,16 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         $currency =
-            $data['currency']
-            ?? $payment->currency;
+            array_key_exists(
+                'currency',
+                $data
+            )
+                ? strtoupper(
+                    trim(
+                        (string) $data['currency']
+                    )
+                )
+                : null;
 
         /*
         |--------------------------------------------------------------------------
@@ -725,9 +1095,247 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         $providerTransactionId =
-            $data['reference']
-            ?? $data['transaction_reference']
+            $data['transaction_reference']
+            ?? $data['transaction_id']
+            ?? $data['reference']
+            ?? $data['ref_id']
             ?? null;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider Timestamp
+        |--------------------------------------------------------------------------
+        */
+
+        $paidAt = now();
+
+        if (
+            isset($data['updated_at'])
+            && is_string($data['updated_at'])
+        ) {
+            try {
+                $paidAt = \Carbon\Carbon::parse(
+                    $data['updated_at']
+                );
+            } catch (Throwable $exception) {
+                Log::warning(
+                    'Unable to parse Chapa payment timestamp. Using local verification time.',
+                    [
+                        'payment_id' =>
+                            $payment->id,
+
+                        'updated_at' =>
+                            $data['updated_at'],
+
+                        'message' =>
+                            $exception->getMessage(),
+                    ]
+                );
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Log Normalized Response
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info(
+            'Chapa verification data normalized.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number,
+
+                'local_transaction_reference' =>
+                    $payment->transaction_reference,
+
+                'local_provider_reference' =>
+                    $payment->provider_reference,
+
+                'chapa_status' =>
+                    $status,
+
+                'chapa_transaction_reference' =>
+                    $transactionReference,
+
+                'chapa_provider_reference' =>
+                    $providerReference,
+
+                'chapa_amount' =>
+                    $amount,
+
+                'local_amount' =>
+                    $payment->amount,
+
+                'chapa_currency' =>
+                    $currency,
+
+                'local_currency' =>
+                    $payment->currency,
+
+                'provider_transaction_id' =>
+                    $providerTransactionId,
+
+                'paid_at' =>
+                    $paidAt->toIso8601String(),
+            ]
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Transaction Reference
+        |--------------------------------------------------------------------------
+        |
+        | A successful verification must identify the same transaction
+        | that belongs to this municipal payment.
+        |
+        */
+
+        if (
+            in_array(
+                $status,
+                [
+                    'success',
+                    'successful',
+                    'completed',
+                ],
+                true
+            )
+        ) {
+            if (!filled($transactionReference)) {
+                throw new RuntimeException(
+                    'Chapa verification response does not contain a transaction reference.'
+                );
+            }
+
+            if (
+                $transactionReference !==
+                $payment->transaction_reference
+            ) {
+                Log::error(
+                    'Chapa transaction reference mismatch.',
+                    [
+                        'payment_id' =>
+                            $payment->id,
+
+                        'expected' =>
+                            $payment->transaction_reference,
+
+                        'received' =>
+                            $transactionReference,
+                    ]
+                );
+
+                throw new RuntimeException(
+                    'Chapa transaction reference does not match the local payment.'
+                );
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Amount
+        |--------------------------------------------------------------------------
+        |
+        | A successful Chapa transaction MUST contain an amount.
+        |
+        */
+
+        if (
+            in_array(
+                $status,
+                [
+                    'success',
+                    'successful',
+                    'completed',
+                ],
+                true
+            )
+        ) {
+            if ($amount === null) {
+                throw new RuntimeException(
+                    'Chapa verification response does not contain a payment amount.'
+                );
+            }
+
+            if (
+                $this->compareMoney(
+                    $amount,
+                    $payment->amount
+                ) !== 0
+            ) {
+                Log::error(
+                    'Chapa payment amount mismatch.',
+                    [
+                        'payment_id' =>
+                            $payment->id,
+
+                        'expected_amount' =>
+                            $payment->amount,
+
+                        'chapa_amount' =>
+                            $amount,
+                    ]
+                );
+
+                throw new RuntimeException(
+                    'Chapa payment amount does not match the local payment amount.'
+                );
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Currency
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            in_array(
+                $status,
+                [
+                    'success',
+                    'successful',
+                    'completed',
+                ],
+                true
+            )
+        ) {
+            if (!filled($currency)) {
+                throw new RuntimeException(
+                    'Chapa verification response does not contain a payment currency.'
+                );
+            }
+
+            if (
+                strtoupper($currency)
+                !==
+                strtoupper(
+                    (string) $payment->currency
+                )
+            ) {
+                Log::error(
+                    'Chapa payment currency mismatch.',
+                    [
+                        'payment_id' =>
+                            $payment->id,
+
+                        'expected_currency' =>
+                            $payment->currency,
+
+                        'chapa_currency' =>
+                            $currency,
+                    ]
+                );
+
+                throw new RuntimeException(
+                    'Chapa payment currency does not match the local payment currency.'
+                );
+            }
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -740,6 +1348,21 @@ class ChapaPaymentProvider implements PaymentProviderInterface
 
             'provider_transaction_id' =>
                 $providerTransactionId,
+
+            'verified_transaction_reference' =>
+                $transactionReference,
+
+            'verified_provider_reference' =>
+                $providerReference,
+
+            'verified_amount' =>
+                $amount,
+
+            'verified_currency' =>
+                $currency,
+
+            'verified_at' =>
+                now()->toIso8601String(),
         ];
 
         /*
@@ -749,10 +1372,44 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         if (
-            $status === 'success'
-            ||
-            $status === 'successful'
+            in_array(
+                $status,
+                [
+                    'success',
+                    'successful',
+                    'completed',
+                ],
+                true
+            )
         ) {
+            Log::info(
+                'Chapa payment verification mapped to SUCCESS.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
+
+                    'transaction_reference' =>
+                        $transactionReference,
+
+                    'provider_reference' =>
+                        $providerReference,
+
+                    'amount' =>
+                        $amount,
+
+                    'currency' =>
+                        $currency,
+
+                    'provider_transaction_id' =>
+                        $providerTransactionId,
+                ]
+            );
 
             return PaymentVerificationResult::success(
                 payment:
@@ -775,7 +1432,7 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                     $currency,
 
                 paidAt:
-                    now(),
+                    $paidAt,
 
                 metadata:
                     $metadata,
@@ -789,13 +1446,16 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         */
 
         if (
-            $status === 'failed'
-            ||
-            $status === 'cancelled'
-            ||
-            $status === 'canceled'
+            in_array(
+                $status,
+                [
+                    'failed',
+                    'cancelled',
+                    'canceled',
+                ],
+                true
+            )
         ) {
-
             return PaymentVerificationResult::failed(
                 payment:
                     $payment,
@@ -808,13 +1468,16 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                     $providerReference,
 
                 transactionReference:
-                    $transactionReference,
+                    $transactionReference
+                    ?? $payment->transaction_reference,
 
                 amount:
-                    $amount,
+                    $amount
+                    ?? (float) $payment->amount,
 
                 currency:
-                    $currency,
+                    $currency
+                    ?? $payment->currency,
 
                 metadata:
                     $metadata,
@@ -823,7 +1486,7 @@ class ChapaPaymentProvider implements PaymentProviderInterface
 
         /*
         |--------------------------------------------------------------------------
-        | PENDING
+        | PENDING / UNKNOWN
         |--------------------------------------------------------------------------
         */
 
@@ -839,13 +1502,16 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                 $providerReference,
 
             transactionReference:
-                $transactionReference,
+                $transactionReference
+                ?? $payment->transaction_reference,
 
             amount:
-                $amount,
+                $amount
+                ?? (float) $payment->amount,
 
             currency:
-                $currency,
+                $currency
+                ?? $payment->currency,
 
             metadata:
                 $metadata,
@@ -854,7 +1520,58 @@ class ChapaPaymentProvider implements PaymentProviderInterface
 
     /*
     |--------------------------------------------------------------------------
+    | Compare Money
+    |--------------------------------------------------------------------------
+    */
+
+    protected function compareMoney(
+        float|string $left,
+        float|string $right
+    ): int {
+        $leftNormalized =
+            number_format(
+                (float) $left,
+                2,
+                '.',
+                ''
+            );
+
+        $rightNormalized =
+            number_format(
+                (float) $right,
+                2,
+                '.',
+                ''
+            );
+
+        if (function_exists('bccomp')) {
+            return bccomp(
+                $leftNormalized,
+                $rightNormalized,
+                2
+            );
+        }
+
+        return $leftNormalized === $rightNormalized
+            ? 0
+            : (
+                (float) $leftNormalized
+                <
+                (float) $rightNormalized
+                    ? -1
+                    : 1
+            );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Webhook Signature
+    |--------------------------------------------------------------------------
+    |
+    | This method is intentionally only used when explicitly enabled.
+    |
+    | The canonicalization/signature algorithm must match the provider's
+    | actual documented webhook specification.
     |--------------------------------------------------------------------------
     */
 
@@ -862,8 +1579,20 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         array $payload,
         ?string $signature
     ): bool {
-
         if (!$signature) {
+            Log::warning(
+                'Chapa webhook signature is missing.',
+                [
+                    'trx_ref' =>
+                        $payload['trx_ref']
+                        ?? $payload['tx_ref']
+                        ?? null,
+
+                    'payload_keys' =>
+                        array_keys($payload),
+                ]
+            );
+
             return false;
         }
 
@@ -873,23 +1602,17 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             );
 
         if (!$secret) {
-
             throw new RuntimeException(
                 'Chapa webhook secret is not configured.'
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Canonical Payload
-        |--------------------------------------------------------------------------
-        */
-
         $canonicalPayload =
             json_encode(
                 $payload,
                 JSON_UNESCAPED_SLASHES
-                | JSON_UNESCAPED_UNICODE
+                |
+                JSON_UNESCAPED_UNICODE
             );
 
         if ($canonicalPayload === false) {
@@ -918,11 +1641,9 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     protected function splitCustomerName(
         ?string $name
     ): array {
-
-        $name =
-            trim(
-                (string) $name
-            );
+        $name = trim(
+            (string) $name
+        );
 
         if ($name === '') {
             return ['', ''];
@@ -939,8 +1660,7 @@ class ChapaPaymentProvider implements PaymentProviderInterface
         }
 
         $firstName =
-            $parts[0]
-            ?? '';
+            $parts[0] ?? '';
 
         $lastName =
             count($parts) > 1
@@ -968,7 +1688,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     protected function normalizePhone(
         ?string $phone
     ): ?string {
-
         if (!$phone) {
             return null;
         }
@@ -984,24 +1703,12 @@ class ChapaPaymentProvider implements PaymentProviderInterface
             return null;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Convert Ethiopian International Format
-        |--------------------------------------------------------------------------
-        |
-        | +251911996750
-        |        ↓
-        | 0911996750
-        |
-        */
-
         if (
             str_starts_with(
                 $phone,
                 '251'
             )
         ) {
-
             $phone =
                 '0'
                 . substr(
@@ -1022,7 +1729,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     protected function formatAmount(
         float $amount
     ): string {
-
         return number_format(
             $amount,
             2,
@@ -1040,7 +1746,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     protected function truncateDescription(
         string $description
     ): string {
-
         return mb_substr(
             trim($description),
             0,
@@ -1057,7 +1762,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     protected function removeNullValues(
         array $payload
     ): array {
-
         return array_filter(
             $payload,
             static fn ($value) =>
@@ -1074,17 +1778,9 @@ class ChapaPaymentProvider implements PaymentProviderInterface
     protected function extractErrorMessage(
         ?array $body
     ): string {
-
         if (!$body) {
-
             return 'Unable to communicate with Chapa.';
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | String Message
-        |--------------------------------------------------------------------------
-        */
 
         if (
             isset($body['message'])
@@ -1093,15 +1789,8 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                 $body['message']
             )
         ) {
-
             return $body['message'];
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validation Message Object
-        |--------------------------------------------------------------------------
-        */
 
         if (
             isset($body['message'])
@@ -1110,53 +1799,35 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                 $body['message']
             )
         ) {
-
             $messages = [];
 
             foreach (
                 $body['message']
                 as $field => $errors
             ) {
-
                 if (is_array($errors)) {
-
                     foreach (
                         $errors
                         as $error
                     ) {
-
-                        if (
-                            is_string($error)
-                        ) {
-
+                        if (is_string($error)) {
                             $messages[] =
                                 "{$field}: {$error}";
                         }
                     }
-
-                } elseif (
-                    is_string($errors)
-                ) {
-
+                } elseif (is_string($errors)) {
                     $messages[] =
                         "{$field}: {$errors}";
                 }
             }
 
             if ($messages) {
-
                 return implode(
                     '; ',
                     $messages
                 );
             }
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Error Field
-        |--------------------------------------------------------------------------
-        */
 
         if (
             isset($body['error'])
@@ -1165,7 +1836,6 @@ class ChapaPaymentProvider implements PaymentProviderInterface
                 $body['error']
             )
         ) {
-
             return $body['error'];
         }
 

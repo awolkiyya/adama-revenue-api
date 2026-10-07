@@ -39,6 +39,7 @@ class OnlinePaymentService
         */
 
         $existingPayment = Payment::query()
+            ->with('onlineDetails')
             ->where(
                 'transaction_reference',
                 $data->paymentReference
@@ -55,10 +56,12 @@ class OnlinePaymentService
 
             if (
                 $existingPayment->isPending()
-                && filled($existingPayment->checkout_url)
+                && filled(
+                    $existingPayment->onlineDetails?->checkout_url
+                )
             ) {
                 Log::info(
-                    'Existing pending payment found.',
+                    'Existing pending online payment found.',
                     [
                         'payment_id' =>
                             $existingPayment->id,
@@ -74,8 +77,15 @@ class OnlinePaymentService
 
                         'provider' =>
                             $this->providerValue(
-                                $data->provider
+                                $existingPayment->payment_provider
+                                ?? $data->provider
                             ),
+
+                        'provider_reference' =>
+                            $existingPayment->onlineDetails?->checkout_reference,
+
+                        'checkout_url' =>
+                            $existingPayment->onlineDetails?->checkout_url,
                     ]
                 );
 
@@ -110,7 +120,8 @@ class OnlinePaymentService
 
                         'provider' =>
                             $this->providerValue(
-                                $data->provider
+                                $existingPayment->payment_provider
+                                ?? $data->provider
                             ),
                     ]
                 );
@@ -123,7 +134,7 @@ class OnlinePaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Existing Failed Payment
+            | Existing Failed / Non-Reusable Payment
             |--------------------------------------------------------------------------
             */
 
@@ -146,6 +157,11 @@ class OnlinePaymentService
 
                     'payment_reference' =>
                         $data->paymentReference,
+
+                    'provider' =>
+                        $this->nullableProviderValue(
+                            $existingPayment->payment_provider
+                        ),
                 ]
             );
 
@@ -156,30 +172,23 @@ class OnlinePaymentService
 
         /*
         |--------------------------------------------------------------------------
-        | Generate Payment Number
+        | Validate Provider
         |--------------------------------------------------------------------------
-        |
-        | This is the municipal/internal payment document number.
-        |
-        | Example:
-        |
-        | PAY-2018-000001
-        |
-        | This is intentionally different from:
-        |
-        | transaction_reference
-        |
-        | Example:
-        |
-        | PAY-01M3QRDAS51DFXJ489QR3NQ3R6
-        |
         */
 
-        $paymentNumber =
-            $this->documentSequenceService->generate(
-                sequenceType: 'payment',
-                prefix: 'PAY',
-            );
+        $paymentProvider = $this->providerEnum(
+            $data->provider
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Generate Payment Number
+        |--------------------------------------------------------------------------
+        */
+
+        $paymentNumber = $this->documentSequenceService->generate(
+            sequenceType: 'payment',
+        );
 
         Log::info(
             'Payment number generated.',
@@ -203,9 +212,7 @@ class OnlinePaymentService
                     $data->currency,
 
                 'provider' =>
-                    $this->providerValue(
-                        $data->provider
-                    ),
+                    $paymentProvider->value,
             ]
         );
 
@@ -213,26 +220,15 @@ class OnlinePaymentService
         |--------------------------------------------------------------------------
         | Create Local Payment
         |--------------------------------------------------------------------------
-        |
-        | We create the local payment first.
-        |
-        | No external provider communication happens inside this
-        | database transaction.
-        |
         */
 
         $payment = DB::transaction(
             function () use (
                 $data,
-                $paymentNumber
+                $paymentNumber,
+                $paymentProvider
             ): Payment {
                 return Payment::query()->create([
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Ownership / Relationships
-                    |--------------------------------------------------------------------------
-                    */
 
                     'invoice_id' =>
                         $data->invoiceId,
@@ -240,18 +236,12 @@ class OnlinePaymentService
                     'citizen_id' =>
                         $data->citizenId,
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Payment Number
-                    |--------------------------------------------------------------------------
-                    */
-
                     'payment_number' =>
                         $paymentNumber,
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Payment Configuration
+                    | Online Payment
                     |--------------------------------------------------------------------------
                     */
 
@@ -259,7 +249,7 @@ class OnlinePaymentService
                         $data->method,
 
                     'payment_provider' =>
-                        $data->provider,
+                        $paymentProvider,
 
                     /*
                     |--------------------------------------------------------------------------
@@ -320,6 +310,53 @@ class OnlinePaymentService
 
         /*
         |--------------------------------------------------------------------------
+        | Verify Provider Was Persisted
+        |--------------------------------------------------------------------------
+        */
+
+        if ($payment->payment_provider === null) {
+
+            Log::error(
+                'Payment provider was not persisted to the payment record.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
+                    'expected_provider' =>
+                        $paymentProvider->value,
+
+                    'actual_provider' =>
+                        $payment->payment_provider,
+
+                    'invoice_id' =>
+                        $payment->invoice_id,
+
+                    'citizen_id' =>
+                        $payment->citizen_id,
+                ]
+            );
+
+            $payment->markAsFailed(
+                'Payment provider could not be persisted. '
+                . 'Check the Payment model $fillable configuration '
+                . 'and payment_provider cast.'
+            );
+
+            throw new RuntimeException(
+                'Payment provider could not be persisted. '
+                . 'Check the Payment model $fillable configuration '
+                . 'and payment_provider cast.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
         | Local Payment Created Logging
         |--------------------------------------------------------------------------
         */
@@ -367,21 +404,15 @@ class OnlinePaymentService
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve Provider
-        |--------------------------------------------------------------------------
-        */
-
-        $provider = $this->providerFactory->make(
-            $data->provider
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Initialize External Provider
+        | Resolve And Initialize Provider
         |--------------------------------------------------------------------------
         */
 
         try {
+
+            $provider = $this->providerFactory->make(
+                $paymentProvider
+            );
 
             Log::info(
                 'Calling payment provider initialize.',
@@ -396,9 +427,7 @@ class OnlinePaymentService
                         $payment->transaction_reference,
 
                     'provider' =>
-                        $this->providerValue(
-                            $data->provider
-                        ),
+                        $paymentProvider->value,
 
                     'amount' =>
                         $data->amount,
@@ -430,9 +459,7 @@ class OnlinePaymentService
                         $payment->invoice_id,
 
                     'provider' =>
-                        $this->providerValue(
-                            $data->provider
-                        ),
+                        $paymentProvider->value,
 
                     'payment_reference' =>
                         $data->paymentReference,
@@ -454,42 +481,85 @@ class OnlinePaymentService
                 ]
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Mark Local Payment Failed
-            |--------------------------------------------------------------------------
-            */
+            $failureReason = $exception->getMessage();
 
-            $payment->markAsFailed(
-                'Payment provider initialization failed.'
-            );
+            if (
+                ! is_string($failureReason)
+                || trim($failureReason) === ''
+            ) {
+                $failureReason =
+                    'Payment provider initialization failed.';
+            }
+
+            try {
+
+                $payment->markAsFailed(
+                    $failureReason
+                );
+
+            } catch (Throwable $markFailedException) {
+
+                Log::critical(
+                    'Unable to mark payment as failed after provider initialization exception.',
+                    [
+                        'payment_id' =>
+                            $payment->id,
+
+                        'payment_number' =>
+                            $payment->payment_number,
+
+                        'transaction_reference' =>
+                            $payment->transaction_reference,
+
+                        'provider' =>
+                            $paymentProvider->value,
+
+                        'original_exception' =>
+                            $exception::class,
+
+                        'original_message' =>
+                            $exception->getMessage(),
+
+                        'mark_failed_exception' =>
+                            $markFailedException::class,
+
+                        'mark_failed_message' =>
+                            $markFailedException->getMessage(),
+                    ]
+                );
+            }
 
             throw $exception;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Provider Initialization Failed
+        | Provider Initialization Returned Failure
         |--------------------------------------------------------------------------
         */
 
         if (! $result->success) {
 
-            $payment->forceFill([
-                'status' =>
-                    PaymentStatus::FAILED,
+            DB::transaction(
+                function () use (
+                    $payment,
+                    $result
+                ): void {
 
-                'provider_reference' =>
-                    $result->providerReference,
+                    $payment->forceFill([
+                        'status' =>
+                            PaymentStatus::FAILED,
 
-                'failure_reason' =>
-                    $result->message,
+                        'failure_reason' =>
+                            $result->message,
+                    ])->save();
 
-                'provider_response' =>
-                    $this->providerResponseFromResult(
+                    $this->updateOnlinePaymentDetails(
+                        $payment,
                         $result
-                    ),
-            ])->save();
+                    );
+                }
+            );
 
             Log::warning(
                 'Payment provider initialization returned failure.',
@@ -504,9 +574,7 @@ class OnlinePaymentService
                         $payment->transaction_reference,
 
                     'provider' =>
-                        $this->providerValue(
-                            $data->provider
-                        ),
+                        $paymentProvider->value,
 
                     'provider_reference' =>
                         $result->providerReference,
@@ -532,37 +600,38 @@ class OnlinePaymentService
         |
         | IMPORTANT:
         |
-        | Successful initialization does NOT mean the payment
-        | has been paid.
+        | This does NOT mean the taxpayer has paid.
         |
-        | For Chapa, the user still needs to complete checkout.
+        | The local payment remains PENDING.
         |
         */
 
-        $payment->forceFill([
-            'status' =>
-                PaymentStatus::PENDING,
+        DB::transaction(
+            function () use (
+                $payment,
+                $result
+            ): void {
 
-            'provider_reference' =>
-                $result->providerReference,
+                $payment->forceFill([
+                    'status' =>
+                        PaymentStatus::PENDING,
+                ])->save();
 
-            'checkout_url' =>
-                $result->checkoutUrl,
-
-            'provider_response' =>
-                $this->providerResponseFromResult(
+                $this->updateOnlinePaymentDetails(
+                    $payment,
                     $result
-                ),
-        ])->save();
+                );
+            }
+        );
 
         /*
         |--------------------------------------------------------------------------
-        | Logging
+        | Initialization Logging
         |--------------------------------------------------------------------------
         */
 
         Log::info(
-            'PaymentService::initialize() completed.',
+            'OnlinePaymentService::initialize() completed.',
             [
                 'payment_id' =>
                     $payment->id,
@@ -610,6 +679,94 @@ class OnlinePaymentService
 
     /*
     |--------------------------------------------------------------------------
+    | Update Online Payment Details
+    |--------------------------------------------------------------------------
+    */
+
+    protected function updateOnlinePaymentDetails(
+        Payment $payment,
+        PaymentResult $result
+    ): void {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve Provider Master Record
+        |--------------------------------------------------------------------------
+        |
+        | payment_provider_id must reference the payment_providers table.
+        |
+        */
+
+        $providerId = $this->resolvePaymentProviderId(
+            $result->provider
+        );
+
+        $onlineDetails = $payment->onlineDetails()
+            ->firstOrNew();
+
+        $onlineDetails->payment_provider_id =
+            $providerId;
+
+        $onlineDetails->checkout_reference =
+            $result->providerReference;
+
+        $onlineDetails->provider_transaction_id =
+            $result->providerTransactionId;
+
+        $onlineDetails->checkout_url =
+            $result->checkoutUrl;
+
+        $onlineDetails->provider_status =
+            $result->status->value;
+
+        $onlineDetails->provider_response =
+            $this->providerResponseFromResult(
+                $result
+            );
+
+        $onlineDetails->save();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Payment Provider ID
+    |--------------------------------------------------------------------------
+    */
+
+    protected function resolvePaymentProviderId(
+        PaymentProvider $provider
+    ): string {
+
+        /*
+        |--------------------------------------------------------------------------
+        | IMPORTANT
+        |--------------------------------------------------------------------------
+        |
+        | Replace this query with your actual provider model if the model
+        | is not named PaymentProviderModel.
+        |
+        */
+
+        $providerRecord = \App\Models\PaymentProvider::query()
+            ->where(
+                'code',
+                $provider->value
+            )
+            ->first();
+
+        if (! $providerRecord) {
+
+            throw new RuntimeException(
+                "Payment provider [{$provider->value}] "
+                . 'is not registered in payment_providers.'
+            );
+        }
+
+        return $providerRecord->id;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Verify Payment
     |--------------------------------------------------------------------------
     */
@@ -617,6 +774,10 @@ class OnlinePaymentService
     public function verify(
         Payment $payment
     ): PaymentVerificationResult {
+
+        $payment->loadMissing(
+            'onlineDetails'
+        );
 
         /*
         |--------------------------------------------------------------------------
@@ -634,7 +795,7 @@ class OnlinePaymentService
                     'Payment has already been verified.',
 
                 providerReference:
-                    $payment->provider_reference,
+                    $payment->onlineDetails?->checkout_reference,
 
                 transactionReference:
                     $payment->transaction_reference,
@@ -646,34 +807,68 @@ class OnlinePaymentService
                     $payment->currency,
 
                 paidAt:
-                    $payment->payment_date
+                    $payment->onlineDetails?->paid_at
                     ?? $payment->verified_at
                     ?? now(),
 
                 metadata:
                     $this->decodeProviderResponse(
-                        $payment->provider_response
+                        $payment->onlineDetails?->provider_response
                     ),
             );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve Provider
+        | Validate Provider
         |--------------------------------------------------------------------------
         */
 
-        $provider = $this->providerFactory->make(
+        if ($payment->payment_provider === null) {
+
+            throw new RuntimeException(
+                'Cannot verify payment because payment provider is missing.'
+            );
+        }
+
+        $paymentProvider = $this->providerEnum(
             $payment->payment_provider
         );
 
         /*
         |--------------------------------------------------------------------------
-        | Verify With Provider
+        | Resolve And Verify Provider
         |--------------------------------------------------------------------------
         */
 
         try {
+
+            $provider = $this->providerFactory->make(
+                $paymentProvider
+            );
+
+            Log::info(
+                'Calling payment provider verify.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
+                    'provider' =>
+                        $paymentProvider->value,
+
+                    'provider_reference' =>
+                        $payment->onlineDetails?->checkout_reference,
+
+                    'provider_transaction_id' =>
+                        $payment->onlineDetails?->provider_transaction_id,
+                ]
+            );
 
             $result = $provider->verify(
                 $payment
@@ -697,15 +892,13 @@ class OnlinePaymentService
                         $payment->invoice_id,
 
                     'provider' =>
-                        $this->providerValue(
-                            $payment->payment_provider
-                        ),
+                        $paymentProvider->value,
 
                     'transaction_reference' =>
                         $payment->transaction_reference,
 
                     'provider_reference' =>
-                        $payment->provider_reference,
+                        $payment->onlineDetails?->checkout_reference,
 
                     'exception' =>
                         $exception::class,
@@ -750,6 +943,7 @@ class OnlinePaymentService
             ): void {
 
                 $lockedPayment = Payment::query()
+                    ->with('onlineDetails')
                     ->whereKey($payment->id)
                     ->lockForUpdate()
                     ->firstOrFail();
@@ -774,12 +968,7 @@ class OnlinePaymentService
 
                     $lockedPayment->forceFill([
                         'status' =>
-                            PaymentStatus::SUCCESS,
-
-                        'provider_reference' =>
-                            $result->providerReference
-                            ??
-                            $lockedPayment->provider_reference,
+                            PaymentStatus::COMPLETED,
 
                         'amount' =>
                             $result->amount
@@ -791,21 +980,17 @@ class OnlinePaymentService
                             ??
                             $lockedPayment->currency,
 
-                        'payment_date' =>
-                            $result->paidAt
-                            ?? now(),
-
                         'verified_at' =>
                             now(),
 
                         'failure_reason' =>
                             null,
-
-                        'provider_response' =>
-                            $this->verificationResponseFromResult(
-                                $result
-                            ),
                     ])->save();
+
+                    $this->updateOnlinePaymentVerification(
+                        $lockedPayment,
+                        $result
+                    );
 
                     Log::info(
                         'Payment verification applied successfully.',
@@ -819,8 +1004,16 @@ class OnlinePaymentService
                             'transaction_reference' =>
                                 $lockedPayment->transaction_reference,
 
+                            'provider' =>
+                                $this->nullableProviderValue(
+                                    $lockedPayment->payment_provider
+                                ),
+
                             'provider_reference' =>
-                                $lockedPayment->provider_reference,
+                                $result->providerReference,
+
+                            'provider_transaction_id' =>
+                                $lockedPayment->onlineDetails?->provider_transaction_id,
 
                             'status' =>
                                 $this->paymentStatusValue(
@@ -832,9 +1025,6 @@ class OnlinePaymentService
 
                             'currency' =>
                                 $lockedPayment->currency,
-
-                            'payment_date' =>
-                                $lockedPayment->payment_date?->toISOString(),
 
                             'verified_at' =>
                                 $lockedPayment->verified_at?->toISOString(),
@@ -856,19 +1046,14 @@ class OnlinePaymentService
                         'status' =>
                             PaymentStatus::FAILED,
 
-                        'provider_reference' =>
-                            $result->providerReference
-                            ??
-                            $lockedPayment->provider_reference,
-
                         'failure_reason' =>
                             $result->message,
-
-                        'provider_response' =>
-                            $this->verificationResponseFromResult(
-                                $result
-                            ),
                     ])->save();
+
+                    $this->updateOnlinePaymentVerification(
+                        $lockedPayment,
+                        $result
+                    );
 
                     Log::warning(
                         'Payment verification returned failed status.',
@@ -882,8 +1067,13 @@ class OnlinePaymentService
                             'transaction_reference' =>
                                 $lockedPayment->transaction_reference,
 
+                            'provider' =>
+                                $this->nullableProviderValue(
+                                    $lockedPayment->payment_provider
+                                ),
+
                             'provider_reference' =>
-                                $lockedPayment->provider_reference,
+                                $result->providerReference,
 
                             'status' =>
                                 $this->paymentStatusValue(
@@ -907,17 +1097,12 @@ class OnlinePaymentService
                 $lockedPayment->forceFill([
                     'status' =>
                         PaymentStatus::PENDING,
-
-                    'provider_reference' =>
-                        $result->providerReference
-                        ??
-                        $lockedPayment->provider_reference,
-
-                    'provider_response' =>
-                        $this->verificationResponseFromResult(
-                            $result
-                        ),
                 ])->save();
+
+                $this->updateOnlinePaymentVerification(
+                    $lockedPayment,
+                    $result
+                );
 
                 Log::info(
                     'Payment verification remains pending.',
@@ -931,8 +1116,13 @@ class OnlinePaymentService
                         'transaction_reference' =>
                             $lockedPayment->transaction_reference,
 
+                        'provider' =>
+                            $this->nullableProviderValue(
+                                $lockedPayment->payment_provider
+                            ),
+
                         'provider_reference' =>
-                            $lockedPayment->provider_reference,
+                            $result->providerReference,
 
                         'status' =>
                             $this->paymentStatusValue(
@@ -946,7 +1136,107 @@ class OnlinePaymentService
 
     /*
     |--------------------------------------------------------------------------
-    | Find Payment
+    | Update Online Payment Verification
+    |--------------------------------------------------------------------------
+    */
+
+    protected function updateOnlinePaymentVerification(
+        Payment $payment,
+        PaymentVerificationResult $result
+    ): void {
+
+        $onlineDetails = $payment->onlineDetails()
+            ->firstOrNew();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider Reference
+        |--------------------------------------------------------------------------
+        */
+
+        if ($result->providerReference !== null) {
+            $onlineDetails->checkout_reference =
+                $result->providerReference;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider Transaction ID
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $result->metadata['provider_transaction_id']
+            ?? null
+        ) {
+            $onlineDetails->provider_transaction_id =
+                $result->metadata['provider_transaction_id'];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider Status
+        |--------------------------------------------------------------------------
+        */
+
+        $onlineDetails->provider_status =
+            $result->status->value;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider Response
+        |--------------------------------------------------------------------------
+        */
+
+        $onlineDetails->provider_response =
+            $this->verificationResponseFromResult(
+                $result
+            );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Paid At
+        |--------------------------------------------------------------------------
+        */
+
+        if ($result->isSuccessful()) {
+
+            $onlineDetails->paid_at =
+                $result->paidAt
+                ?? now();
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Callback / Verification Timestamp
+        |--------------------------------------------------------------------------
+        */
+
+        $onlineDetails->callback_received_at =
+            now();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Provider
+        |--------------------------------------------------------------------------
+        */
+
+        if ($payment->payment_provider !== null) {
+
+            $onlineDetails->payment_provider_id =
+                $this->resolvePaymentProviderId(
+                    $this->providerEnum(
+                        $payment->payment_provider
+                    )
+                );
+        }
+
+        $onlineDetails->save();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Find By Transaction Reference
     |--------------------------------------------------------------------------
     */
 
@@ -955,6 +1245,7 @@ class OnlinePaymentService
     ): ?Payment {
 
         return Payment::query()
+            ->with('onlineDetails')
             ->where(
                 'transaction_reference',
                 $transactionReference
@@ -964,7 +1255,7 @@ class OnlinePaymentService
 
     /*
     |--------------------------------------------------------------------------
-    | Find Payment Or Fail
+    | Find By Transaction Reference Or Fail
     |--------------------------------------------------------------------------
     */
 
@@ -973,6 +1264,7 @@ class OnlinePaymentService
     ): Payment {
 
         return Payment::query()
+            ->with('onlineDetails')
             ->where(
                 'transaction_reference',
                 $transactionReference
@@ -992,6 +1284,7 @@ class OnlinePaymentService
     ): Payment {
 
         return Payment::query()
+            ->with('onlineDetails')
             ->whereKey($paymentId)
             ->whereHas(
                 'citizen.account',
@@ -1016,6 +1309,17 @@ class OnlinePaymentService
         string $message
     ): PaymentResult {
 
+        $payment->loadMissing(
+            'onlineDetails'
+        );
+
+        if ($payment->payment_provider === null) {
+
+            throw new RuntimeException(
+                'Existing payment has no payment provider.'
+            );
+        }
+
         return PaymentResult::success(
             provider:
                 $this->providerEnum(
@@ -1026,22 +1330,20 @@ class OnlinePaymentService
                 $payment->transaction_reference,
 
             providerReference:
-                $payment->provider_reference,
+                $payment->onlineDetails?->checkout_reference,
 
             checkoutUrl:
-                $payment->checkout_url,
+                $payment->onlineDetails?->checkout_url,
 
             providerTransactionId:
-                $this->providerTransactionIdFromResponse(
-                    $payment->provider_response
-                ),
+                $payment->onlineDetails?->provider_transaction_id,
 
             message:
                 $message,
 
             metadata:
                 $this->decodeProviderResponse(
-                    $payment->provider_response
+                    $payment->onlineDetails?->provider_response
                 ),
         );
     }
@@ -1095,16 +1397,6 @@ class OnlinePaymentService
     protected function verificationResponseFromResult(
         PaymentVerificationResult $result
     ): array {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Store normalized verification data.
-        |--------------------------------------------------------------------------
-        |
-        | This avoids depending on provider-specific raw response
-        | properties inside PaymentService.
-        |
-        */
 
         return [
             'success' =>
@@ -1167,67 +1459,6 @@ class OnlinePaymentService
 
     /*
     |--------------------------------------------------------------------------
-    | Provider Transaction ID From Response
-    |--------------------------------------------------------------------------
-    */
-
-    protected function providerTransactionIdFromResponse(
-        mixed $response
-    ): ?string {
-
-        $data = $this->decodeProviderResponse(
-            $response
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | New normalized structure
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            isset(
-                $data['provider_transaction_id']
-            )
-            &&
-            is_string(
-                $data['provider_transaction_id']
-            )
-        ) {
-            return $data['provider_transaction_id'];
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Metadata structure
-        |--------------------------------------------------------------------------
-        */
-
-        $metadata =
-            $data['metadata']
-            ?? null;
-
-        if (
-            is_array($metadata)
-            &&
-            isset(
-                $metadata['provider_transaction_id']
-            )
-            &&
-            is_string(
-                $metadata['provider_transaction_id']
-            )
-        ) {
-            return $metadata[
-                'provider_transaction_id'
-            ];
-        }
-
-        return null;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
     | Provider Enum
     |--------------------------------------------------------------------------
     */
@@ -1262,6 +1493,25 @@ class OnlinePaymentService
 
     /*
     |--------------------------------------------------------------------------
+    | Nullable Provider Value
+    |--------------------------------------------------------------------------
+    */
+
+    protected function nullableProviderValue(
+        PaymentProvider|string|null $provider
+    ): ?string {
+
+        if ($provider === null) {
+            return null;
+        }
+
+        return $this->providerValue(
+            $provider
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Payment Status Value
     |--------------------------------------------------------------------------
     */
@@ -1289,7 +1539,8 @@ class OnlinePaymentService
             return null;
         }
 
-        return is_object($method) && property_exists($method, 'value')
+        return is_object($method)
+            && property_exists($method, 'value')
             ? $method->value
             : (string) $method;
     }
@@ -1305,6 +1556,7 @@ class OnlinePaymentService
     ): ?Payment {
 
         return Payment::query()
+            ->with('onlineDetails')
             ->whereKey($paymentId)
             ->first();
     }

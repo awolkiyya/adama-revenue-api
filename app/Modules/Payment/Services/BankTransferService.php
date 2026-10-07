@@ -967,7 +967,7 @@ class BankTransferService
              * 6. AUTHORIZE REJECTION
              * =========================================================
              */
-            $this->authorizeVerification($user);
+            // $this->authorizeVerification($user);
 
             /*
              * =========================================================

@@ -59,24 +59,29 @@ class PaymentResource extends JsonResource
                 $this->citizen_id,
 
 
-            /*
+           /*
             |--------------------------------------------------------------------------
             | Payment Classification
             |--------------------------------------------------------------------------
             */
 
             'payment_method' =>
-                $this->enumValue(
-                    $this->payment_method
-                ),
+            $this->enumValue(
+                $this->payment_method
+            ),
+
+            'payment_provider' =>
+            $this->enumValue(
+                $this->payment_provider
+            ),
 
             'payment_source' =>
-                $this->payment_source,
+            $this->payment_source,
 
             'status' =>
-                $this->enumValue(
-                    $this->status
-                ),
+            $this->enumValue(
+                $this->status
+            ),
 
 
             /*
