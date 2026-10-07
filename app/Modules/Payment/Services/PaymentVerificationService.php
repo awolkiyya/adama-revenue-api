@@ -1,12 +1,19 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Payment\Services;
 
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
+use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\User;
 use App\Modules\Payment\Contracts\PaymentProviderInterface;
 use App\Modules\Payment\DTOs\PaymentVerificationResult;
 use App\Modules\Payment\Factories\PaymentProviderFactory;
+use App\Jobs\SendPaymentNotificationJob;
+use App\Modules\Payment\Notifications\PaymentNotificationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -15,12 +22,15 @@ use Throwable;
 class PaymentVerificationService
 {
     /**
-     * Number of decimal places used for municipal money calculations.
+     * Number of decimal places used for municipal
+     * financial calculations.
+     *
+     * BCMath is used for all financial calculations.
      */
     protected const MONEY_SCALE = 4;
 
     /**
-     * Invoice statuses that can receive a payment.
+     * Invoice statuses that may receive a payment.
      */
     protected const PAYABLE_INVOICE_STATUSES = [
         'ISSUED',
@@ -35,98 +45,109 @@ class PaymentVerificationService
     }
 
     /**
-     * Verify a payment with its configured provider and,
-     * when successful, finalize the complete financial transaction.
+     * Verify a payment with its configured provider and finalize
+     * the municipal financial transaction when successful.
+     *
+     * The provider is always queried independently.
+     *
+     * Browser callbacks/webhooks are only triggers.
      *
      * Flow:
      *
-     * 1. Check current local payment state.
-     * 2. Resolve the configured payment provider.
-     * 3. Ask the provider to independently verify the transaction.
-     * 4. Lock the payment.
-     * 5. Lock the invoice.
-     * 6. Validate the remaining invoice balance.
-     * 7. Mark payment COMPLETED when provider verification succeeds.
-     * 8. Create the official municipal receipt.
-     * 9. Apply the completed payment to the invoice.
-     * 10. Update invoice financial state.
-     *
-     * IMPORTANT:
-     * The callback/webhook status is NOT trusted directly.
-     * The provider implementation must independently verify
-     * the transaction with the payment provider.
+     * 1. Fast local idempotency check.
+     * 2. Resolve provider.
+     * 3. Verify with provider outside database transaction.
+     * 4. Start database transaction.
+     * 5. Lock payment.
+     * 6. Re-check payment state.
+     * 7. Validate provider result.
+     * 8. Apply provider result.
+     * 9. Commit.
+     * 10. Notification job runs only after commit.
      */
     public function verify(
         Payment $payment
     ): PaymentVerificationResult {
         /*
-         * Fast idempotency check.
-         *
-         * If another webhook/callback already completed this payment,
-         * do not call the provider again unnecessarily.
+         * ---------------------------------------------------------
+         * 1. Fast idempotency check
+         * ---------------------------------------------------------
          */
+
         if ($payment->isSuccessful()) {
-            return PaymentVerificationResult::success(
-                payment: $payment,
-                message: 'Payment has already been verified successfully.',
+            return $this->successfulResultFromPayment(
+                $payment,
+                'Payment has already been verified successfully.'
             );
         }
 
         /*
-         * A failed payment should not automatically be retried
-         * through this service.
-         *
-         * A new payment attempt should create a new Payment record.
+         * Do not downgrade a terminal payment.
          */
-        if ($payment->isFailed()) {
-            return PaymentVerificationResult::failed(
-                payment: $payment,
-                message: 'Payment has already been marked as failed.',
+        if ($this->hasTerminalFailure($payment)) {
+            return $this->failedResultFromPayment(
+                $payment,
+                'Payment has already reached a terminal failed state.'
+            );
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Validate configured provider
+         * ---------------------------------------------------------
+         */
+
+        $configuredProvider = $payment->payment_provider;
+
+        if ($configuredProvider === null) {
+            throw new RuntimeException(
+                'The payment does not have a configured payment provider.'
             );
         }
 
         try {
-            /**
-             * Resolve the provider configured for this payment.
+            /*
+             * -----------------------------------------------------
+             * 2. Resolve provider
+             * -----------------------------------------------------
              */
+
             /** @var PaymentProviderInterface $provider */
             $provider = $this->providerFactory->make(
-                $payment->provider
+                $configuredProvider
             );
 
             /*
+             * -----------------------------------------------------
+             * 3. Authoritative provider verification
+             * -----------------------------------------------------
+             *
              * IMPORTANT:
              *
-             * This is the authoritative provider-side verification.
-             *
-             * For Chapa, this should call Chapa's transaction
-             * verification endpoint.
-             *
-             * The callback/webhook status must never be trusted
-             * as the source of truth.
+             * Never hold a database lock while calling an
+             * external provider.
              */
             $result = $provider->verify($payment);
 
             /*
-             * Do not hold database locks while making the external
-             * provider API request.
+             * -----------------------------------------------------
+             * 4. Finalization transaction
+             * -----------------------------------------------------
              *
-             * Provider verification happens before this transaction.
+             * Retry the transaction up to three times for
+             * transient database deadlocks.
              */
             return DB::transaction(
-                function () use ($payment, $result) {
+                function () use (
+                    $payment,
+                    $result
+                ): PaymentVerificationResult {
                     /*
-                     * Re-fetch and lock the payment.
-                     *
-                     * This protects against simultaneous:
-                     *
-                     * - Chapa webhook
-                     * - frontend verification
-                     * - retry
-                     * - another server process
-                     *
-                     * requests trying to finalize the same payment.
+                     * -------------------------------------------------
+                     * 5. Lock payment
+                     * -------------------------------------------------
                      */
+
                     $lockedPayment = Payment::query()
                         ->whereKey($payment->getKey())
                         ->lockForUpdate()
@@ -134,82 +155,246 @@ class PaymentVerificationService
 
                     if (!$lockedPayment) {
                         throw new RuntimeException(
-                            'Payment could not be found during verification.'
+                            'Payment could not be found during verification finalization.'
                         );
                     }
 
                     /*
-                     * If another request completed the payment while
-                     * provider verification was running, stop here.
+                     * -------------------------------------------------
+                     * 6. Re-check payment state
+                     * -------------------------------------------------
                      *
-                     * The other transaction already created the receipt
-                     * and updated the invoice.
+                     * This protects against two webhook/callback
+                     * requests verifying the same payment concurrently.
                      */
+
                     if ($lockedPayment->isSuccessful()) {
                         Log::info(
                             'Payment was already completed before verification finalization.',
-                            [
-                                'payment_id' => $lockedPayment->id,
-                                'payment_uuid' =>
-                                    $lockedPayment->uuid ?? null,
-                                'provider_reference' =>
-                                    $lockedPayment->provider_reference,
-                                'transaction_reference' =>
-                                    $lockedPayment->transaction_reference,
-                            ]
+                            $this->paymentLogContext($lockedPayment)
                         );
 
-                        return PaymentVerificationResult::success(
-                            payment: $lockedPayment->refresh(),
-                            message:
-                                'Payment has already been verified successfully.',
+                        return $this->successfulResultFromPayment(
+                            $lockedPayment->refresh(),
+                            'Payment has already been verified successfully.'
                         );
                     }
 
                     /*
-                     * Do not downgrade a payment that has already been
-                     * failed by another process.
+                     * Never downgrade a terminal payment.
                      */
-                    if ($lockedPayment->isFailed()) {
-                        return PaymentVerificationResult::failed(
-                            payment: $lockedPayment->refresh(),
-                            message:
-                                'Payment has already been marked as failed.',
+                    if ($this->hasTerminalFailure($lockedPayment)) {
+                        Log::warning(
+                            'Payment was already in a terminal failed state before verification finalization.',
+                            $this->paymentLogContext($lockedPayment)
+                        );
+
+                        return $this->failedResultFromPayment(
+                            $lockedPayment->refresh(),
+                            'Payment has already reached a terminal failed state.'
                         );
                     }
 
                     /*
-                     * Apply the provider result.
+                     * -------------------------------------------------
+                     * Validate provider result
+                     * -------------------------------------------------
                      */
+
+                    $this->validateVerificationResult(
+                        $lockedPayment,
+                        $result
+                    );
+
+                    /*
+                     * -------------------------------------------------
+                     * 7. Apply provider result
+                     * -------------------------------------------------
+                     */
+
                     return $this->applyVerificationResult(
                         $lockedPayment,
                         $result
                     );
-                }
+                },
+                3
             );
         } catch (Throwable $exception) {
             Log::error(
                 'Payment verification failed.',
                 [
-                    'payment_id' => $payment->id,
-                    'payment_uuid' =>
-                        $payment->uuid ?? null,
+                    'payment_id' =>
+                        $payment->getKey(),
+
+                    'payment_number' =>
+                        $payment->payment_number ?? null,
+
                     'provider' =>
-                        $payment->provider?->value
-                        ?? $payment->provider
-                        ?? null,
+                        $this->providerValue(
+                            $payment->payment_provider
+                        ),
+
                     'provider_reference' =>
-                        $payment->provider_reference
-                        ?? null,
+                        $payment->provider_reference ?? null,
+
                     'transaction_reference' =>
-                        $payment->transaction_reference
-                        ?? null,
-                    'exception' => $exception::class,
-                    'message' => $exception->getMessage(),
+                        $payment->transaction_reference ?? null,
+
+                    'exception' =>
+                        $exception::class,
+
+                    'message' =>
+                        $exception->getMessage(),
                 ]
             );
 
             throw $exception;
+        }
+    }
+
+    /**
+     * Validate the normalized provider result against
+     * the local payment.
+     */
+    protected function validateVerificationResult(
+        Payment $payment,
+        PaymentVerificationResult $result
+    ): void {
+        /*
+         * ---------------------------------------------------------
+         * Transaction reference validation
+         * ---------------------------------------------------------
+         */
+
+        if (
+            $result->transactionReference !== null
+            && $payment->transaction_reference !== null
+        ) {
+            $localReference = trim(
+                (string) $payment->transaction_reference
+            );
+
+            $providerReference = trim(
+                (string) $result->transactionReference
+            );
+
+            if (
+                $localReference !== ''
+                && $providerReference !== ''
+                && !hash_equals(
+                    $localReference,
+                    $providerReference
+                )
+            ) {
+                throw new RuntimeException(
+                    'The provider transaction reference does not match the local payment transaction reference.'
+                );
+            }
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Successful payment validation
+         * ---------------------------------------------------------
+         */
+
+        if (!$result->isSuccessful()) {
+            return;
+        }
+
+        /*
+         * A successful result must contain an amount.
+         */
+        if ($result->amount === null) {
+            throw new RuntimeException(
+                'The successful provider verification result does not contain a payment amount.'
+            );
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Validate positive amounts
+         * ---------------------------------------------------------
+         */
+
+        $localAmount = $this->normalizeMoney(
+            $payment->amount
+        );
+
+        $providerAmount = $this->normalizeMoney(
+            $result->amount
+        );
+
+        if (
+            bccomp(
+                $localAmount,
+                '0',
+                self::MONEY_SCALE
+            ) <= 0
+        ) {
+            throw new RuntimeException(
+                'The local payment amount must be greater than zero.'
+            );
+        }
+
+        if (
+            bccomp(
+                $providerAmount,
+                '0',
+                self::MONEY_SCALE
+            ) <= 0
+        ) {
+            throw new RuntimeException(
+                'The provider payment amount must be greater than zero.'
+            );
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Amount validation
+         * ---------------------------------------------------------
+         */
+
+        if (
+            bccomp(
+                $localAmount,
+                $providerAmount,
+                self::MONEY_SCALE
+            ) !== 0
+        ) {
+            throw new RuntimeException(
+                'The provider payment amount does not match the local payment amount.'
+            );
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Currency validation
+         * ---------------------------------------------------------
+         */
+
+        if ($result->currency !== null) {
+            $localCurrency = strtoupper(
+                trim(
+                    (string) $payment->currency
+                )
+            );
+
+            $providerCurrency = strtoupper(
+                trim(
+                    (string) $result->currency
+                )
+            );
+
+            if (
+                $localCurrency !== ''
+                && $providerCurrency !== ''
+                && $localCurrency !== $providerCurrency
+            ) {
+                throw new RuntimeException(
+                    'The provider payment currency does not match the local payment currency.'
+                );
+            }
         }
     }
 
@@ -245,55 +430,55 @@ class PaymentVerificationService
     }
 
     /**
-     * Mark payment as successfully paid and finalize
-     * the related municipal financial records.
-     *
-     * This is the online-payment equivalent of:
-     *
-     * BankTransferService::verify()
+     * Mark payment as successfully completed and finalize
+     * the associated municipal financial transaction.
      */
     protected function markSuccessful(
         Payment $payment,
         PaymentVerificationResult $result
     ): PaymentVerificationResult {
         /*
-         * Additional idempotency protection.
+         * ---------------------------------------------------------
+         * Idempotency protection
+         * ---------------------------------------------------------
          */
+
         if ($payment->isSuccessful()) {
-            return PaymentVerificationResult::success(
-                payment: $payment->refresh(),
-                message:
-                    'Payment has already been verified successfully.',
+            return $this->successfulResultFromPayment(
+                $payment->refresh(),
+                'Payment has already been verified successfully.'
             );
         }
 
         /*
-         * Lock the invoice before checking or modifying
-         * its financial state.
-         *
-         * This is important because multiple payments may attempt
-         * to settle the same invoice concurrently.
+         * ---------------------------------------------------------
+         * Lock invoice
+         * ---------------------------------------------------------
          */
+
         $invoice = $payment->invoice()
             ->lockForUpdate()
             ->first();
 
-        if (!$invoice) {
+        if (!$invoice instanceof Invoice) {
             throw new RuntimeException(
                 'The invoice associated with this payment could not be found.'
             );
         }
 
         /*
-         * Validate invoice status.
+         * ---------------------------------------------------------
+         * Validate invoice state
+         * ---------------------------------------------------------
          */
-        $invoiceStatus = $invoice->status?->value
-            ?? $invoice->status
-            ?? null;
+
+        $invoiceStatus = $this->enumOrStringValue(
+            $invoice->status
+        );
 
         if ($invoiceStatus !== null) {
             $normalizedInvoiceStatus = strtoupper(
-                (string) $invoiceStatus
+                $invoiceStatus
             );
 
             if ($normalizedInvoiceStatus === 'PAID') {
@@ -316,23 +501,27 @@ class PaymentVerificationService
         }
 
         /*
-         * Calculate the remaining invoice balance using
-         * COMPLETED payments only.
-         *
-         * The current payment is still pending at this point,
-         * so it is not included in this calculation.
+         * ---------------------------------------------------------
+         * Calculate authoritative outstanding balance
+         * ---------------------------------------------------------
          */
-        $outstandingAmount = $this->calculateOutstandingAmount(
-            $invoice
-        );
+
+        $outstandingAmount =
+            $this->calculateOutstandingAmount(
+                $invoice
+            );
 
         $paymentAmount = $this->normalizeMoney(
-            $payment->amount
+            $result->amount
+                ?? $payment->amount
         );
 
         /*
-         * Prevent overpayment.
+         * ---------------------------------------------------------
+         * Prevent overpayment
+         * ---------------------------------------------------------
          */
+
         if (
             bccomp(
                 $paymentAmount,
@@ -340,162 +529,329 @@ class PaymentVerificationService
                 self::MONEY_SCALE
             ) === 1
         ) {
+            Log::warning(
+                'Payment overpayment validation failed.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number ?? null,
+
+                    'invoice_id' =>
+                        $invoice->id,
+
+                    'invoice_number' =>
+                        $invoice->invoice_number ?? null,
+
+                    'payment_amount' =>
+                        $paymentAmount,
+
+                    'outstanding_amount' =>
+                        $outstandingAmount,
+
+                    'money_scale' =>
+                        self::MONEY_SCALE,
+                ]
+            );
+
             throw new RuntimeException(
                 'The verified payment amount exceeds the outstanding invoice balance.'
             );
         }
 
         /*
-         * Update payment with authoritative provider result.
+         * ---------------------------------------------------------
+         * Update common Payment record
+         * ---------------------------------------------------------
          */
-        $payment->status = $result->status;
+
+        $payment->status =
+            PaymentStatus::COMPLETED;
 
         /*
-         * Save Chapa/provider reference when available.
-         *
-         * For Chapa this is normally the provider-side reference
-         * such as ref_id.
+         * Store provider reference when available.
          */
-        if ($result->providerReference !== null) {
+        if (
+            $result->providerReference !== null
+            && trim(
+                (string) $result->providerReference
+            ) !== ''
+        ) {
             $payment->provider_reference =
-                $result->providerReference;
+                trim(
+                    (string) $result->providerReference
+                );
         }
 
         /*
-         * Save the merchant/local transaction reference when
-         * returned by the provider.
+         * Store canonical transaction reference.
          */
-        if ($result->transactionReference !== null) {
+        if (
+            $result->transactionReference !== null
+            && trim(
+                (string) $result->transactionReference
+            ) !== ''
+        ) {
             $payment->transaction_reference =
-                $result->transactionReference;
+                trim(
+                    (string) $result->transactionReference
+                );
         }
 
         /*
-         * Provider may return the exact payment time.
-         *
-         * If unavailable, use the current server time.
+         * Municipal verification/finalization timestamp.
          */
-        $payment->paid_at =
-            $result->paidAt ?? now();
+        $payment->verified_at = now();
 
         /*
-         * Save the complete provider response for audit,
-         * reconciliation, and troubleshooting.
-         */
-        if ($result->metadata !== null) {
-            $payment->provider_response =
-                $result->metadata;
-        }
-
-        /*
-         * A successful payment must not retain a failure reason.
+         * Successful payment cannot have a failure reason.
          */
         $payment->failure_reason = null;
 
         $payment->save();
 
         /*
-         * Refresh so receipt generation receives the persisted
-         * successful payment state.
+         * ---------------------------------------------------------
+         * Update online payment details
+         * ---------------------------------------------------------
+         */
+
+        $this->updateOnlinePaymentDetails(
+            $payment,
+            $result
+        );
+
+        /*
+         * Refresh payment after persistence.
          */
         $payment->refresh();
 
         /*
-         * Create the official municipal receipt.
-         *
-         * Chapa does not require a human verification officer.
-         * Therefore we use the user who originally processed/
-         * initiated the payment as the receipt issuer.
+         * ---------------------------------------------------------
+         * Create official receipt
+         * ---------------------------------------------------------
          */
+
         $this->createReceiptIfNecessary(
             $payment
         );
 
         /*
-         * Recalculate invoice financial state using completed
-         * payments only.
-         *
-         * The current payment is now COMPLETED, so it is included.
+         * ---------------------------------------------------------
+         * Recalculate invoice
+         * ---------------------------------------------------------
          */
+
         $this->applyPaymentToInvoice(
             $invoice
         );
 
         /*
-         * Reload the final payment state.
+         * ---------------------------------------------------------
+         * Reload final state
+         * ---------------------------------------------------------
          */
-        $payment->refresh();
 
-        /*
-         * Reload invoice state after save.
-         */
+        $payment->refresh();
         $invoice->refresh();
 
+        /*
+         * ---------------------------------------------------------
+         * Determine taxpayer notification
+         * ---------------------------------------------------------
+         *
+         * Exactly ONE successful-payment notification is sent.
+         *
+         * Example:
+         *
+         * Invoice total:       1,000
+         * Previous payments:     600
+         * Current payment:       200
+         * Remaining balance:     200
+         *
+         * SMS:
+         *
+         *     PAYMENT_PARTIALLY_PAID
+         *
+         * If remaining balance becomes zero:
+         *
+         *     PAYMENT_FULLY_PAID
+         *
+         * We intentionally do NOT send:
+         *
+         *     PAYMENT_RECEIVED
+         *
+         * plus:
+         *
+         *     PAYMENT_PARTIALLY_PAID
+         *
+         * because that would create two SMS messages for one payment.
+         */
+
+        $notificationType =
+            bccomp(
+                $this->normalizeMoney(
+                    $invoice->balance_due
+                ),
+                '0',
+                self::MONEY_SCALE
+            ) === 0
+                ? PaymentNotificationService::PAYMENT_FULLY_PAID
+                : PaymentNotificationService::PAYMENT_PARTIALLY_PAID;
+
+        /*
+         * IMPORTANT:
+         *
+         * The SMS job is queued with afterCommit().
+         *
+         * Therefore:
+         *
+         *     DB transaction succeeds
+         *             ↓
+         *     database commits
+         *             ↓
+         *     SMS job becomes available
+         *
+         * If the financial transaction rolls back, the SMS
+         * notification is not dispatched.
+         */
+        $this->dispatchPaymentNotification(
+            payment: $payment,
+            notificationType: $notificationType,
+        );
+
+        /*
+         * ---------------------------------------------------------
+         * Logging
+         * ---------------------------------------------------------
+         */
+
         Log::info(
-            'Online payment successfully verified and finalized.',
+            'Payment successfully verified and finalized.',
             [
-                'payment_id' => $payment->id,
-                'payment_uuid' =>
-                    $payment->uuid ?? null,
-                'invoice_id' => $invoice->id,
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number ?? null,
+
+                'invoice_id' =>
+                    $invoice->id,
+
                 'invoice_number' =>
                     $invoice->invoice_number ?? null,
+
                 'provider' =>
-                    $payment->provider?->value
-                    ?? $payment->provider
-                    ?? null,
+                    $this->providerValue(
+                        $payment->payment_provider
+                    ),
+
                 'provider_reference' =>
                     $payment->provider_reference,
+
                 'transaction_reference' =>
                     $payment->transaction_reference,
+
                 'amount' =>
                     $payment->amount,
+
+                'currency' =>
+                    $payment->currency,
+
                 'status' =>
-                    $payment->status?->value
-                    ?? $payment->status,
+                    $this->enumOrStringValue(
+                        $payment->status
+                    ),
+
+                'verified_at' =>
+                    $payment->verified_at?->toISOString(),
+
                 'invoice_status' =>
-                    $invoice->status?->value
-                    ?? $invoice->status,
+                    $this->enumOrStringValue(
+                        $invoice->status
+                    ),
+
                 'invoice_paid_amount' =>
                     $invoice->paid_amount,
+
                 'invoice_balance_due' =>
                     $invoice->balance_due,
+
+                'notification_type' =>
+                    $notificationType,
             ]
         );
 
-        return PaymentVerificationResult::success(
-            payment: $payment,
-            message:
-                'Payment verified and financial transaction finalized successfully.',
+        return $this->successfulResultFromPayment(
+            $payment,
+            'Payment verified and financial transaction finalized successfully.',
+            $result
         );
     }
 
     /**
-     * Create the official receipt exactly once.
-     *
-     * PaymentReceiptService::create() requires a real User.
-     *
-     * For an online Chapa payment there is no human verifier,
-     * therefore processedBy is used as the receipt issuer.
+     * Dispatch taxpayer payment notification after
+     * successful database commit.
      */
-    protected function createReceiptIfNecessary(
-        Payment $payment
+    protected function dispatchPaymentNotification(
+        Payment $payment,
+        string $notificationType,
     ): void {
-        /*
-         * The Payment model is expected to define:
-         *
-         * public function receipt()
-         *
-         * as a hasOne relationship.
-         */
-        if ($payment->receipt()->exists()) {
-            Log::info(
-                'Receipt already exists for online payment.',
+        Log::info(
+            'Queueing payment notification after database commit.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number ?? null,
+
+                'notification_type' =>
+                    $notificationType,
+            ]
+        );
+
+        SendPaymentNotificationJob::dispatch(
+            paymentId: (string) $payment->getKey(),
+            notificationType: $notificationType,
+        )->afterCommit();
+    }
+
+    /**
+     * Update provider-specific online payment information.
+     *
+     * Provider-specific fields belong in online_payment_details.
+     */
+    protected function updateOnlinePaymentDetails(
+        Payment $payment,
+        PaymentVerificationResult $result
+    ): void {
+        if (!$this->isOnlinePayment($payment)) {
+            return;
+        }
+
+        $onlineDetails = $payment->onlineDetails()
+            ->lockForUpdate()
+            ->first();
+
+        if ($onlineDetails === null) {
+            Log::error(
+                'Online payment detail record is missing during successful payment finalization.',
                 [
                     'payment_id' =>
                         $payment->id,
-                    'payment_uuid' =>
-                        $payment->uuid ?? null,
+
+                    'payment_number' =>
+                        $payment->payment_number ?? null,
+
+                    'provider' =>
+                        $this->providerValue(
+                            $payment->payment_provider
+                        ),
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
                 ]
             );
 
@@ -503,40 +859,165 @@ class PaymentVerificationService
         }
 
         /*
-         * The Payment model is expected to define:
+         * Provider transaction ID.
+         */
+        if (
+            $result->transactionId !== null
+            && trim(
+                (string) $result->transactionId
+            ) !== ''
+        ) {
+            $onlineDetails->provider_transaction_id =
+                trim(
+                    (string) $result->transactionId
+                );
+        }
+
+        /*
+         * Provider status.
+         */
+        $providerStatus =
+            $this->providerStatusFromResult(
+                $result
+            );
+
+        if ($providerStatus !== null) {
+            $onlineDetails->provider_status =
+                $providerStatus;
+        } else {
+            $onlineDetails->provider_status =
+                PaymentStatus::COMPLETED->value;
+        }
+
+        /*
+         * IMPORTANT:
          *
-         * public function processedBy()
+         * Do not use now() as the provider paid_at timestamp.
          *
-         * as a belongsTo relationship to App\Models\User.
+         * If the provider supplies a real paidAt timestamp,
+         * persist it.
+         *
+         * If it does not, preserve an already existing timestamp
+         * written by the webhook/callback layer.
+         */
+        if ($result->paidAt !== null) {
+            $onlineDetails->paid_at =
+                $result->paidAt;
+        }
+
+        /*
+         * Provider-specific verification response.
+         */
+        $onlineDetails->provider_response =
+            $this->mergeProviderResponse(
+                $onlineDetails->provider_response,
+                $result->metadata
+            );
+
+        /*
+         * Preserve existing checkout reference.
+         */
+        if (
+            empty(
+                $onlineDetails->checkout_reference
+            )
+            && $result->providerReference !== null
+            && trim(
+                (string) $result->providerReference
+            ) !== ''
+        ) {
+            $onlineDetails->checkout_reference =
+                trim(
+                    (string) $result->providerReference
+                );
+        }
+
+        $onlineDetails->save();
+
+        Log::info(
+            'Online payment details updated after successful verification.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number ?? null,
+
+                'online_payment_detail_id' =>
+                    $onlineDetails->id,
+
+                'provider' =>
+                    $this->providerValue(
+                        $payment->payment_provider
+                    ),
+
+                'provider_transaction_id' =>
+                    $onlineDetails->provider_transaction_id,
+
+                'provider_status' =>
+                    $onlineDetails->provider_status,
+
+                'paid_at' =>
+                    $onlineDetails->paid_at?->toISOString(),
+            ]
+        );
+    }
+
+    /**
+     * Create the official municipal receipt exactly once.
+     */
+    protected function createReceiptIfNecessary(
+        Payment $payment
+    ): void {
+        /*
+         * Idempotency check.
+         */
+        if ($payment->receipt()->exists()) {
+            Log::info(
+                'Receipt already exists for payment.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number ?? null,
+                ]
+            );
+
+            return;
+        }
+
+        /*
+         * Online payments use processedBy as the receipt issuer.
          */
         $paymentUser = $payment->processedBy;
 
         if (!$paymentUser instanceof User) {
             throw new RuntimeException(
-                'A valid receipt issuer could not be determined for the online payment. The payment must have a processedBy user.'
+                'A valid receipt issuer could not be determined for the payment. The payment must have a processedBy user.'
             );
         }
 
-        /*
-         * PaymentReceiptService performs its own idempotency
-         * check and creates the official receipt.
-         */
         $receipt = $this->receiptService->create(
             payment: $payment,
             user: $paymentUser,
         );
 
         Log::info(
-            'Official receipt created for online payment.',
+            'Official receipt created for payment.',
             [
                 'payment_id' =>
                     $payment->id,
-                'payment_uuid' =>
-                    $payment->uuid ?? null,
+
+                'payment_number' =>
+                    $payment->payment_number ?? null,
+
                 'receipt_id' =>
                     $receipt->id,
+
                 'receipt_number' =>
                     $receipt->receipt_number,
+
                 'issued_by' =>
                     $receipt->issued_by,
             ]
@@ -544,18 +1025,18 @@ class PaymentVerificationService
     }
 
     /**
-     * Recalculate invoice paid amount and balance due
-     * using completed payments only.
+     * Recalculate invoice financial state using COMPLETED
+     * payments only.
      */
     protected function applyPaymentToInvoice(
-        $invoice
+        Invoice $invoice
     ): void {
         $invoiceTotal = $this->normalizeMoney(
             $invoice->total_amount
         );
 
         /*
-         * Only COMPLETED payments affect invoice financial state.
+         * Only completed payments affect invoice balances.
          */
         $completedPayments = Payment::query()
             ->where(
@@ -564,7 +1045,7 @@ class PaymentVerificationService
             )
             ->where(
                 'status',
-                'COMPLETED'
+                PaymentStatus::COMPLETED->value
             )
             ->get([
                 'amount',
@@ -583,7 +1064,8 @@ class PaymentVerificationService
         }
 
         /*
-         * Prevent an invoice from becoming financially inconsistent.
+         * Never allow completed payments to exceed
+         * invoice total.
          */
         if (
             bccomp(
@@ -597,6 +1079,9 @@ class PaymentVerificationService
             );
         }
 
+        /*
+         * Calculate remaining balance.
+         */
         $balanceDue = bcsub(
             $invoiceTotal,
             $paidAmount,
@@ -604,7 +1089,7 @@ class PaymentVerificationService
         );
 
         /*
-         * Avoid negative zero / precision artifacts.
+         * Prevent negative zero / precision artifacts.
          */
         if (
             bccomp(
@@ -616,11 +1101,14 @@ class PaymentVerificationService
             $balanceDue = '0.0000';
         }
 
-        $invoice->paid_amount = $paidAmount;
-        $invoice->balance_due = $balanceDue;
+        $invoice->paid_amount =
+            $paidAmount;
+
+        $invoice->balance_due =
+            $balanceDue;
 
         /*
-         * Determine invoice status.
+         * Invoice status.
          */
         if (
             bccomp(
@@ -629,26 +1117,30 @@ class PaymentVerificationService
                 self::MONEY_SCALE
             ) === 0
         ) {
-            $invoice->status = 'PAID';
+            $invoice->status =
+                'PAID';
 
             if (!$invoice->paid_at) {
-                $invoice->paid_at = now();
+                $invoice->paid_at =
+                    now();
             }
         } else {
-            $invoice->status = 'PARTIALLY_PAID';
-            $invoice->paid_at = null;
+            $invoice->status =
+                'PARTIALLY_PAID';
+
+            $invoice->paid_at =
+                null;
         }
 
         $invoice->save();
     }
 
     /**
-     * Calculate invoice outstanding amount.
-     *
-     * Only COMPLETED payments are considered.
+     * Calculate invoice outstanding balance using
+     * COMPLETED payments only.
      */
     protected function calculateOutstandingAmount(
-        $invoice
+        Invoice $invoice
     ): string {
         $invoiceTotal = $this->normalizeMoney(
             $invoice->total_amount
@@ -663,7 +1155,7 @@ class PaymentVerificationService
             )
             ->where(
                 'status',
-                'COMPLETED'
+                PaymentStatus::COMPLETED->value
             )
             ->get([
                 'amount',
@@ -679,15 +1171,25 @@ class PaymentVerificationService
             );
         }
 
+        /*
+         * Protect against historical data corruption.
+         */
+        if (
+            bccomp(
+                $paidAmount,
+                $invoiceTotal,
+                self::MONEY_SCALE
+            ) >= 0
+        ) {
+            return '0.0000';
+        }
+
         $outstanding = bcsub(
             $invoiceTotal,
             $paidAmount,
             self::MONEY_SCALE
         );
 
-        /*
-         * Never return a negative outstanding balance.
-         */
         if (
             bccomp(
                 $outstanding,
@@ -703,139 +1205,370 @@ class PaymentVerificationService
 
     /**
      * Mark payment as failed.
+     *
+     * Failed payments do not affect invoice balances.
      */
     protected function markFailed(
         Payment $payment,
         PaymentVerificationResult $result
     ): void {
         /*
-         * Never downgrade a successful payment.
+         * Never downgrade successful payment.
          */
         if ($payment->isSuccessful()) {
             Log::warning(
                 'Attempted to mark successful payment as failed.',
-                [
-                    'payment_id' =>
-                        $payment->id,
-                    'provider_reference' =>
-                        $payment->provider_reference,
-                ]
+                $this->paymentLogContext($payment)
             );
 
             return;
         }
 
-        $payment->status = $result->status;
+        if (!$result->isFailed()) {
+            throw new RuntimeException(
+                'markFailed() received a non-failed verification result.'
+            );
+        }
 
-        if ($result->providerReference !== null) {
+        /*
+         * Store terminal provider status.
+         */
+        $payment->status =
+            $result->status;
+
+        /*
+         * Provider reference.
+         */
+        if (
+            $result->providerReference !== null
+            && trim(
+                (string) $result->providerReference
+            ) !== ''
+        ) {
             $payment->provider_reference =
-                $result->providerReference;
+                trim(
+                    (string) $result->providerReference
+                );
         }
 
-        if ($result->transactionReference !== null) {
+        /*
+         * Transaction reference.
+         */
+        if (
+            $result->transactionReference !== null
+            && trim(
+                (string) $result->transactionReference
+            ) !== ''
+        ) {
             $payment->transaction_reference =
-                $result->transactionReference;
+                trim(
+                    (string) $result->transactionReference
+                );
         }
 
-        if ($result->metadata !== null) {
-            $payment->provider_response =
-                $result->metadata;
-        }
-
+        /*
+         * Failure reason.
+         */
         $payment->failure_reason =
             $result->message;
 
+        /*
+         * Failed payment is not municipally verified.
+         */
+        $payment->verified_at = null;
+
         $payment->save();
 
+        /*
+         * Synchronize provider-specific state.
+         */
+        $this->updateOnlinePaymentDetailsForNonSuccessfulResult(
+            $payment,
+            $result
+        );
+
+        /*
+         * ---------------------------------------------------------
+         * Failure notification
+         * ---------------------------------------------------------
+         *
+         * Queue only after the transaction commits.
+         */
+        $this->dispatchPaymentNotification(
+            payment: $payment,
+            notificationType:
+                PaymentNotificationService::PAYMENT_FAILED,
+        );
+
         Log::warning(
-            'Online payment verification returned failed status.',
+            'Payment verification returned failed status.',
             [
                 'payment_id' =>
                     $payment->id,
-                'payment_uuid' =>
-                    $payment->uuid ?? null,
+
+                'payment_number' =>
+                    $payment->payment_number ?? null,
+
                 'provider' =>
-                    $payment->provider?->value
-                    ?? $payment->provider
-                    ?? null,
+                    $this->providerValue(
+                        $payment->payment_provider
+                    ),
+
                 'provider_reference' =>
                     $payment->provider_reference,
+
                 'transaction_reference' =>
                     $payment->transaction_reference,
+
                 'status' =>
-                    $payment->status?->value
-                    ?? $payment->status,
+                    $this->enumOrStringValue(
+                        $payment->status
+                    ),
+
                 'failure_reason' =>
                     $payment->failure_reason,
+
+                'notification_type' =>
+                    PaymentNotificationService::PAYMENT_FAILED,
             ]
         );
     }
 
     /**
-     * Keep the payment pending when the provider
-     * cannot yet determine the final state.
+     * Keep payment pending when the provider cannot yet
+     * determine a final state.
+     *
+     * No notification is sent for pending.
      */
     protected function markPending(
         Payment $payment,
         PaymentVerificationResult $result
     ): void {
         /*
-         * Never downgrade a completed payment.
+         * Never downgrade completed payment.
          */
         if ($payment->isSuccessful()) {
+            Log::info(
+                'Provider returned pending result for an already successful payment.',
+                $this->paymentLogContext($payment)
+            );
+
             return;
         }
 
-        $payment->status = $result->status;
+        if (!$result->isPending()) {
+            throw new RuntimeException(
+                'markPending() received a non-pending verification result.'
+            );
+        }
 
-        if ($result->providerReference !== null) {
+        $payment->status =
+            $result->status;
+
+        /*
+         * Provider reference.
+         */
+        if (
+            $result->providerReference !== null
+            && trim(
+                (string) $result->providerReference
+            ) !== ''
+        ) {
             $payment->provider_reference =
-                $result->providerReference;
+                trim(
+                    (string) $result->providerReference
+                );
         }
 
-        if ($result->transactionReference !== null) {
+        /*
+         * Transaction reference.
+         */
+        if (
+            $result->transactionReference !== null
+            && trim(
+                (string) $result->transactionReference
+            ) !== ''
+        ) {
             $payment->transaction_reference =
-                $result->transactionReference;
+                trim(
+                    (string) $result->transactionReference
+                );
         }
 
-        if ($result->metadata !== null) {
-            $payment->provider_response =
-                $result->metadata;
-        }
+        /*
+         * Pending is not a failure.
+         */
+        $payment->failure_reason =
+            null;
+
+        /*
+         * Pending is not municipally verified.
+         */
+        $payment->verified_at =
+            null;
 
         $payment->save();
 
+        /*
+         * Synchronize provider-specific state.
+         */
+        $this->updateOnlinePaymentDetailsForNonSuccessfulResult(
+            $payment,
+            $result
+        );
+
+        /*
+         * No SMS for PENDING.
+         *
+         * Providers can return PENDING repeatedly.
+         */
         Log::info(
-            'Online payment remains pending after provider verification.',
+            'Payment remains pending after provider verification.',
             [
                 'payment_id' =>
                     $payment->id,
-                'payment_uuid' =>
-                    $payment->uuid ?? null,
+
+                'payment_number' =>
+                    $payment->payment_number ?? null,
+
                 'provider' =>
-                    $payment->provider?->value
-                    ?? $payment->provider
-                    ?? null,
+                    $this->providerValue(
+                        $payment->payment_provider
+                    ),
+
                 'provider_reference' =>
                     $payment->provider_reference,
+
                 'transaction_reference' =>
                     $payment->transaction_reference,
+
                 'status' =>
-                    $payment->status?->value
-                    ?? $payment->status,
+                    $this->enumOrStringValue(
+                        $payment->status
+                    ),
             ]
         );
     }
 
     /**
-     * Verify using a provider reference.
-     *
-     * This method expects the provider reference to already
-     * be stored on payments.provider_reference.
+     * Update online payment details for failed/pending results.
+     */
+    protected function updateOnlinePaymentDetailsForNonSuccessfulResult(
+        Payment $payment,
+        PaymentVerificationResult $result
+    ): void {
+        if (!$this->isOnlinePayment($payment)) {
+            return;
+        }
+
+        $onlineDetails = $payment->onlineDetails()
+            ->lockForUpdate()
+            ->first();
+
+        if ($onlineDetails === null) {
+            Log::error(
+                'Online payment detail record is missing while synchronizing provider verification result.',
+                [
+                    'payment_id' =>
+                        $payment->id,
+
+                    'payment_number' =>
+                        $payment->payment_number ?? null,
+
+                    'provider' =>
+                        $this->providerValue(
+                            $payment->payment_provider
+                        ),
+                ]
+            );
+
+            return;
+        }
+
+        /*
+         * Provider transaction ID.
+         */
+        if (
+            $result->transactionId !== null
+            && trim(
+                (string) $result->transactionId
+            ) !== ''
+        ) {
+            $onlineDetails->provider_transaction_id =
+                trim(
+                    (string) $result->transactionId
+                );
+        }
+
+        /*
+         * Provider status.
+         */
+        $providerStatus =
+            $this->providerStatusFromResult(
+                $result
+            );
+
+        if ($providerStatus !== null) {
+            $onlineDetails->provider_status =
+                $providerStatus;
+        } else {
+            $onlineDetails->provider_status =
+                $result->status->value;
+        }
+
+        /*
+         * Pending/failed transactions are not paid.
+         */
+        $onlineDetails->paid_at =
+            null;
+
+        /*
+         * Provider response.
+         */
+        $onlineDetails->provider_response =
+            $this->mergeProviderResponse(
+                $onlineDetails->provider_response,
+                $result->metadata
+            );
+
+        /*
+         * Preserve provider reference as checkout reference
+         * if currently empty.
+         */
+        if (
+            empty(
+                $onlineDetails->checkout_reference
+            )
+            && $result->providerReference !== null
+            && trim(
+                (string) $result->providerReference
+            ) !== ''
+        ) {
+            $onlineDetails->checkout_reference =
+                trim(
+                    (string) $result->providerReference
+                );
+        }
+
+        $onlineDetails->save();
+    }
+
+    /**
+     * Verify a payment using its provider reference.
      */
     public function verifyByReference(
         string $providerReference
     ): PaymentVerificationResult {
+        $providerReference = trim(
+            $providerReference
+        );
+
+        if ($providerReference === '') {
+            throw new RuntimeException(
+                'A provider reference is required.'
+            );
+        }
+
         $payment = Payment::query()
             ->where(
                 'provider_reference',
@@ -849,40 +1582,352 @@ class PaymentVerificationService
             );
         }
 
-        return $this->verify($payment);
+        return $this->verify(
+            $payment
+        );
     }
 
     /**
-     * Normalize a monetary value to the configured precision.
+     * Build successful DTO from an already-completed payment.
+     */
+    protected function successfulResultFromPayment(
+        Payment $payment,
+        string $message,
+        ?PaymentVerificationResult $source = null
+    ): PaymentVerificationResult {
+        $onlineDetails = null;
+
+        if ($this->isOnlinePayment($payment)) {
+            $onlineDetails =
+                $payment->relationLoaded('onlineDetails')
+                    ? $payment->onlineDetails
+                    : $payment->onlineDetails()->first();
+        }
+
+        $paidAt =
+            $source?->paidAt
+            ?? $onlineDetails?->paid_at;
+
+        $transactionId =
+            $source?->transactionId
+            ?? $onlineDetails?->provider_transaction_id;
+
+        $metadata =
+            is_array(
+                $onlineDetails?->provider_response
+            )
+                ? $onlineDetails->provider_response
+                : [];
+
+        return PaymentVerificationResult::success(
+            status:
+                PaymentStatus::COMPLETED,
+
+            transactionReference:
+                $payment->transaction_reference,
+
+            transactionId:
+                $transactionId,
+
+            providerReference:
+                $payment->provider_reference,
+
+            amount:
+                $payment->amount !== null
+                    ? (float) $payment->amount
+                    : null,
+
+            currency:
+                $payment->currency !== null
+                    ? strtoupper(
+                        trim(
+                            (string) $payment->currency
+                        )
+                    )
+                    : null,
+
+            paidAt:
+                $paidAt,
+
+            metadata:
+                $metadata,
+
+            message:
+                $message,
+
+            providerCode:
+                $source?->providerCode,
+        );
+    }
+
+    /**
+     * Create failed DTO from an already-terminal failed payment.
+     */
+    protected function failedResultFromPayment(
+        Payment $payment,
+        string $message
+    ): PaymentVerificationResult {
+        $onlineDetails = null;
+
+        if ($this->isOnlinePayment($payment)) {
+            $onlineDetails =
+                $payment->relationLoaded('onlineDetails')
+                    ? $payment->onlineDetails
+                    : $payment->onlineDetails()->first();
+        }
+
+        return PaymentVerificationResult::failed(
+            status:
+                $payment->status,
+
+            message:
+                $message,
+
+            transactionReference:
+                $payment->transaction_reference,
+
+            transactionId:
+                $onlineDetails?->provider_transaction_id,
+
+            providerReference:
+                $payment->provider_reference,
+
+            amount:
+                $payment->amount !== null
+                    ? (float) $payment->amount
+                    : null,
+
+            currency:
+                $payment->currency !== null
+                    ? strtoupper(
+                        trim(
+                            (string) $payment->currency
+                        )
+                    )
+                    : null,
+
+            metadata:
+                is_array(
+                    $onlineDetails?->provider_response
+                )
+                    ? $onlineDetails->provider_response
+                    : [],
+        );
+    }
+
+    /**
+     * Determine whether the payment is online.
+     */
+    protected function isOnlinePayment(
+        Payment $payment
+    ): bool {
+        $method = $payment->payment_method;
+
+        if ($method instanceof PaymentMethod) {
+            return $method === PaymentMethod::ONLINE;
+        }
+
+        return strtoupper(
+            trim(
+                (string) $method
+            )
+        ) === PaymentMethod::ONLINE->value;
+    }
+
+    /**
+     * Determine whether a payment has reached
+     * a terminal failure state.
      *
-     * BCMath is used to avoid floating-point arithmetic.
+     * Explicitly handles all terminal non-success states.
+     */
+    protected function hasTerminalFailure(
+        Payment $payment
+    ): bool {
+        $status = $payment->status;
+
+        if ($status instanceof PaymentStatus) {
+            return in_array(
+                $status,
+                [
+                    PaymentStatus::FAILED,
+                    PaymentStatus::CANCELLED,
+                    PaymentStatus::EXPIRED,
+                    PaymentStatus::REVERSED,
+                ],
+                true
+            );
+        }
+
+        return in_array(
+            strtoupper(
+                trim(
+                    (string) $status
+                )
+            ),
+            [
+                PaymentStatus::FAILED->value,
+                PaymentStatus::CANCELLED->value,
+                PaymentStatus::EXPIRED->value,
+                PaymentStatus::REVERSED->value,
+            ],
+            true
+        );
+    }
+
+    /**
+     * Extract the provider's original/normalized status
+     * from verification metadata.
+     */
+    protected function providerStatusFromResult(
+        PaymentVerificationResult $result
+    ): ?string {
+        $status =
+            $result->metadata['verification']['status']
+            ?? null;
+
+        if (
+            is_string($status)
+            || is_numeric($status)
+        ) {
+            $status = strtoupper(
+                trim(
+                    (string) $status
+                )
+            );
+
+            return $status !== ''
+                ? $status
+                : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Merge provider response metadata.
+     */
+    protected function mergeProviderResponse(
+        mixed $existing,
+        mixed $new
+    ): array {
+        $existingArray =
+            is_array($existing)
+                ? $existing
+                : [];
+
+        $newArray =
+            is_array($new)
+                ? $new
+                : [];
+
+        if ($existingArray === []) {
+            return $newArray;
+        }
+
+        if ($newArray === []) {
+            return $existingArray;
+        }
+
+        return array_replace_recursive(
+            $existingArray,
+            $newArray
+        );
+    }
+
+    /**
+     * Return safe provider value for logs.
+     */
+    protected function providerValue(
+        mixed $provider
+    ): ?string {
+        if ($provider === null) {
+            return null;
+        }
+
+        if ($provider instanceof \BackedEnum) {
+            return (string) $provider->value;
+        }
+
+        $value = trim(
+            (string) $provider
+        );
+
+        return $value !== ''
+            ? $value
+            : null;
+    }
+
+    /**
+     * Normalize enum/string model attributes.
+     */
+    protected function enumOrStringValue(
+        mixed $value
+    ): ?string {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof \BackedEnum) {
+            return (string) $value->value;
+        }
+
+        $value = trim(
+            (string) $value
+        );
+
+        return $value !== ''
+            ? $value
+            : null;
+    }
+
+    /**
+     * Normalize monetary values using BCMath.
      */
     protected function normalizeMoney(
         mixed $value
     ): string {
+        if (
+            !function_exists('bcadd')
+            || !function_exists('bccomp')
+            || !function_exists('bcsub')
+        ) {
+            throw new RuntimeException(
+                'BCMath extension is required for municipal payment calculations.'
+            );
+        }
+
         if ($value === null || $value === '') {
             return '0.0000';
         }
 
-        $value = trim((string) $value);
+        if (
+            is_array($value)
+            || is_object($value)
+            || is_bool($value)
+        ) {
+            throw new RuntimeException(
+                'Invalid monetary value.'
+            );
+        }
+
+        $value = trim(
+            (string) $value
+        );
 
         /*
-         * Accept normal decimal monetary values only.
-         *
-         * Examples:
+         * Accepted:
          *
          * 100
          * 100.5
          * 100.50
          * 100.5000
+         * -100
          *
-         * Reject:
+         * Negative values are syntactically accepted here because
+         * this is a generic monetary normalization helper.
          *
-         * 1e3
-         * 1E3
-         * 1,000.00
-         * invalid text
-         * more than four decimal places
+         * Payment-specific positive-value validation is performed
+         * separately.
          */
         if (!preg_match(
             '/^-?\d+(?:\.\d{1,4})?$/',
@@ -893,13 +1938,53 @@ class PaymentVerificationService
             );
         }
 
-        /*
-         * Normalize through BCMath.
-         */
         return bcadd(
             $value,
             '0',
             self::MONEY_SCALE
         );
+    }
+
+    /**
+     * Build consistent and privacy-conscious payment
+     * logging context.
+     *
+     * Never log:
+     *
+     * - payer email
+     * - payer phone
+     * - access tokens
+     * - provider secrets
+     * - full provider payloads
+     */
+    protected function paymentLogContext(
+        Payment $payment
+    ): array {
+        return [
+            'payment_id' =>
+                $payment->id,
+
+            'payment_number' =>
+                $payment->payment_number ?? null,
+
+            'provider' =>
+                $this->providerValue(
+                    $payment->payment_provider
+                ),
+
+            'provider_reference' =>
+                $payment->provider_reference ?? null,
+
+            'transaction_reference' =>
+                $payment->transaction_reference ?? null,
+
+            'status' =>
+                $this->enumOrStringValue(
+                    $payment->status
+                ),
+
+            'verified_at' =>
+                $payment->verified_at?->toISOString(),
+        ];
     }
 }

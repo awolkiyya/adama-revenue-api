@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Payment\Services;
 
 use App\Enums\PaymentMethod;
@@ -8,6 +10,8 @@ use App\Models\BankTransferDetail;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\User;
+use App\Jobs\SendPaymentNotificationJob;
+use App\Modules\Payment\Notifications\PaymentNotificationService;
 use App\Services\DocumentSequenceService;
 use App\Services\Storage\StorageService;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -81,6 +85,8 @@ class BankTransferService
      * BankTransferDetail::PENDING
      *     ↓
      * Optional File evidence
+     *     ↓
+     * BANK_TRANSFER_SUBMITTED SMS job
      *
      * The invoice financial state is NOT changed here.
      *
@@ -179,6 +185,23 @@ class BankTransferService
                     self::MONEY_SCALE
                 ) > 0
             ) {
+                Log::warning(
+                    'Bank transfer overpayment rejected during recording.',
+                    [
+                        'request_id' => $requestId,
+                        'invoice_id' => $invoice->id,
+                        'payment_amount' => $amount,
+                        'outstanding_amount' => $outstanding,
+                        'money_scale' => self::MONEY_SCALE,
+                        'comparison' => bccomp(
+                            $amount,
+                            $outstanding,
+                            self::MONEY_SCALE
+                        ),
+                        'user_id' => $user->id,
+                    ]
+                );
+
                 throw ValidationException::withMessages([
                     'amount' => [
                         'The payment amount cannot exceed the outstanding invoice balance.',
@@ -284,14 +307,17 @@ class BankTransferService
              */
             $payment = new Payment();
 
-            $payment->payment_number = $paymentNumber;
+            $payment->payment_number =
+                $paymentNumber;
 
-            $payment->invoice_id = $invoice->id;
+            $payment->invoice_id =
+                $invoice->id;
 
             /*
              * Never trust citizen_id from the frontend.
              */
-            $payment->citizen_id = $invoice->citizen_id;
+            $payment->citizen_id =
+                $invoice->citizen_id;
 
             /*
              * Controlled by this service.
@@ -338,7 +364,8 @@ class BankTransferService
                 $data['payer_phone']
                 ?? $invoice->citizen?->phone;
 
-            $payment->failure_reason = null;
+            $payment->failure_reason =
+                null;
 
             $payment->metadata =
                 $data['metadata'] ?? null;
@@ -349,9 +376,6 @@ class BankTransferService
              * =========================================================
              * 11. CREATE BANK TRANSFER DETAIL
              * =========================================================
-             *
-             * This record is created before evidence because it is
-             * the polymorphic owner of the uploaded File.
              */
             $bankDetails = new BankTransferDetail();
 
@@ -376,9 +400,11 @@ class BankTransferService
             $bankDetails->verification_status =
                 self::VERIFICATION_PENDING;
 
-            $bankDetails->verified_by = null;
+            $bankDetails->verified_by =
+                null;
 
-            $bankDetails->verified_at = null;
+            $bankDetails->verified_at =
+                null;
 
             $bankDetails->notes =
                 $data['notes'] ?? null;
@@ -389,19 +415,6 @@ class BankTransferService
              * =========================================================
              * 12. STORE OPTIONAL BANK TRANSFER EVIDENCE
              * =========================================================
-             *
-             * StorageService:
-             *
-             *     physical file
-             *          +
-             *     files database record
-             *
-             * attachToModel():
-             *
-             *     files.fileable_type
-             *     files.fileable_id
-             *
-             * The evidence belongs to BankTransferDetail.
              */
             $hasEvidence =
                 isset($data['evidence'])
@@ -417,7 +430,25 @@ class BankTransferService
 
             /*
              * =========================================================
-             * 13. AUDIT LOG
+             * 13. DISPATCH SUBMISSION NOTIFICATION
+             * =========================================================
+             *
+             * Important:
+             *
+             * The job is configured with afterCommit().
+             *
+             * Therefore the SMS will NOT be sent if the database
+             * transaction rolls back.
+             */
+            $this->dispatchNotification(
+                payment: $payment,
+                notificationType:
+                    PaymentNotificationService::BANK_TRANSFER_SUBMITTED,
+            );
+
+            /*
+             * =========================================================
+             * 14. AUDIT LOG
              * =========================================================
              */
             Log::info(
@@ -467,12 +498,15 @@ class BankTransferService
 
                     'has_evidence' =>
                         $hasEvidence,
+
+                    'notification_type' =>
+                        PaymentNotificationService::BANK_TRANSFER_SUBMITTED,
                 ]
             );
 
             /*
              * =========================================================
-             * 14. RETURN FULLY LOADED PAYMENT
+             * 15. RETURN FULLY LOADED PAYMENT
              * =========================================================
              */
             return $payment->fresh([
@@ -499,6 +533,7 @@ class BankTransferService
      * - invoice paid_amount is recalculated
      * - invoice balance_due is recalculated
      * - invoice status is updated
+     * - successful-payment SMS is queued
      */
     public function verify(
         string $paymentId,
@@ -582,9 +617,6 @@ class BankTransferService
              * =========================================================
              * 4. IDEMPOTENT COMPLETION
              * =========================================================
-             *
-             * If another request already completed this payment,
-             * simply return the completed payment.
              */
             if ($this->isCompleted($payment)) {
                 return $payment->fresh([
@@ -616,7 +648,9 @@ class BankTransferService
              * 6. AUTHORIZE VERIFICATION
              * =========================================================
              */
-            // $this->authorizeVerification($user);
+            $this->authorizeVerification(
+                $user
+            );
 
             /*
              * =========================================================
@@ -681,6 +715,42 @@ class BankTransferService
                     self::MONEY_SCALE
                 ) > 0
             ) {
+                Log::warning(
+                    'Bank transfer overpayment rejected during verification.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'payment_id' =>
+                            $payment->id,
+
+                        'payment_number' =>
+                            $payment->payment_number,
+
+                        'invoice_id' =>
+                            $invoice->id,
+
+                        'payment_amount' =>
+                            $paymentAmount,
+
+                        'outstanding_amount' =>
+                            $outstanding,
+
+                        'money_scale' =>
+                            self::MONEY_SCALE,
+
+                        'comparison' =>
+                            bccomp(
+                                $paymentAmount,
+                                $outstanding,
+                                self::MONEY_SCALE
+                            ),
+
+                        'verified_by' =>
+                            $user->id,
+                    ]
+                );
+
                 throw ValidationException::withMessages([
                     'payment' => [
                         'The bank transfer amount now exceeds the outstanding invoice balance.',
@@ -742,7 +812,8 @@ class BankTransferService
             $payment->verified_at =
                 now();
 
-            $payment->failure_reason = null;
+            $payment->failure_reason =
+                null;
 
             $payment->save();
 
@@ -767,7 +838,38 @@ class BankTransferService
 
             /*
              * =========================================================
-             * 15. AUDIT LOG
+             * 15. DETERMINE SUCCESSFUL-PAYMENT NOTIFICATION
+             * =========================================================
+             *
+             * We deliberately send ONE successful-payment SMS.
+             *
+             * Balance > 0:
+             *     PAYMENT_PARTIALLY_PAID
+             *
+             * Balance = 0:
+             *     PAYMENT_FULLY_PAID
+             *
+             * We do NOT also send PAYMENT_RECEIVED because that
+             * would create two SMS messages for one payment.
+             */
+            $notificationType =
+                $this->notificationTypeAfterPayment(
+                    $invoice
+                );
+
+            /*
+             * =========================================================
+             * 16. DISPATCH SUCCESSFUL-PAYMENT NOTIFICATION
+             * =========================================================
+             */
+            $this->dispatchNotification(
+                payment: $payment,
+                notificationType: $notificationType,
+            );
+
+            /*
+             * =========================================================
+             * 17. AUDIT LOG
              * =========================================================
              */
             Log::info(
@@ -830,12 +932,15 @@ class BankTransferService
                     'invoice_status' =>
                         $invoice->status?->value
                         ?? $invoice->status,
+
+                    'notification_type' =>
+                        $notificationType,
                 ]
             );
 
             /*
              * =========================================================
-             * 16. RETURN FULLY LOADED PAYMENT
+             * 18. RETURN FULLY LOADED PAYMENT
              * =========================================================
              */
             return $payment->fresh([
@@ -967,7 +1072,9 @@ class BankTransferService
              * 6. AUTHORIZE REJECTION
              * =========================================================
              */
-            // $this->authorizeVerification($user);
+            $this->authorizeVerification(
+                $user
+            );
 
             /*
              * =========================================================
@@ -1058,7 +1165,18 @@ class BankTransferService
 
             /*
              * =========================================================
-             * 11. AUDIT LOG
+             * 11. DISPATCH REJECTION NOTIFICATION
+             * =========================================================
+             */
+            $this->dispatchNotification(
+                payment: $payment,
+                notificationType:
+                    PaymentNotificationService::BANK_TRANSFER_REJECTED,
+            );
+
+            /*
+             * =========================================================
+             * 12. AUDIT LOG
              * =========================================================
              */
             Log::warning(
@@ -1102,12 +1220,15 @@ class BankTransferService
 
                     'reason' =>
                         $reason,
+
+                    'notification_type' =>
+                        PaymentNotificationService::BANK_TRANSFER_REJECTED,
                 ]
             );
 
             /*
              * =========================================================
-             * 12. RETURN FULLY LOADED PAYMENT
+             * 13. RETURN FULLY LOADED PAYMENT
              * =========================================================
              */
             return $payment->fresh([
@@ -1498,6 +1619,23 @@ class BankTransferService
                 self::MONEY_SCALE
             ) > 0
         ) {
+            Log::error(
+                'Completed payments exceed invoice total.',
+                [
+                    'invoice_id' =>
+                        $invoice->id,
+
+                    'invoice_total' =>
+                        $invoiceTotal,
+
+                    'paid_amount' =>
+                        $paidAmount,
+
+                    'money_scale' =>
+                        self::MONEY_SCALE,
+                ]
+            );
+
             throw ValidationException::withMessages([
                 'payment' => [
                     'Completed payments exceed the invoice total.',
@@ -1572,6 +1710,70 @@ class BankTransferService
          * =========================================================
          */
         $invoice->save();
+    }
+
+    /**
+     * Determine which successful-payment SMS should be sent.
+     *
+     * Exactly one successful-payment notification is generated.
+     */
+    protected function notificationTypeAfterPayment(
+        Invoice $invoice,
+    ): string {
+        $balanceDue =
+            $this->normalizeMoney(
+                $invoice->balance_due
+            );
+
+        if (
+            bccomp(
+                $balanceDue,
+                '0.0000',
+                self::MONEY_SCALE
+            ) === 0
+        ) {
+            return PaymentNotificationService::PAYMENT_FULLY_PAID;
+        }
+
+        return PaymentNotificationService::PAYMENT_PARTIALLY_PAID;
+    }
+
+    /**
+     * Dispatch a payment notification.
+     *
+     * afterCommit() is critical here.
+     *
+     * The notification job must not run before the payment,
+     * invoice, receipt, and verification changes are committed.
+     */
+    protected function dispatchNotification(
+        Payment $payment,
+        string $notificationType,
+    ): void {
+        SendPaymentNotificationJob::dispatch(
+            paymentId: $payment->id,
+            notificationType: $notificationType,
+        )->afterCommit();
+
+        Log::info(
+            'Payment notification job dispatched.',
+            [
+                'payment_id' =>
+                    $payment->id,
+
+                'payment_number' =>
+                    $payment->payment_number,
+
+                'notification_type' =>
+                    $notificationType,
+
+                'queue' =>
+                    'payment-notifications',
+
+                'after_commit' =>
+                    true,
+            ]
+        );
     }
 
     /**
@@ -1723,6 +1925,18 @@ class BankTransferService
             ]);
         }
 
+        if (
+            is_array($amount)
+            || is_object($amount)
+            || is_bool($amount)
+        ) {
+            throw ValidationException::withMessages([
+                'amount' => [
+                    'The payment amount must be a valid decimal number.',
+                ],
+            ]);
+        }
+
         $value =
             trim((string) $amount);
 
@@ -1799,12 +2013,52 @@ class BankTransferService
             return '0.0000';
         }
 
+        if (
+            is_array($amount)
+            || is_object($amount)
+            || is_bool($amount)
+        ) {
+            throw new RuntimeException(
+                'Invalid monetary value.'
+            );
+        }
+
         $value =
             trim((string) $amount);
 
-        if (!is_numeric($value)) {
+        /*
+         * Monetary values must be plain decimal strings.
+         *
+         * This intentionally rejects scientific notation and
+         * malformed numeric values.
+         */
+        if (
+            !preg_match(
+                '/^-?\d+(?:\.\d+)?$/',
+                $value
+            )
+        ) {
             throw new RuntimeException(
                 'Invalid monetary value.'
+            );
+        }
+
+        /*
+         * Prevent values with more precision than the payment
+         * domain supports.
+         */
+        $decimalPosition =
+            strpos($value, '.');
+
+        if (
+            $decimalPosition !== false
+            && strlen($value)
+                - $decimalPosition
+                - 1
+                > self::MONEY_SCALE
+        ) {
+            throw new RuntimeException(
+                'Monetary value exceeds the supported decimal precision.'
             );
         }
 
@@ -1815,4 +2069,3 @@ class BankTransferService
         );
     }
 }
-

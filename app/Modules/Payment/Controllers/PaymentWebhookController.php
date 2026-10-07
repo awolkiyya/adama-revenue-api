@@ -1,12 +1,13 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Payment\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Modules\Payment\Services\PaymentVerificationService;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -19,43 +20,48 @@ class PaymentWebhookController extends Controller
     }
 
     /**
-     * Handle Chapa server-to-server webhook.
+     * Handle Chapa payment callback.
      *
-     * POST:
-     * /api/v1/payments/webhooks/chapa
+     * GET:
+     * /api/v1/payments/callback/chapa
+     *
+     * Chapa redirects/calls this endpoint with parameters such as:
+     *
+     * - trx_ref
+     * - ref_id
+     * - status
      *
      * IMPORTANT:
-     * This endpoint must NOT be protected by auth:sanctum.
-     *
-     * Financial processing is delegated to
-     * PaymentVerificationService.
+     * - Do not protect this route with auth:sanctum.
+     * - Do not trust the callback status as final proof of payment.
+     * - Independently verify the transaction with Chapa.
+     * - The local payment is identified by transaction_reference.
      */
-    public function chapa(Request $request): JsonResponse
-    {
-        Log::emergency(
-            '🔥 CHAPA WEBHOOK CONTROLLER EXECUTED'
-        );
-
+    public function chapaCallback(
+        Request $request
+    ): JsonResponse {
         try {
             /*
              * ---------------------------------------------------------
-             * 1. Capture the complete webhook request
+             * 1. Capture callback payload
              * ---------------------------------------------------------
              */
             $payload = $request->all();
 
             Log::info(
-                'Chapa webhook received.',
+                'Chapa callback received.',
                 [
                     'request_id' => $request->header(
                         'X-Request-ID'
                     ),
+
                     'method' => $request->method(),
+
                     'url' => $request->fullUrl(),
+
                     'payload' => $payload,
+
                     'ip' => $request->ip(),
-                    'user_agent' => $request->userAgent(),
-                    'headers' => $request->headers->all(),
                 ]
             );
 
@@ -64,15 +70,19 @@ class PaymentWebhookController extends Controller
              * 2. Extract transaction reference
              * ---------------------------------------------------------
              *
-             * Support:
+             * Chapa may provide the transaction reference as:
              *
-             * tx_ref
-             * trx_ref
-             * reference
+             * - tx_ref
+             * - trx_ref
+             * - reference
              *
-             * and nested data.* variants.
+             * The canonical local field is:
+             *
+             *     payments.transaction_reference
+             *
+             * This is the value originally sent to Chapa as tx_ref.
              */
-            $txRef =
+            $transactionReference =
                 $payload['tx_ref']
                 ?? $payload['trx_ref']
                 ?? $payload['reference']
@@ -90,30 +100,48 @@ class PaymentWebhookController extends Controller
                 )
                 ?? null;
 
-            if (!$txRef) {
+            if ($transactionReference === null) {
                 Log::warning(
-                    'Chapa webhook received without transaction reference.',
+                    'Chapa callback received without transaction reference.',
                     [
                         'payload' => $payload,
                     ]
                 );
 
-                /*
-                 * Acknowledge the webhook.
-                 *
-                 * There is no local payment that can safely be
-                 * verified without a transaction reference.
-                 */
                 return response()->json([
-                    'success' => true,
-                    'message' => 'Webhook received.',
-                ]);
+                    'success' => false,
+                    'message' =>
+                        'Transaction reference is required.',
+                ], 400);
+            }
+
+            $transactionReference = trim(
+                (string) $transactionReference
+            );
+
+            if ($transactionReference === '') {
+                Log::warning(
+                    'Chapa callback received with empty transaction reference.',
+                    [
+                        'payload' => $payload,
+                    ]
+                );
+
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        'Transaction reference is required.',
+                ], 400);
             }
 
             /*
              * ---------------------------------------------------------
-             * 3. Extract provider reference
+             * 3. Extract provider information
              * ---------------------------------------------------------
+             *
+             * ref_id is a Chapa-side provider reference.
+             *
+             * It is NOT used to identify our local Payment.
              */
             $providerReference =
                 $payload['ref_id']
@@ -123,15 +151,20 @@ class PaymentWebhookController extends Controller
                 )
                 ?? null;
 
+            if ($providerReference !== null) {
+                $providerReference = trim(
+                    (string) $providerReference
+                );
+
+                if ($providerReference === '') {
+                    $providerReference = null;
+                }
+            }
+
             /*
-             * ---------------------------------------------------------
-             * 4. Extract provider notification status
-             * ---------------------------------------------------------
+             * Chapa callback status is informational only.
              *
-             * IMPORTANT:
-             *
-             * This status is only recorded for audit purposes.
-             * We DO NOT trust it to complete the payment.
+             * We do NOT use this value to mark the payment as paid.
              */
             $providerStatus =
                 $payload['status']
@@ -141,64 +174,95 @@ class PaymentWebhookController extends Controller
                 )
                 ?? null;
 
+            if ($providerStatus !== null) {
+                $providerStatus = trim(
+                    (string) $providerStatus
+                );
+
+                if ($providerStatus === '') {
+                    $providerStatus = null;
+                }
+            }
+
             /*
              * ---------------------------------------------------------
-             * 5. Find local payment
+             * 4. Find local payment
              * ---------------------------------------------------------
              *
-             * Chapa's trx_ref corresponds to our
-             * online_details.checkout_reference.
+             * IMPORTANT:
+             *
+             * Chapa sends:
+             *
+             *     trx_ref=PAY-01M4BB...
+             *
+             * Our Payment stores:
+             *
+             *     transaction_reference=PAY-01M4BB...
+             *
+             * Therefore we MUST search the Payment table directly.
+             *
+             * Do NOT search:
+             *
+             *     onlineDetails.checkout_reference
+             *
+             * because checkout_reference is a different concept.
              */
             $payment = Payment::query()
-                ->whereHas(
-                    'onlineDetails',
-                    function ($query) use ($txRef) {
-                        $query->where(
-                            'checkout_reference',
-                            $txRef
-                        );
-                    }
+                ->where(
+                    'transaction_reference',
+                    $transactionReference
                 )
                 ->with([
                     'onlineDetails.paymentProvider',
                 ])
                 ->first();
 
-            if (!$payment) {
+            if (! $payment) {
                 Log::warning(
-                    'Chapa webhook received for unknown payment.',
+                    'Chapa callback received for unknown payment.',
                     [
-                        'tx_ref' => $txRef,
+                        'transaction_reference' =>
+                            $transactionReference,
+
                         'provider_reference' =>
                             $providerReference,
+
                         'provider_status' =>
                             $providerStatus,
                     ]
                 );
 
                 /*
-                 * Acknowledge the webhook.
+                 * We acknowledge the callback.
+                 *
+                 * There is no local payment that can safely be
+                 * processed for this transaction reference.
                  */
                 return response()->json([
                     'success' => true,
-                    'message' => 'Webhook received.',
+                    'message' => 'Callback received.',
                 ]);
             }
 
             Log::info(
-                'Chapa webhook matched local payment.',
+                'Chapa callback matched local payment.',
                 [
-                    'payment_id' => $payment->id,
-                    'payment_uuid' =>
-                        $payment->uuid ?? null,
+                    'payment_id' =>
+                        $payment->getKey(),
+
                     'payment_number' =>
                         $payment->payment_number,
-                    'tx_ref' => $txRef,
+
+                    'transaction_reference' =>
+                        $payment->transaction_reference,
+
                     'provider_reference' =>
                         $providerReference,
+
                     'provider_status' =>
                         $providerStatus,
-                    'payment_status' =>
+
+                    'current_payment_status' =>
                         $payment->status?->value
                         ?? $payment->status
                         ?? null,
@@ -207,14 +271,12 @@ class PaymentWebhookController extends Controller
 
             /*
              * ---------------------------------------------------------
-             * 6. Persist webhook information
+             * 5. Store provider callback information
              * ---------------------------------------------------------
              *
-             * Store the provider notification BEFORE independent
-             * verification.
+             * This information is useful for audit/debugging.
              *
-             * This gives us an audit trail even when provider
-             * verification fails.
+             * It is NOT considered proof that the payment succeeded.
              */
             $onlineDetails = $payment->onlineDetails;
 
@@ -230,8 +292,7 @@ class PaymentWebhookController extends Controller
                 ];
 
                 /*
-                 * Only write provider_reference if the column
-                 * actually exists on online_payment_details.
+                 * Store Chapa ref_id if the column exists.
                  */
                 if (
                     $providerReference !== null
@@ -251,19 +312,24 @@ class PaymentWebhookController extends Controller
 
             /*
              * ---------------------------------------------------------
-             * 7. Independently verify with Chapa
+             * 6. Independently verify payment with Chapa
              * ---------------------------------------------------------
              *
-             * VERY IMPORTANT:
-             *
-             * We do NOT use:
+             * NEVER finalize payment simply because:
              *
              *     status=success
              *
-             * from the webhook as proof of payment.
+             * was included in the callback.
              *
-             * PaymentVerificationService calls the configured
-             * provider and performs independent verification.
+             * PaymentVerificationService will:
+             *
+             * 1. Resolve the correct provider.
+             * 2. Call Chapa's verification API.
+             * 3. Validate the provider response.
+             * 4. Validate amount/currency/reference.
+             * 5. Update the local Payment.
+             * 6. Recalculate the Invoice.
+             * 7. Create the receipt when appropriate.
              */
             $result = $this->verificationService->verify(
                 $payment->refresh()
@@ -271,11 +337,17 @@ class PaymentWebhookController extends Controller
 
             /*
              * ---------------------------------------------------------
-             * 8. Normalize verification status for logging
+             * 7. Refresh finalized payment
              * ---------------------------------------------------------
              */
-            $verificationStatus = $result->status ?? null;
+            $freshPayment = $payment->refresh();
 
+            $verificationStatus =
+                $result->status ?? null;
+
+            /*
+             * Support both enum and string status values.
+             */
             if (
                 is_object($verificationStatus)
                 && method_exists(
@@ -287,36 +359,31 @@ class PaymentWebhookController extends Controller
                     $verificationStatus->value;
             }
 
-            /*
-             * ---------------------------------------------------------
-             * 9. Refresh payment after verification/finalization
-             * ---------------------------------------------------------
-             *
-             * PaymentVerificationService may have changed:
-             *
-             * - payment status
-             * - provider reference
-             * - transaction reference
-             * - paid_at
-             * - provider response
-             */
-            $freshPayment = $payment->refresh();
+            $paymentStatus =
+                $freshPayment->status ?? null;
 
-            /*
-             * ---------------------------------------------------------
-             * 10. Final processing log
-             * ---------------------------------------------------------
-             */
+            if (
+                is_object($paymentStatus)
+                && method_exists(
+                    $paymentStatus,
+                    'value'
+                )
+            ) {
+                $paymentStatus =
+                    $paymentStatus->value;
+            }
+
             Log::info(
-                'Chapa webhook processed successfully.',
+                'Chapa callback processed.',
                 [
-                    'payment_id' => $freshPayment->id,
-                    'payment_uuid' =>
-                        $freshPayment->uuid ?? null,
+                    'payment_id' =>
+                        $freshPayment->getKey(),
+
                     'payment_number' =>
                         $freshPayment->payment_number,
 
-                    'tx_ref' => $txRef,
+                    'transaction_reference' =>
+                        $transactionReference,
 
                     'provider_reference' =>
                         $providerReference
@@ -329,39 +396,36 @@ class PaymentWebhookController extends Controller
                         $verificationStatus,
 
                     'payment_status' =>
-                        $freshPayment->status?->value
-                        ?? $freshPayment->status
-                        ?? null,
+                        $paymentStatus,
 
                     'paid_at' =>
                         $freshPayment->paid_at,
-
-                    'amount' =>
-                        $freshPayment->amount,
                 ]
             );
 
             /*
              * ---------------------------------------------------------
-             * 11. Acknowledge Chapa
+             * 8. Acknowledge callback
              * ---------------------------------------------------------
-             *
-             * The financial work has already been completed by
-             * PaymentVerificationService.
              */
             return response()->json([
                 'success' => true,
-                'message' => 'Webhook processed successfully.',
+                'message' =>
+                    'Callback processed successfully.',
             ]);
         } catch (Throwable $exception) {
+            /*
+             * ---------------------------------------------------------
+             * Error handling
+             * ---------------------------------------------------------
+             */
             Log::error(
-                'Chapa webhook processing failed.',
+                'Chapa callback processing failed.',
                 [
-                    'request_id' => $request->header(
-                        'X-Request-ID'
-                    ),
-                    'method' => $request->method(),
-                    'url' => $request->fullUrl(),
+                    'request_id' =>
+                        $request->header(
+                            'X-Request-ID'
+                        ),
 
                     'exception' =>
                         $exception::class,
@@ -381,235 +445,16 @@ class PaymentWebhookController extends Controller
             );
 
             /*
-             * Return HTTP 500 so Chapa can retry when appropriate.
+             * 500 indicates that callback processing failed.
+             *
+             * This allows the provider to retry according to its
+             * callback/retry behavior.
              */
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Webhook processing failed.',
+                    'Callback processing failed.',
             ], 500);
         }
     }
-
-    /**
-     * Handle Chapa browser callback / redirect.
-     *
-     * GET:
-     * /api/v1/payments/callback/chapa
-     *
-     * IMPORTANT:
-     *
-     * This endpoint does NOT complete the payment.
-     *
-     * It only identifies the transaction and redirects
-     * the customer to the frontend.
-     *
-     * The server-side webhook / verification process is
-     * responsible for financial finalization.
-     */
-    public function chapaCallback(
-        Request $request
-    ): RedirectResponse {
-        try {
-            /*
-             * ---------------------------------------------------------
-             * 1. Capture the complete callback request
-             * ---------------------------------------------------------
-             */
-            $payload = $request->all();
-
-            Log::info(
-                'Chapa callback received.',
-                [
-                    'request_id' => $request->header(
-                        'X-Request-ID'
-                    ),
-                    'method' => $request->method(),
-                    'url' => $request->fullUrl(),
-                    'query' => $request->query(),
-                    'body' => $request->all(),
-                    'payload' => $payload,
-                    'ip' => $request->ip(),
-                    'user_agent' => $request->userAgent(),
-                    'headers' => $request->headers->all(),
-                ]
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 2. Extract transaction reference
-             * ---------------------------------------------------------
-             */
-            $txRef =
-                $payload['tx_ref']
-                ?? $payload['trx_ref']
-                ?? $payload['reference']
-                ?? data_get(
-                    $payload,
-                    'data.tx_ref'
-                )
-                ?? data_get(
-                    $payload,
-                    'data.trx_ref'
-                )
-                ?? data_get(
-                    $payload,
-                    'data.reference'
-                )
-                ?? $request->query('tx_ref')
-                ?? $request->query('trx_ref')
-                ?? $request->query('reference')
-                ?? null;
-
-            /*
-             * ---------------------------------------------------------
-             * 3. Extract provider reference
-             * ---------------------------------------------------------
-             */
-            $providerReference =
-                $payload['ref_id']
-                ?? data_get(
-                    $payload,
-                    'data.ref_id'
-                )
-                ?? $request->query('ref_id')
-                ?? null;
-
-            /*
-             * ---------------------------------------------------------
-             * 4. Extract provider status
-             * ---------------------------------------------------------
-             */
-            $providerStatus =
-                $payload['status']
-                ?? data_get(
-                    $payload,
-                    'data.status'
-                )
-                ?? $request->query('status')
-                ?? null;
-
-            /*
-             * ---------------------------------------------------------
-             * 5. Validate transaction reference
-             * ---------------------------------------------------------
-             */
-            if (!$txRef) {
-                Log::warning(
-                    'Chapa callback received without transaction reference.',
-                    [
-                        'method' =>
-                            $request->method(),
-
-                        'url' =>
-                            $request->fullUrl(),
-
-                        'payload' =>
-                            $payload,
-
-                        'query' =>
-                            $request->query(),
-                    ]
-                );
-
-                return redirect()->away(
-                    $this->frontendPaymentResultUrl()
-                );
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 6. Log identified transaction
-             * ---------------------------------------------------------
-             *
-             * We intentionally do NOT complete the payment here.
-             */
-            Log::info(
-                'Chapa callback identified transaction.',
-                [
-                    'tx_ref' => $txRef,
-                    'provider_reference' =>
-                        $providerReference,
-                    'provider_status' =>
-                        $providerStatus,
-                ]
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 7. Redirect browser to frontend
-             * ---------------------------------------------------------
-             *
-             * The frontend should use tx_ref to request the
-             * authoritative payment state from our backend.
-             */
-            return redirect()->away(
-                $this->frontendPaymentResultUrl(
-                    $txRef
-                )
-            );
-        } catch (Throwable $exception) {
-            Log::error(
-                'Chapa callback processing failed.',
-                [
-                    'request_id' => $request->header(
-                        'X-Request-ID'
-                    ),
-                    'method' => $request->method(),
-                    'url' => $request->fullUrl(),
-
-                    'exception' =>
-                        $exception::class,
-
-                    'message' =>
-                        $exception->getMessage(),
-
-                    'file' =>
-                        $exception->getFile(),
-
-                    'line' =>
-                        $exception->getLine(),
-
-                    'payload' =>
-                        $request->all(),
-
-                    'query' =>
-                        $request->query(),
-                ]
-            );
-
-            return redirect()->away(
-                $this->frontendPaymentResultUrl()
-            );
-        }
-    }
-
-    /**
-     * Build the frontend payment result URL.
-     */
-    protected function frontendPaymentResultUrl(
-        ?string $txRef = null
-    ): string {
-        $baseUrl = config(
-            'app.frontend_url',
-            env(
-                'FRONTEND_URL',
-                'http://192.168.3.1:3000'
-            )
-        );
-
-        $url = rtrim(
-            $baseUrl,
-            '/'
-        ) . '/en/payment/result';
-
-        if ($txRef) {
-            $url .= '?tx_ref=' . urlencode(
-                $txRef
-            );
-        }
-
-        return $url;
-    }
 }
-

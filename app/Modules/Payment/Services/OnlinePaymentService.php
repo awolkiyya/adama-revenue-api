@@ -28,7 +28,7 @@ class OnlinePaymentService
     | Initialize Payment
     |--------------------------------------------------------------------------
     */
-
+    
     public function initialize(
         InitializePaymentData $data
     ): PaymentResult {
@@ -37,7 +37,7 @@ class OnlinePaymentService
         | Check Existing Payment
         |--------------------------------------------------------------------------
         */
-
+    
         $existingPayment = Payment::query()
             ->with('onlineDetails')
             ->where(
@@ -45,15 +45,15 @@ class OnlinePaymentService
                 $data->paymentReference
             )
             ->first();
-
+    
         if ($existingPayment) {
-
+    
             /*
             |--------------------------------------------------------------------------
             | Existing Pending Payment
             |--------------------------------------------------------------------------
             */
-
+    
             if (
                 $existingPayment->isPending()
                 && filled(
@@ -65,59 +65,59 @@ class OnlinePaymentService
                     [
                         'payment_id' =>
                             $existingPayment->id,
-
+    
                         'payment_number' =>
                             $existingPayment->payment_number,
-
+    
                         'transaction_reference' =>
                             $existingPayment->transaction_reference,
-
+    
                         'payment_reference' =>
                             $data->paymentReference,
-
+    
                         'provider' =>
                             $this->providerValue(
                                 $existingPayment->payment_provider
                                 ?? $data->provider
                             ),
-
+    
                         'provider_reference' =>
                             $existingPayment->onlineDetails?->checkout_reference,
-
+    
                         'checkout_url' =>
                             $existingPayment->onlineDetails?->checkout_url,
                     ]
                 );
-
+    
                 return $this->paymentResultFromExistingPayment(
                     $existingPayment,
                     'Payment already initialized.'
                 );
             }
-
+    
             /*
             |--------------------------------------------------------------------------
             | Existing Successful Payment
             |--------------------------------------------------------------------------
             */
-
+    
             if ($existingPayment->isSuccessful()) {
-
+    
                 Log::info(
                     'Existing successful payment found.',
                     [
                         'payment_id' =>
                             $existingPayment->id,
-
+    
                         'payment_number' =>
                             $existingPayment->payment_number,
-
+    
                         'transaction_reference' =>
                             $existingPayment->transaction_reference,
-
+    
                         'payment_reference' =>
                             $data->paymentReference,
-
+    
                         'provider' =>
                             $this->providerValue(
                                 $existingPayment->payment_provider
@@ -125,103 +125,103 @@ class OnlinePaymentService
                             ),
                     ]
                 );
-
+    
                 return $this->paymentResultFromExistingPayment(
                     $existingPayment,
                     'Payment has already been completed.'
                 );
             }
-
+    
             /*
             |--------------------------------------------------------------------------
             | Existing Failed / Non-Reusable Payment
             |--------------------------------------------------------------------------
             */
-
+    
             Log::warning(
                 'Existing payment found with non-reusable status.',
                 [
                     'payment_id' =>
                         $existingPayment->id,
-
+    
                     'payment_number' =>
                         $existingPayment->payment_number,
-
+    
                     'transaction_reference' =>
                         $existingPayment->transaction_reference,
-
+    
                     'status' =>
                         $this->paymentStatusValue(
                             $existingPayment->status
                         ),
-
+    
                     'payment_reference' =>
                         $data->paymentReference,
-
+    
                     'provider' =>
                         $this->nullableProviderValue(
                             $existingPayment->payment_provider
                         ),
                 ]
             );
-
+    
             throw new RuntimeException(
                 'A payment already exists for this payment reference.'
             );
         }
-
+    
         /*
         |--------------------------------------------------------------------------
         | Validate Provider
         |--------------------------------------------------------------------------
         */
-
+    
         $paymentProvider = $this->providerEnum(
             $data->provider
         );
-
+    
         /*
         |--------------------------------------------------------------------------
         | Generate Payment Number
         |--------------------------------------------------------------------------
         */
-
+    
         $paymentNumber = $this->documentSequenceService->generate(
             sequenceType: 'payment',
         );
-
+    
         Log::info(
             'Payment number generated.',
             [
                 'payment_number' =>
                     $paymentNumber,
-
+    
                 'transaction_reference' =>
                     $data->paymentReference,
-
+    
                 'invoice_id' =>
                     $data->invoiceId,
-
+    
                 'citizen_id' =>
                     $data->citizenId,
-
+    
                 'amount' =>
                     $data->amount,
-
+    
                 'currency' =>
                     $data->currency,
-
+    
                 'provider' =>
                     $paymentProvider->value,
             ]
         );
-
+    
         /*
         |--------------------------------------------------------------------------
         | Create Local Payment
         |--------------------------------------------------------------------------
         */
-
+    
         $payment = DB::transaction(
             function () use (
                 $data,
@@ -229,260 +229,372 @@ class OnlinePaymentService
                 $paymentProvider
             ): Payment {
                 return Payment::query()->create([
-
+    
                     'invoice_id' =>
                         $data->invoiceId,
-
+    
                     'citizen_id' =>
                         $data->citizenId,
-
+    
                     'payment_number' =>
                         $paymentNumber,
-
+    
                     /*
                     |--------------------------------------------------------------------------
                     | Online Payment
                     |--------------------------------------------------------------------------
                     */
-
+    
                     'payment_method' =>
                         $data->method,
-
+    
                     'payment_provider' =>
                         $paymentProvider,
-
+    
                     /*
                     |--------------------------------------------------------------------------
                     | Initial Status
                     |--------------------------------------------------------------------------
                     */
-
+    
                     'status' =>
                         PaymentStatus::PENDING,
-
+    
+                    /*
+                    |--------------------------------------------------------------------------
+                    | User Who Initiated Payment
+                    |--------------------------------------------------------------------------
+                    */
+    
+                    'processed_by' =>
+                        $data->initiatedByUserId,
+    
                     /*
                     |--------------------------------------------------------------------------
                     | Internal Transaction Reference
                     |--------------------------------------------------------------------------
                     */
-
+    
                     'transaction_reference' =>
                         $data->paymentReference,
-
+    
                     /*
                     |--------------------------------------------------------------------------
                     | Amount
                     |--------------------------------------------------------------------------
                     */
-
+    
                     'amount' =>
                         $data->amount,
-
+    
                     'currency' =>
                         $data->currency,
-
+    
                     /*
                     |--------------------------------------------------------------------------
                     | Payer
                     |--------------------------------------------------------------------------
                     */
-
+    
                     'payer_name' =>
                         $data->customerName,
-
+    
                     'payer_email' =>
                         $data->customerEmail,
-
+    
                     'payer_phone' =>
                         $data->customerPhone,
-
+    
                     /*
                     |--------------------------------------------------------------------------
                     | Metadata
                     |--------------------------------------------------------------------------
                     */
-
+    
                     'metadata' =>
                         $data->metadata ?? [],
                 ]);
             }
         );
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | Build Dynamic Customer Return URL
+        |--------------------------------------------------------------------------
+        |
+        | The controller provides the base URL:
+        |
+        | http://192.168.3.1:3000/en/payment/result
+        |
+        | The Payment record now exists, so we can safely append:
+        |
+        | payment_id
+        | tx_ref
+        |
+        */
+    
+        $baseReturnUrl = $data->returnUrl;
+    
+        $queryParameters = http_build_query([
+            'payment_id' =>
+                (string) $payment->id,
+    
+            'tx_ref' =>
+                (string) $payment->transaction_reference,
+        ]);
+    
+        $dynamicReturnUrl = $baseReturnUrl
+            . (str_contains($baseReturnUrl, '?') ? '&' : '?')
+            . $queryParameters;
+    
+        Log::info(
+            'Dynamic online payment return URL generated.',
+            [
+                'payment_id' =>
+                    $payment->id,
+    
+                'payment_number' =>
+                    $payment->payment_number,
+    
+                'transaction_reference' =>
+                    $payment->transaction_reference,
+    
+                'base_return_url' =>
+                    $baseReturnUrl,
+    
+                'dynamic_return_url' =>
+                    $dynamicReturnUrl,
+            ]
+        );
+    
         /*
         |--------------------------------------------------------------------------
         | Verify Provider Was Persisted
         |--------------------------------------------------------------------------
         */
-
+    
         if ($payment->payment_provider === null) {
-
+    
             Log::error(
                 'Payment provider was not persisted to the payment record.',
                 [
                     'payment_id' =>
                         $payment->id,
-
+    
                     'payment_number' =>
                         $payment->payment_number,
-
+    
                     'transaction_reference' =>
                         $payment->transaction_reference,
-
+    
                     'expected_provider' =>
                         $paymentProvider->value,
-
+    
                     'actual_provider' =>
                         $payment->payment_provider,
-
+    
                     'invoice_id' =>
                         $payment->invoice_id,
-
+    
                     'citizen_id' =>
                         $payment->citizen_id,
                 ]
             );
-
+    
             $payment->markAsFailed(
                 'Payment provider could not be persisted. '
                 . 'Check the Payment model $fillable configuration '
                 . 'and payment_provider cast.'
             );
-
+    
             throw new RuntimeException(
                 'Payment provider could not be persisted. '
                 . 'Check the Payment model $fillable configuration '
                 . 'and payment_provider cast.'
             );
         }
-
+    
         /*
         |--------------------------------------------------------------------------
         | Local Payment Created Logging
         |--------------------------------------------------------------------------
         */
-
+    
         Log::info(
             'Local payment created successfully.',
             [
                 'payment_id' =>
                     $payment->id,
-
+    
                 'payment_number' =>
                     $payment->payment_number,
-
+    
                 'transaction_reference' =>
                     $payment->transaction_reference,
-
+    
                 'invoice_id' =>
                     $payment->invoice_id,
-
+    
                 'citizen_id' =>
                     $payment->citizen_id,
-
+    
                 'amount' =>
                     $payment->amount,
-
+    
                 'currency' =>
                     $payment->currency,
-
+    
                 'status' =>
                     $this->paymentStatusValue(
                         $payment->status
                     ),
-
+    
                 'provider' =>
                     $this->providerValue(
                         $payment->payment_provider
                     ),
-
+    
                 'method' =>
                     $this->paymentMethodValue(
                         $payment->payment_method
                     ),
+    
+                'return_url' =>
+                    $dynamicReturnUrl,
             ]
         );
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | Create Provider DTO With Dynamic Return URL
+        |--------------------------------------------------------------------------
+        |
+        | IMPORTANT:
+        |
+        | InitializePaymentData is readonly.
+        |
+        | Therefore we MUST NOT do:
+        |
+        | $data->returnUrl = $dynamicReturnUrl;
+        |
+        | Instead, create a new DTO with the dynamic return URL.
+        |
+        */
+    
+        $providerData = new InitializePaymentData(
+            invoiceId: $data->invoiceId,
+            citizenId: $data->citizenId,
+            paymentReference: $data->paymentReference,
+            method: $data->method,
+            provider: $data->provider,
+            amount: $data->amount,
+            currency: $data->currency,
+            initiatedByUserId: $data->initiatedByUserId,
+            customerName: $data->customerName,
+            customerEmail: $data->customerEmail,
+            customerPhone: $data->customerPhone,
+            returnUrl: $dynamicReturnUrl,
+            callbackUrl: $data->callbackUrl,
+            description: $data->description,
+            metadata: $data->metadata,
+        );
+    
         /*
         |--------------------------------------------------------------------------
         | Resolve And Initialize Provider
         |--------------------------------------------------------------------------
         */
-
+    
         try {
-
+    
             $provider = $this->providerFactory->make(
                 $paymentProvider
             );
-
+    
             Log::info(
                 'Calling payment provider initialize.',
                 [
                     'payment_id' =>
                         $payment->id,
-
+    
                     'payment_number' =>
                         $payment->payment_number,
-
+    
                     'transaction_reference' =>
                         $payment->transaction_reference,
-
+    
                     'provider' =>
                         $paymentProvider->value,
-
+    
                     'amount' =>
-                        $data->amount,
-
+                        $providerData->amount,
+    
                     'currency' =>
-                        $data->currency,
+                        $providerData->currency,
+    
+                    'return_url' =>
+                        $providerData->returnUrl,
                 ]
             );
-
+    
+            /*
+            |--------------------------------------------------------------------------
+            | Initialize Provider
+            |--------------------------------------------------------------------------
+            |
+            | Chapa now receives the dynamic return URL.
+            |
+            */
+    
             $result = $provider->initialize(
-                $data
+                $providerData
             );
-
+    
         } catch (Throwable $exception) {
-
+    
             Log::error(
                 'Payment provider initialization failed.',
                 [
                     'payment_id' =>
                         $payment->id,
-
+    
                     'payment_number' =>
                         $payment->payment_number,
-
+    
                     'citizen_id' =>
                         $payment->citizen_id,
-
+    
                     'invoice_id' =>
                         $payment->invoice_id,
-
+    
                     'provider' =>
                         $paymentProvider->value,
-
+    
                     'payment_reference' =>
                         $data->paymentReference,
-
+    
                     'transaction_reference' =>
                         $payment->transaction_reference,
-
+    
                     'amount' =>
                         $data->amount,
-
+    
                     'currency' =>
                         $data->currency,
-
+    
+                    'return_url' =>
+                        $providerData->returnUrl,
+    
                     'exception' =>
                         $exception::class,
-
+    
                     'message' =>
                         $exception->getMessage(),
                 ]
             );
-
+    
             $failureReason = $exception->getMessage();
-
+    
             if (
                 ! is_string($failureReason)
                 || trim($failureReason) === ''
@@ -490,109 +602,112 @@ class OnlinePaymentService
                 $failureReason =
                     'Payment provider initialization failed.';
             }
-
+    
             try {
-
+    
                 $payment->markAsFailed(
                     $failureReason
                 );
-
+    
             } catch (Throwable $markFailedException) {
-
+    
                 Log::critical(
                     'Unable to mark payment as failed after provider initialization exception.',
                     [
                         'payment_id' =>
                             $payment->id,
-
+    
                         'payment_number' =>
                             $payment->payment_number,
-
+    
                         'transaction_reference' =>
                             $payment->transaction_reference,
-
+    
                         'provider' =>
                             $paymentProvider->value,
-
+    
                         'original_exception' =>
                             $exception::class,
-
+    
                         'original_message' =>
                             $exception->getMessage(),
-
+    
                         'mark_failed_exception' =>
                             $markFailedException::class,
-
+    
                         'mark_failed_message' =>
                             $markFailedException->getMessage(),
                     ]
                 );
             }
-
+    
             throw $exception;
         }
-
+    
         /*
         |--------------------------------------------------------------------------
         | Provider Initialization Returned Failure
         |--------------------------------------------------------------------------
         */
-
+    
         if (! $result->success) {
-
+    
             DB::transaction(
                 function () use (
                     $payment,
                     $result
                 ): void {
-
+    
                     $payment->forceFill([
                         'status' =>
                             PaymentStatus::FAILED,
-
+    
                         'failure_reason' =>
                             $result->message,
                     ])->save();
-
+    
                     $this->updateOnlinePaymentDetails(
                         $payment,
                         $result
                     );
                 }
             );
-
+    
             Log::warning(
                 'Payment provider initialization returned failure.',
                 [
                     'payment_id' =>
                         $payment->id,
-
+    
                     'payment_number' =>
                         $payment->payment_number,
-
+    
                     'transaction_reference' =>
                         $payment->transaction_reference,
-
+    
                     'provider' =>
                         $paymentProvider->value,
-
+    
                     'provider_reference' =>
                         $result->providerReference,
-
+    
                     'amount' =>
                         $data->amount,
-
+    
                     'currency' =>
                         $data->currency,
-
+    
+                    'return_url' =>
+                        $providerData->returnUrl,
+    
                     'message' =>
                         $result->message,
                 ]
             );
-
+    
             return $result;
         }
-
+    
         /*
         |--------------------------------------------------------------------------
         | Provider Initialization Successful
@@ -600,82 +715,90 @@ class OnlinePaymentService
         |
         | IMPORTANT:
         |
-        | This does NOT mean the taxpayer has paid.
+        | Successful initialization only means Chapa accepted the checkout
+        | request and returned a checkout URL.
+        |
+        | It does NOT mean the taxpayer has paid.
         |
         | The local payment remains PENDING.
         |
         */
-
+    
         DB::transaction(
             function () use (
                 $payment,
                 $result
             ): void {
-
+    
                 $payment->forceFill([
                     'status' =>
                         PaymentStatus::PENDING,
                 ])->save();
-
+    
                 $this->updateOnlinePaymentDetails(
                     $payment,
                     $result
                 );
             }
         );
-
+    
         /*
         |--------------------------------------------------------------------------
         | Initialization Logging
         |--------------------------------------------------------------------------
         */
-
+    
         Log::info(
             'OnlinePaymentService::initialize() completed.',
             [
                 'payment_id' =>
                     $payment->id,
-
+    
                 'payment_number' =>
                     $payment->payment_number,
-
+    
                 'payment_reference' =>
                     $data->paymentReference,
-
+    
                 'transaction_reference' =>
                     $payment->transaction_reference,
-
+    
                 'success' =>
                     $result->success,
-
+    
                 'status' =>
                     $result->status->value,
-
+    
                 'message' =>
                     $result->message,
-
+    
                 'provider' =>
                     $result->provider->value,
-
+    
                 'provider_reference' =>
                     $result->providerReference,
-
+    
                 'provider_transaction_id' =>
                     $result->providerTransactionId,
-
+    
                 'amount' =>
                     $data->amount,
-
+    
                 'currency' =>
                     $data->currency,
-
+    
+                'return_url' =>
+                    $providerData->returnUrl,
+    
                 'checkout_url' =>
                     $result->checkoutUrl,
             ]
         );
-
+    
         return $result;
     }
+    
+    
 
     /*
     |--------------------------------------------------------------------------

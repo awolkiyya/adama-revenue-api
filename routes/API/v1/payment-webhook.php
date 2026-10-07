@@ -1,8 +1,8 @@
 <?php
 
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Modules\Payment\Controllers\PaymentWebhookController;
+use App\Modules\Payment\Controllers\OnlinePaymentController;
 
 /*
 |--------------------------------------------------------------------------
@@ -13,7 +13,8 @@ use App\Modules\Payment\Controllers\PaymentWebhookController;
 | customer's browser after completing the payment.
 |
 | IMPORTANT:
-| Do NOT place these routes inside auth:sanctum.
+| Webhook and browser callback routes must NOT be placed inside
+| auth:sanctum because Chapa must be able to reach them.
 |
 */
 
@@ -24,9 +25,11 @@ Route::prefix('payments')->group(function () {
     | CHAPA SERVER-TO-SERVER WEBHOOK
     |--------------------------------------------------------------------------
     |
-    | Used when Chapa sends payment notification to our backend.
+    | Chapa sends payment notifications to this endpoint.
     |
-    | Method: POST
+    | Method:
+    | POST
+    |
     | URL:
     | /api/v1/payments/webhooks/chapa
     |
@@ -42,9 +45,11 @@ Route::prefix('payments')->group(function () {
     | CHAPA BROWSER CALLBACK
     |--------------------------------------------------------------------------
     |
-    | Used when the customer/browser is redirected back after checkout.
+    | The customer's browser is redirected here after checkout.
     |
-    | Method: GET
+    | Method:
+    | GET
+    |
     | URL:
     | /api/v1/payments/callback/chapa
     |
@@ -55,4 +60,36 @@ Route::prefix('payments')->group(function () {
         'chapaCallback',
     ]);
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | Online Payment Result
+    |--------------------------------------------------------------------------
+    |
+    | This endpoint is used by the frontend payment-result page to retrieve
+    | the authoritative payment status from our database.
+    |
+    | IMPORTANT:
+    | The frontend must NOT decide whether the payment succeeded.
+    |
+    | Laravel gets the status from the Payment record, which is finalized
+    | by PaymentVerificationService after provider verification.
+    |
+    | Method:
+    | GET
+    |
+    | URL:
+    | /api/v1/online-payments/{payment}/result
+    |
+    | This route is intentionally outside auth:sanctum if the public
+    | payment-result page must work after returning from Chapa.
+    |
+    */
+
+    Route::get('/{payment}/result', [
+        OnlinePaymentController::class,
+        'result',
+    ]);
+
 });
+

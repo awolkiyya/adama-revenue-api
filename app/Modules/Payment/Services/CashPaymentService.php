@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Payment\Services;
 
 use App\Enums\PaymentMethod;
@@ -8,6 +10,8 @@ use App\Models\CashPaymentDetail;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\User;
+use App\Jobs\SendPaymentNotificationJob;
+use App\Modules\Payment\Notifications\PaymentNotificationService;
 use App\Services\DocumentSequenceService;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -15,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class CashPaymentService
 {
@@ -24,12 +29,7 @@ class CashPaymentService
     protected const MONEY_SCALE = 4;
 
     /**
-     * Invoices that are allowed to receive payments.
-     *
-     * DRAFT invoices must first be officially issued.
-     *
-     * PARTIALLY_PAID and OVERDUE invoices may continue receiving
-     * partial payments.
+     * Invoice statuses that may receive payments.
      */
     protected const PAYABLE_INVOICE_STATUSES = [
         'ISSUED',
@@ -37,13 +37,16 @@ class CashPaymentService
         'OVERDUE',
     ];
 
-    public function __construct(
-        protected DocumentSequenceService $documentSequenceService,
-        protected PaymentReceiptService $receiptService,
-    ) {
-    }
+    /**
+     * Payment source controlled by this service.
+     */
+    protected const PAYMENT_SOURCE = 'OFFICE_RECORDED';
 
     /**
+     * ================================================================
+     * RECORD
+     * ================================================================
+     *
      * Record a new cash payment.
      *
      * Lifecycle:
@@ -54,7 +57,7 @@ class CashPaymentService
      *         ↓
      *     CashPaymentDetail
      *
-     * No invoice financial balance is changed here.
+     * Financial invoice values are NOT changed here.
      *
      * No receipt is created while the payment is PENDING.
      */
@@ -63,410 +66,315 @@ class CashPaymentService
         array $data,
         ?string $requestId = null,
     ): Payment {
-        return DB::transaction(function () use (
-            $user,
-            $data,
-            $requestId
-        ): Payment {
-            /*
-             * ---------------------------------------------------------
-             * 1. Lock and load invoice
-             * ---------------------------------------------------------
-             */
-            $invoice = Invoice::query()
-                ->with('citizen')
-                ->whereKey($data['invoice_id'] ?? null)
-                ->lockForUpdate()
-                ->first();
+        return DB::transaction(
+            function () use (
+                $user,
+                $data,
+                $requestId
+            ): Payment {
+                /*
+                 * =====================================================
+                 * 1. LOCK AND LOAD INVOICE
+                 * =====================================================
+                 */
+                $invoice = Invoice::query()
+                    ->with('citizen')
+                    ->whereKey(
+                        $data['invoice_id'] ?? null
+                    )
+                    ->lockForUpdate()
+                    ->first();
 
-            if (!$invoice) {
-                throw ValidationException::withMessages([
-                    'invoice_id' => [
-                        'The selected invoice does not exist.',
-                    ],
-                ]);
-            }
+                if (!$invoice) {
+                    throw ValidationException::withMessages([
+                        'invoice_id' => [
+                            'The selected invoice does not exist.',
+                        ],
+                    ]);
+                }
 
-            /*
-             * ---------------------------------------------------------
-             * 2. Validate invoice
-             * ---------------------------------------------------------
-             */
-            $this->validateInvoiceForPayment($invoice);
+                /*
+                 * =====================================================
+                 * 2. VALIDATE INVOICE
+                 * =====================================================
+                 */
+                $this->validateInvoiceForPayment(
+                    $invoice
+                );
 
-            /*
-             * ---------------------------------------------------------
-             * 3. Prevent duplicate pending cash payment
-             * ---------------------------------------------------------
-             *
-             * Multiple COMPLETED cash payments are allowed because
-             * partial payments are supported.
-             *
-             * Only one PENDING cash payment is allowed per invoice.
-             */
-            $pendingPayment = Payment::query()
-                ->where('invoice_id', $invoice->id)
-                ->where(
-                    'payment_method',
-                    PaymentMethod::CASH->value
-                )
-                ->where(
-                    'status',
-                    PaymentStatus::PENDING->value
-                )
-                ->lockForUpdate()
-                ->first();
+                /*
+                 * =====================================================
+                 * 3. PREVENT DUPLICATE PENDING CASH PAYMENT
+                 * =====================================================
+                 *
+                 * Multiple completed payments are allowed.
+                 *
+                 * Only one pending cash payment is allowed for
+                 * the same invoice.
+                 */
+                $pendingPayment = Payment::query()
+                    ->where(
+                        'invoice_id',
+                        $invoice->getKey()
+                    )
+                    ->where(
+                        'payment_method',
+                        PaymentMethod::CASH->value
+                    )
+                    ->where(
+                        'status',
+                        PaymentStatus::PENDING->value
+                    )
+                    ->lockForUpdate()
+                    ->first();
 
-            if ($pendingPayment) {
-                throw ValidationException::withMessages([
-                    'invoice_id' => [
-                        'This invoice already has a pending cash payment.',
-                    ],
-                ]);
-            }
+                if ($pendingPayment) {
+                    throw ValidationException::withMessages([
+                        'invoice_id' => [
+                            'This invoice already has a pending cash payment.',
+                        ],
+                    ]);
+                }
 
-            /*
-             * ---------------------------------------------------------
-             * 4. Normalize payment amount
-             * ---------------------------------------------------------
-             */
-            $amount = $this->normalizeAmount(
-                $data['amount'] ?? null
-            );
+                /*
+                 * =====================================================
+                 * 4. NORMALIZE PAYMENT AMOUNT
+                 * =====================================================
+                 */
+                $amount = $this->normalizeAmount(
+                    $data['amount'] ?? null
+                );
 
-            /*
-             * ---------------------------------------------------------
-             * 5. Calculate authoritative outstanding balance
-             * ---------------------------------------------------------
-             */
-            $outstanding = $this->calculateOutstandingAmount(
-                $invoice
-            );
-
-            if (
-                bccomp(
-                    $amount,
-                    $outstanding,
-                    self::MONEY_SCALE
-                ) > 0
-            ) {
-                throw ValidationException::withMessages([
-                    'amount' => [
-                        'The payment amount cannot exceed the outstanding invoice balance.',
-                    ],
-                ]);
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 6. Generate payment identifiers
-             * ---------------------------------------------------------
-             */
-            $paymentNumber = $this->documentSequenceService->generate(
-                sequenceType: 'payment',
-            );
-
-            $transactionReference =
-                $this->generateTransactionReference();
-
-            /*
-             * ---------------------------------------------------------
-             * 7. Create common payment
-             * ---------------------------------------------------------
-             */
-            $payment = new Payment();
-
-            $payment->payment_number =
-                $paymentNumber;
-
-            $payment->invoice_id =
-                $invoice->id;
-
-            /*
-             * Never trust citizen_id supplied by the frontend.
-             */
-            $payment->citizen_id =
-                $invoice->citizen_id;
-
-            /*
-             * Payment method is controlled by this service.
-             */
-            $payment->payment_method =
-                PaymentMethod::CASH;
-
-            /*
-             * Payment source is controlled by the backend.
-             */
-            $payment->payment_source =
-                'OFFICE_RECORDED';
-
-            /*
-             * All newly recorded cash payments start as PENDING.
-             */
-            $payment->status =
-                PaymentStatus::PENDING;
-
-            $payment->transaction_reference =
-                $transactionReference;
-
-            $payment->amount =
-                $amount;
-
-            $payment->currency =
-                $invoice->currency ?? 'ETB';
-
-            /*
-             * User who records/processes the payment.
-             */
-            $payment->processed_by =
-                $user->id;
-
-            /*
-             * Payer information is derived from the invoice citizen.
-             */
-            $payment->payer_name =
-                $invoice->citizen?->name;
-
-            $payment->payer_email =
-                $invoice->citizen?->email;
-
-            $payment->payer_phone =
-                $invoice->citizen?->phone;
-
-            /*
-             * New payment has no failure reason.
-             */
-            $payment->failure_reason =
-                null;
-
-            /*
-             * Metadata may contain controlled operational data.
-             */
-            $payment->metadata =
-                $data['metadata'] ?? null;
-
-            $payment->save();
-
-            /*
-             * ---------------------------------------------------------
-             * 8. Create cash-specific details
-             * ---------------------------------------------------------
-             */
-            $cashDetails = new CashPaymentDetail();
-
-            $cashDetails->payment_id =
-                $payment->id;
-
-            /*
-             * The authenticated user receiving/recording the cash
-             * is stored as received_by.
-             */
-            $cashDetails->received_by =
-                $user->id;
-
-            /*
-             * Cashier session remains nullable until the
-             * cashier-session domain is implemented.
-             */
-            $cashDetails->cashier_session_id =
-                null;
-
-            /*
-             * Physical cash receipt time.
-             */
-            $cashDetails->cash_received_at =
-                now();
-
-            $cashDetails->notes =
-                $data['notes'] ?? null;
-
-            $cashDetails->save();
-
-            /*
-             * ---------------------------------------------------------
-             * 9. Audit log
-             * ---------------------------------------------------------
-             */
-            Log::info(
-                'Cash payment recorded.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_id' =>
-                        $payment->id,
-
-                    'payment_number' =>
-                        $payment->payment_number,
-
-                    'transaction_reference' =>
-                        $payment->transaction_reference,
-
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'amount' =>
-                        $payment->amount,
-
-                    'currency' =>
-                        $payment->currency,
-
-                    'payment_method' =>
-                        PaymentMethod::CASH->value,
-
-                    'payment_source' =>
-                        $payment->payment_source,
-
-                    'status' =>
-                        PaymentStatus::PENDING->value,
-
-                    'processed_by' =>
-                        $user->id,
-
-                    'received_by' =>
-                        $user->id,
-                ]
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 10. Return fully loaded payment
-             * ---------------------------------------------------------
-             */
-            return $payment->fresh([
-                'invoice',
-                'citizen',
-                'cashDetails.receivedBy',
-                'processedBy',
-                'verifiedBy',
-                'receipt.issuedBy',
-                'files',
-            ]);
-        });
-    }
-
-    /**
-     * Complete a pending cash payment.
-     *
-     * Lifecycle:
-     *
-     *     PENDING
-     *         ↓
-     *     COMPLETED
-     *         ↓
-     *     Receipt created
-     *         ↓
-     *     Invoice recalculated
-     *
-     * Payment completion, receipt creation, and invoice update
-     * happen inside the same database transaction.
-     */
-    public function complete(
-        string $paymentId,
-        User $user,
-        ?string $requestId = null,
-    ): Payment {
-        return DB::transaction(function () use (
-            $paymentId,
-            $user,
-            $requestId
-        ): Payment {
-            /*
-             * ---------------------------------------------------------
-             * 1. Find payment reference
-             * ---------------------------------------------------------
-             *
-             * We need invoice_id before obtaining the invoice lock.
-             *
-             * Do not lock the payment yet.
-             */
-            $paymentReference = Payment::query()
-                ->whereKey($paymentId)
-                ->first();
-
-            if (!$paymentReference) {
-                throw (new ModelNotFoundException())
-                    ->setModel(
-                        Payment::class,
-                        [$paymentId]
+                /*
+                 * =====================================================
+                 * 5. CALCULATE CURRENT OUTSTANDING BALANCE
+                 * =====================================================
+                 */
+                $outstanding =
+                    $this->calculateOutstandingAmount(
+                        $invoice
                     );
-            }
 
-            /*
-             * ---------------------------------------------------------
-             * 2. Validate payment method
-             * ---------------------------------------------------------
-             */
-            $this->validateCashPayment(
-                $paymentReference
-            );
+                /*
+                 * =====================================================
+                 * 6. PREVENT OVERPAYMENT
+                 * =====================================================
+                 */
+                if (
+                    bccomp(
+                        $amount,
+                        $outstanding,
+                        self::MONEY_SCALE
+                    ) > 0
+                ) {
+                    Log::warning(
+                        'Cash payment overpayment validation failed.',
+                        [
+                            'request_id' =>
+                                $requestId,
 
-            /*
-             * ---------------------------------------------------------
-             * 3. Lock invoice FIRST
-             * ---------------------------------------------------------
-             *
-             * record():
-             *
-             *     Invoice → Payment
-             *
-             * complete():
-             *
-             *     Invoice → Payment
-             */
-            $invoice = Invoice::query()
-                ->whereKey($paymentReference->invoice_id)
-                ->lockForUpdate()
-                ->first();
+                            'invoice_id' =>
+                                $invoice->getKey(),
 
-            if (!$invoice) {
-                throw ValidationException::withMessages([
-                    'invoice' => [
-                        'The invoice associated with this payment does not exist.',
-                    ],
-                ]);
-            }
+                            'payment_amount' =>
+                                $amount,
 
-            /*
-             * ---------------------------------------------------------
-             * 4. Lock payment SECOND
-             * ---------------------------------------------------------
-             */
-            $payment = Payment::query()
-                ->with('cashDetails')
-                ->whereKey($paymentId)
-                ->lockForUpdate()
-                ->first();
+                            'outstanding_amount' =>
+                                $outstanding,
 
-            if (!$payment) {
-                throw (new ModelNotFoundException())
-                    ->setModel(
-                        Payment::class,
-                        [$paymentId]
+                            'money_scale' =>
+                                self::MONEY_SCALE,
+                        ]
                     );
-            }
 
-            /*
-             * ---------------------------------------------------------
-             * 5. Validate payment method again
-             * ---------------------------------------------------------
-             */
-            $this->validateCashPayment(
-                $payment
-            );
+                    throw ValidationException::withMessages([
+                        'amount' => [
+                            'The payment amount cannot exceed the outstanding invoice balance.',
+                        ],
+                    ]);
+                }
 
-            /*
-             * ---------------------------------------------------------
-             * 6. Idempotent completion
-             * ---------------------------------------------------------
-             *
-             * If the payment is already completed, do not:
-             *
-             * - change it again
-             * - create another receipt
-             * - apply the payment again
-             */
-            if ($this->isCompleted($payment)) {
+                /*
+                 * =====================================================
+                 * 7. GENERATE PAYMENT NUMBER
+                 * =====================================================
+                 */
+                $paymentNumber =
+                    $this->documentSequenceService->generate(
+                        sequenceType: 'payment',
+                    );
+
+                /*
+                 * =====================================================
+                 * 8. GENERATE MUNICIPAL TRANSACTION REFERENCE
+                 * =====================================================
+                 */
+                $transactionReference =
+                    $this->generateTransactionReference();
+
+                /*
+                 * =====================================================
+                 * 9. CREATE COMMON PAYMENT
+                 * =====================================================
+                 */
+                $payment = new Payment();
+
+                $payment->payment_number =
+                    $paymentNumber;
+
+                $payment->invoice_id =
+                    $invoice->getKey();
+
+                /*
+                 * Never trust citizen_id from the frontend.
+                 *
+                 * The invoice is the authoritative source.
+                 */
+                $payment->citizen_id =
+                    $invoice->citizen_id;
+
+                /*
+                 * Controlled by this service.
+                 */
+                $payment->payment_method =
+                    PaymentMethod::CASH;
+
+                /*
+                 * Controlled by the backend.
+                 */
+                $payment->payment_source =
+                    self::PAYMENT_SOURCE;
+
+                /*
+                 * New cash payment starts as PENDING.
+                 */
+                $payment->status =
+                    PaymentStatus::PENDING;
+
+                $payment->transaction_reference =
+                    $transactionReference;
+
+                $payment->amount =
+                    $amount;
+
+                $payment->currency =
+                    $invoice->currency ?? 'ETB';
+
+                /*
+                 * User who recorded the cash payment.
+                 */
+                $payment->processed_by =
+                    $user->id;
+
+                /*
+                 * Payer information comes from the invoice citizen.
+                 */
+                $payment->payer_name =
+                    $invoice->citizen?->name;
+
+                $payment->payer_email =
+                    $invoice->citizen?->email;
+
+                $payment->payer_phone =
+                    $invoice->citizen?->phone;
+
+                $payment->failure_reason =
+                    null;
+
+                /*
+                 * Only controlled metadata should be accepted.
+                 */
+                $payment->metadata =
+                    $data['metadata'] ?? null;
+
+                $payment->save();
+
+                /*
+                 * =====================================================
+                 * 10. CREATE CASH PAYMENT DETAILS
+                 * =====================================================
+                 */
+                $cashDetails =
+                    new CashPaymentDetail();
+
+                $cashDetails->payment_id =
+                    $payment->getKey();
+
+                /*
+                 * The authenticated user who physically received/
+                 * recorded the cash.
+                 */
+                $cashDetails->received_by =
+                    $user->id;
+
+                /*
+                 * Cashier session is currently not implemented.
+                 */
+                $cashDetails->cashier_session_id =
+                    null;
+
+                /*
+                 * Physical cash receipt timestamp.
+                 */
+                $cashDetails->cash_received_at =
+                    now();
+
+                $cashDetails->notes =
+                    $data['notes'] ?? null;
+
+                $cashDetails->save();
+
+                /*
+                 * =====================================================
+                 * 11. AUDIT LOG
+                 * =====================================================
+                 */
+                Log::info(
+                    'Cash payment recorded.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'payment_id' =>
+                            $payment->getKey(),
+
+                        'payment_number' =>
+                            $payment->payment_number,
+
+                        'transaction_reference' =>
+                            $payment->transaction_reference,
+
+                        'invoice_id' =>
+                            $invoice->getKey(),
+
+                        'amount' =>
+                            $amount,
+
+                        'currency' =>
+                            $payment->currency,
+
+                        'payment_method' =>
+                            PaymentMethod::CASH->value,
+
+                        'payment_source' =>
+                            self::PAYMENT_SOURCE,
+
+                        'status' =>
+                            PaymentStatus::PENDING->value,
+
+                        'processed_by' =>
+                            $user->id,
+
+                        'received_by' =>
+                            $user->id,
+                    ]
+                );
+
+                /*
+                 * =====================================================
+                 * 12. RETURN FULLY LOADED PAYMENT
+                 * =====================================================
+                 */
                 return $payment->fresh([
                     'invoice',
                     'citizen',
@@ -476,234 +384,504 @@ class CashPaymentService
                     'receipt.issuedBy',
                     'files',
                 ]);
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 7. Only PENDING payments can be completed
-             * ---------------------------------------------------------
-             */
-            if (!$this->isPending($payment)) {
-                throw ValidationException::withMessages([
-                    'payment' => [
-                        'Only pending cash payments can be completed.',
-                    ],
-                ]);
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 8. Validate invoice again
-             * ---------------------------------------------------------
-             */
-            $this->validateInvoiceForPayment(
-                $invoice
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 9. Cash details must exist
-             * ---------------------------------------------------------
-             */
-            $cashDetails = $payment->cashDetails;
-
-            if (!$cashDetails) {
-                throw ValidationException::withMessages([
-                    'payment' => [
-                        'Cash payment details were not found.',
-                    ],
-                ]);
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 10. Normalize payment amount
-             * ---------------------------------------------------------
-             */
-            $paymentAmount = $this->normalizeAmount(
-                $payment->amount
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 11. Recalculate authoritative outstanding balance
-             * ---------------------------------------------------------
-             */
-            $outstanding = $this->calculateOutstandingAmount(
-                $invoice
-            );
-
-            if (
-                bccomp(
-                    $paymentAmount,
-                    $outstanding,
-                    self::MONEY_SCALE
-                ) > 0
-            ) {
-                throw ValidationException::withMessages([
-                    'payment' => [
-                        'The payment amount now exceeds the outstanding invoice balance.',
-                    ],
-                ]);
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 12. Complete payment
-             * ---------------------------------------------------------
-             */
-            $payment->status =
-                PaymentStatus::COMPLETED;
-
-            $payment->verified_by =
-                $user->id;
-
-            $payment->verified_at =
-                now();
-
-            $payment->failure_reason =
-                null;
-
-            $payment->save();
-
-            /*
-             * ---------------------------------------------------------
-             * 13. Ensure physical cash timestamp exists
-             * ---------------------------------------------------------
-             */
-            if (!$cashDetails->cash_received_at) {
-                $cashDetails->cash_received_at =
-                    now();
-
-                $cashDetails->save();
-            }
-
-            /*
-             * ---------------------------------------------------------
-             * 14. Create official receipt
-             * ---------------------------------------------------------
-             *
-             * IMPORTANT:
-             *
-             * PaymentReceiptService::create() requires both:
-             *
-             *     Payment
-             *     User
-             *
-             * issued_by is populated using the authenticated user.
-             */
-            $receipt = $this->receiptService->create(
-                payment: $payment,
-                user: $user,
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 15. Recalculate invoice financial state
-             * ---------------------------------------------------------
-             */
-            $this->applyPaymentToInvoice(
-                invoice: $invoice,
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 16. Audit log
-             * ---------------------------------------------------------
-             */
-            Log::info(
-                'Cash payment completed.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_id' =>
-                        $payment->id,
-
-                    'payment_number' =>
-                        $payment->payment_number,
-
-                    'transaction_reference' =>
-                        $payment->transaction_reference,
-
-                    'receipt_id' =>
-                        $receipt->id,
-
-                    'receipt_number' =>
-                        $receipt->receipt_number,
-
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'amount' =>
-                        $paymentAmount,
-
-                    'currency' =>
-                        $payment->currency,
-
-                    'payment_method' =>
-                        PaymentMethod::CASH->value,
-
-                    'payment_source' =>
-                        $payment->payment_source,
-
-                    'status' =>
-                        PaymentStatus::COMPLETED->value,
-
-                    'processed_by' =>
-                        $payment->processed_by,
-
-                    'verified_by' =>
-                        $user->id,
-
-                    'invoice_paid_amount' =>
-                        $invoice->paid_amount,
-
-                    'invoice_balance_due' =>
-                        $invoice->balance_due,
-
-                    'invoice_status' =>
-                        $invoice->status?->value
-                        ?? $invoice->status,
-                ]
-            );
-
-            /*
-             * ---------------------------------------------------------
-             * 17. Return fully loaded payment
-             * ---------------------------------------------------------
-             */
-            return $payment->fresh([
-                'invoice',
-                'citizen',
-                'cashDetails.receivedBy',
-                'processedBy',
-                'verifiedBy',
-                'receipt.issuedBy',
-                'files',
-            ]);
-        });
+            },
+            3
+        );
     }
 
     /**
+     * ================================================================
+     * COMPLETE
+     * ================================================================
+     *
+     * Complete a pending cash payment.
+     *
+     * Lifecycle:
+     *
+     *     PENDING
+     *         ↓
+     *     COMPLETED
+     *         ↓
+     *     Receipt
+     *         ↓
+     *     Invoice recalculation
+     *         ↓
+     *     Transaction commit
+     *         ↓
+     *     SMS notification job
+     *
+     * Payment completion, receipt creation, and invoice recalculation
+     * occur inside the same database transaction.
+     *
+     * SMS is dispatched only AFTER the transaction commits.
+     */
+    public function complete(
+        string $paymentId,
+        User $user,
+        ?string $requestId = null,
+    ): Payment {
+        return DB::transaction(
+            function () use (
+                $paymentId,
+                $user,
+                $requestId
+            ): Payment {
+                /*
+                 * =====================================================
+                 * 1. FIND PAYMENT REFERENCE
+                 * =====================================================
+                 *
+                 * We need invoice_id before obtaining the invoice lock.
+                 *
+                 * Do not lock the payment yet.
+                 */
+                $paymentReference =
+                    Payment::query()
+                        ->whereKey($paymentId)
+                        ->first();
+
+                if (!$paymentReference) {
+                    throw (new ModelNotFoundException())
+                        ->setModel(
+                            Payment::class,
+                            [$paymentId]
+                        );
+                }
+
+                /*
+                 * =====================================================
+                 * 2. VALIDATE PAYMENT METHOD
+                 * =====================================================
+                 */
+                $this->validateCashPayment(
+                    $paymentReference
+                );
+
+                /*
+                 * =====================================================
+                 * 3. LOCK INVOICE FIRST
+                 * =====================================================
+                 *
+                 * record():
+                 *
+                 *     Invoice → Payment
+                 *
+                 * complete():
+                 *
+                 *     Invoice → Payment
+                 *
+                 * Keeping the same lock order prevents avoidable
+                 * deadlocks between concurrent payment operations.
+                 */
+                $invoice =
+                    Invoice::query()
+                        ->with('citizen')
+                        ->whereKey(
+                            $paymentReference->invoice_id
+                        )
+                        ->lockForUpdate()
+                        ->first();
+
+                if (!$invoice) {
+                    throw ValidationException::withMessages([
+                        'invoice' => [
+                            'The invoice associated with this payment does not exist.',
+                        ],
+                    ]);
+                }
+
+                /*
+                 * =====================================================
+                 * 4. LOCK PAYMENT SECOND
+                 * =====================================================
+                 */
+                $payment =
+                    Payment::query()
+                        ->with('cashDetails')
+                        ->whereKey($paymentId)
+                        ->lockForUpdate()
+                        ->first();
+
+                if (!$payment) {
+                    throw (new ModelNotFoundException())
+                        ->setModel(
+                            Payment::class,
+                            [$paymentId]
+                        );
+                }
+
+                /*
+                 * =====================================================
+                 * 5. VALIDATE PAYMENT METHOD AGAIN
+                 * =====================================================
+                 */
+                $this->validateCashPayment(
+                    $payment
+                );
+
+                /*
+                 * =====================================================
+                 * 6. IDEMPOTENT COMPLETION
+                 * =====================================================
+                 *
+                 * If another request already completed this payment,
+                 * do not:
+                 *
+                 * - create another receipt
+                 * - recalculate it again
+                 * - dispatch another SMS
+                 */
+                if ($this->isCompleted($payment)) {
+                    Log::info(
+                        'Cash payment completion skipped because payment is already completed.',
+                        [
+                            'request_id' =>
+                                $requestId,
+
+                            'payment_id' =>
+                                $payment->getKey(),
+
+                            'payment_number' =>
+                                $payment->payment_number,
+                        ]
+                    );
+
+                    return $payment->fresh([
+                        'invoice',
+                        'citizen',
+                        'cashDetails.receivedBy',
+                        'processedBy',
+                        'verifiedBy',
+                        'receipt.issuedBy',
+                        'files',
+                    ]);
+                }
+
+                /*
+                 * =====================================================
+                 * 7. ONLY PENDING PAYMENTS CAN BE COMPLETED
+                 * =====================================================
+                 */
+                if (!$this->isPending($payment)) {
+                    throw ValidationException::withMessages([
+                        'payment' => [
+                            'Only pending cash payments can be completed.',
+                        ],
+                    ]);
+                }
+
+                /*
+                 * =====================================================
+                 * 8. AUTHORIZE COMPLETION
+                 * =====================================================
+                 */
+                $this->authorizeCompletion(
+                    $user
+                );
+
+                /*
+                 * =====================================================
+                 * 9. VALIDATE INVOICE
+                 * =====================================================
+                 */
+                $this->validateInvoiceForPayment(
+                    $invoice
+                );
+
+                /*
+                 * =====================================================
+                 * 10. CASH DETAILS MUST EXIST
+                 * =====================================================
+                 */
+                $cashDetails =
+                    $payment->cashDetails;
+
+                if (!$cashDetails) {
+                    throw ValidationException::withMessages([
+                        'payment' => [
+                            'Cash payment details were not found.',
+                        ],
+                    ]);
+                }
+
+                /*
+                 * =====================================================
+                 * 11. NORMALIZE PAYMENT AMOUNT
+                 * =====================================================
+                 */
+                $paymentAmount =
+                    $this->normalizeAmount(
+                        $payment->amount
+                    );
+
+                /*
+                 * =====================================================
+                 * 12. RECHECK OUTSTANDING BALANCE
+                 * =====================================================
+                 *
+                 * The invoice is locked, so this calculation is made
+                 * against a consistent invoice/payment state.
+                 */
+                $outstanding =
+                    $this->calculateOutstandingAmount(
+                        $invoice
+                    );
+
+                if (
+                    bccomp(
+                        $paymentAmount,
+                        $outstanding,
+                        self::MONEY_SCALE
+                    ) > 0
+                ) {
+                    Log::warning(
+                        'Cash payment completion overpayment validation failed.',
+                        [
+                            'request_id' =>
+                                $requestId,
+
+                            'payment_id' =>
+                                $payment->getKey(),
+
+                            'payment_number' =>
+                                $payment->payment_number,
+
+                            'invoice_id' =>
+                                $invoice->getKey(),
+
+                            'payment_amount' =>
+                                $paymentAmount,
+
+                            'outstanding_amount' =>
+                                $outstanding,
+
+                            'money_scale' =>
+                                self::MONEY_SCALE,
+                        ]
+                    );
+
+                    throw ValidationException::withMessages([
+                        'payment' => [
+                            'The payment amount now exceeds the outstanding invoice balance.',
+                        ],
+                    ]);
+                }
+
+                /*
+                 * =====================================================
+                 * 13. COMPLETE PAYMENT
+                 * =====================================================
+                 */
+                $payment->status =
+                    PaymentStatus::COMPLETED;
+
+                $payment->verified_by =
+                    $user->id;
+
+                $payment->verified_at =
+                    now();
+
+                $payment->failure_reason =
+                    null;
+
+                $payment->save();
+
+                /*
+                 * =====================================================
+                 * 14. ENSURE CASH RECEIVED TIMESTAMP
+                 * =====================================================
+                 */
+                if (
+                    $cashDetails->cash_received_at === null
+                ) {
+                    $cashDetails->cash_received_at =
+                        now();
+
+                    $cashDetails->save();
+                }
+
+                /*
+                 * =====================================================
+                 * 15. CREATE OFFICIAL RECEIPT
+                 * =====================================================
+                 *
+                 * PaymentReceiptService::create() receives the
+                 * authenticated municipal user as the issuer.
+                 */
+                $receipt =
+                    $this->receiptService->create(
+                        payment: $payment,
+                        user: $user,
+                    );
+
+                /*
+                 * =====================================================
+                 * 16. APPLY PAYMENT TO INVOICE
+                 * =====================================================
+                 *
+                 * This recalculates:
+                 *
+                 *     paid_amount
+                 *     balance_due
+                 *     status
+                 *     paid_at
+                 */
+                $this->applyPaymentToInvoice(
+                    $invoice
+                );
+
+                /*
+                 * =====================================================
+                 * 17. DETERMINE SUCCESS SMS TYPE
+                 * =====================================================
+                 *
+                 * Exactly ONE success notification is dispatched.
+                 *
+                 * Remaining balance > 0:
+                 *     PAYMENT_PARTIALLY_PAID
+                 *
+                 * Remaining balance = 0:
+                 *     PAYMENT_FULLY_PAID
+                 *
+                 * PAYMENT_RECEIVED is intentionally not dispatched
+                 * here to avoid sending two SMS messages for one
+                 * successful cash payment.
+                 */
+                $notificationType =
+                    bccomp(
+                        $this->normalizeMoney(
+                            $invoice->balance_due
+                        ),
+                        '0.0000',
+                        self::MONEY_SCALE
+                    ) === 0
+                        ? PaymentNotificationService::PAYMENT_FULLY_PAID
+                        : PaymentNotificationService::PAYMENT_PARTIALLY_PAID;
+
+                /*
+                 * =====================================================
+                 * 18. DISPATCH SMS AFTER COMMIT
+                 * =====================================================
+                 *
+                 * The job will not run until this database transaction
+                 * has successfully committed.
+                 *
+                 * Therefore the SMS cannot be sent for a payment that
+                 * later rolls back.
+                 */
+                $this->dispatchPaymentNotificationAfterCommit(
+                    payment: $payment,
+                    notificationType: $notificationType,
+                );
+
+                /*
+                 * =====================================================
+                 * 19. AUDIT LOG
+                 * =====================================================
+                 */
+                Log::info(
+                    'Cash payment completed.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'payment_id' =>
+                            $payment->getKey(),
+
+                        'payment_number' =>
+                            $payment->payment_number,
+
+                        'transaction_reference' =>
+                            $payment->transaction_reference,
+
+                        'receipt_id' =>
+                            $receipt->getKey(),
+
+                        'receipt_number' =>
+                            $receipt->receipt_number,
+
+                        'invoice_id' =>
+                            $invoice->getKey(),
+
+                        'amount' =>
+                            $paymentAmount,
+
+                        'currency' =>
+                            $payment->currency,
+
+                        'payment_method' =>
+                            PaymentMethod::CASH->value,
+
+                        'payment_source' =>
+                            $payment->payment_source,
+
+                        'status' =>
+                            PaymentStatus::COMPLETED->value,
+
+                        'processed_by' =>
+                            $payment->processed_by,
+
+                        'verified_by' =>
+                            $user->id,
+
+                        'invoice_paid_amount' =>
+                            $invoice->paid_amount,
+
+                        'invoice_balance_due' =>
+                            $invoice->balance_due,
+
+                        'invoice_status' =>
+                            $invoice->status?->value
+                            ?? $invoice->status,
+
+                        'notification_type' =>
+                            $notificationType,
+                    ]
+                );
+
+                /*
+                 * =====================================================
+                 * 20. RETURN FULLY LOADED PAYMENT
+                 * =====================================================
+                 */
+                return $payment->fresh([
+                    'invoice',
+                    'citizen',
+                    'cashDetails.receivedBy',
+                    'processedBy',
+                    'verifiedBy',
+                    'receipt.issuedBy',
+                    'files',
+                ]);
+            },
+            3
+        );
+    }
+
+    /**
+     * ================================================================
+     * FIND
+     * ================================================================
+     *
      * Find a cash payment.
      */
     public function find(
         string $paymentId,
         User $user,
     ): Payment {
-        $payment = Payment::query()
-            ->with([
-                'invoice',
-                'citizen',
-                'cashDetails.receivedBy',
-                'processedBy',
-                'verifiedBy',
-                'receipt.issuedBy',
-                'files',
-            ])
-            ->whereKey($paymentId)
-            ->first();
+        $payment =
+            Payment::query()
+                ->with([
+                    'invoice',
+                    'citizen',
+                    'cashDetails.receivedBy',
+                    'processedBy',
+                    'verifiedBy',
+                    'receipt.issuedBy',
+                    'files',
+                ])
+                ->whereKey($paymentId)
+                ->first();
 
         if (!$payment) {
             throw (new ModelNotFoundException())
@@ -726,14 +904,19 @@ class CashPaymentService
     }
 
     /**
+     * ================================================================
+     * VALIDATE INVOICE
+     * ================================================================
+     *
      * Validate invoice payment eligibility.
      */
     protected function validateInvoiceForPayment(
         Invoice $invoice,
     ): void {
-        $status = $this->invoiceStatus(
-            $invoice
-        );
+        $status =
+            $this->invoiceStatus(
+                $invoice
+            );
 
         if (
             !in_array(
@@ -782,8 +965,13 @@ class CashPaymentService
         }
 
         /*
-         * Verify the actual financial balance rather than trusting
-         * the stored balance_due value.
+         * Do not blindly trust invoice.balance_due.
+         *
+         * Calculate the authoritative outstanding amount from:
+         *
+         *     invoice.total_amount
+         *     -
+         *     COMPLETED payments
          */
         $outstanding =
             $this->calculateOutstandingAmount(
@@ -806,21 +994,25 @@ class CashPaymentService
     }
 
     /**
-     * Validate that a payment is CASH.
+     * ================================================================
+     * VALIDATE PAYMENT METHOD
+     * ================================================================
      */
     protected function validateCashPayment(
         Payment $payment,
     ): void {
-        $method = strtoupper(
-            (string) (
-                $payment->payment_method?->value
-                ?? $payment->payment_method
-                ?? ''
-            )
-        );
+        $method =
+            strtoupper(
+                (string) (
+                    $payment->payment_method?->value
+                    ?? $payment->payment_method
+                    ?? ''
+                )
+            );
 
         if (
-            $method !== PaymentMethod::CASH->value
+            $method !==
+            PaymentMethod::CASH->value
         ) {
             throw ValidationException::withMessages([
                 'payment' => [
@@ -831,18 +1023,75 @@ class CashPaymentService
     }
 
     /**
-     * Calculate authoritative outstanding invoice balance.
+     * ================================================================
+     * AUTHORIZE COMPLETION
+     * ================================================================
      *
-     * Only COMPLETED payments reduce the invoice balance.
+     * The user completing a cash payment must have the dedicated
+     * payment-completion permission.
+     */
+    protected function authorizeCompletion(
+        User $user,
+    ): void {
+        if (
+            !$user->can(
+                'CASH_PAYMENTS_COMPLETE'
+            )
+        ) {
+            throw new AuthorizationException(
+                'You are not authorized to complete cash payments.'
+            );
+        }
+    }
+
+    /**
+     * ================================================================
+     * AUTHORIZE VIEW
+     * ================================================================
+     */
+    protected function authorizeView(
+        Payment $payment,
+        User $user,
+    ): void {
+        if (
+            !$user->can(
+                'view',
+                $payment
+            )
+        ) {
+            throw new AuthorizationException(
+                'You are not authorized to view this payment.'
+            );
+        }
+    }
+
+    /**
+     * ================================================================
+     * CALCULATE OUTSTANDING
+     * ================================================================
+     *
+     * Authoritative outstanding balance.
+     *
+     * Only COMPLETED payments reduce the balance.
      */
     protected function calculateOutstandingAmount(
         Invoice $invoice,
     ): string {
+        /*
+         * ------------------------------------------------------------
+         * 1. Invoice total
+         * ------------------------------------------------------------
+         */
         $invoiceTotal =
             $this->invoiceTotal(
                 $invoice
             );
 
+        /*
+         * ------------------------------------------------------------
+         * 2. Sum COMPLETED payments
+         * ------------------------------------------------------------
+         */
         $completedAmount =
             Payment::query()
                 ->where(
@@ -861,7 +1110,9 @@ class CashPaymentService
             );
 
         /*
-         * Protect against historical overpayment/corruption.
+         * ------------------------------------------------------------
+         * 3. Protect against historical overpayment/corruption
+         * ------------------------------------------------------------
          */
         if (
             bccomp(
@@ -873,6 +1124,11 @@ class CashPaymentService
             return '0.0000';
         }
 
+        /*
+         * ------------------------------------------------------------
+         * 4. Calculate outstanding
+         * ------------------------------------------------------------
+         */
         $outstanding =
             bcsub(
                 $invoiceTotal,
@@ -894,7 +1150,9 @@ class CashPaymentService
     }
 
     /**
-     * Get invoice total.
+     * ================================================================
+     * GET INVOICE TOTAL
+     * ================================================================
      */
     protected function invoiceTotal(
         Invoice $invoice,
@@ -902,7 +1160,7 @@ class CashPaymentService
         if (
             $invoice->total_amount === null
         ) {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 'Unable to determine the invoice total amount.'
             );
         }
@@ -913,24 +1171,26 @@ class CashPaymentService
     }
 
     /**
-     * Recalculate the invoice financial state.
+     * ================================================================
+     * APPLY PAYMENT TO INVOICE
+     * ================================================================
      *
-     * Derives:
+     * Recalculate:
      *
      *     paid_amount
      *     balance_due
      *     status
      *     paid_at
      *
-     * from the invoice total and all COMPLETED payments.
+     * Only COMPLETED payments are included.
      */
     protected function applyPaymentToInvoice(
         Invoice $invoice,
     ): void {
         /*
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          * 1. Invoice total
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          */
         $invoiceTotal =
             $this->invoiceTotal(
@@ -938,9 +1198,9 @@ class CashPaymentService
             );
 
         /*
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          * 2. Sum completed payments
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          */
         $completedAmount =
             Payment::query()
@@ -960,9 +1220,9 @@ class CashPaymentService
             );
 
         /*
-         * -------------------------------------------------------------
-         * 3. Protect against overpayment
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
+         * 3. Overpayment protection
+         * ------------------------------------------------------------
          */
         if (
             bccomp(
@@ -971,6 +1231,23 @@ class CashPaymentService
                 self::MONEY_SCALE
             ) > 0
         ) {
+            Log::critical(
+                'Invoice overpayment detected while applying cash payment.',
+                [
+                    'invoice_id' =>
+                        $invoice->getKey(),
+
+                    'invoice_total' =>
+                        $invoiceTotal,
+
+                    'completed_payment_amount' =>
+                        $paidAmount,
+
+                    'money_scale' =>
+                        self::MONEY_SCALE,
+                ]
+            );
+
             throw ValidationException::withMessages([
                 'payment' => [
                     'Completed payments exceed the invoice total.',
@@ -979,9 +1256,9 @@ class CashPaymentService
         }
 
         /*
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          * 4. Calculate balance
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          */
         $balanceDue =
             bcsub(
@@ -997,13 +1274,14 @@ class CashPaymentService
                 self::MONEY_SCALE
             ) < 0
         ) {
-            $balanceDue = '0.0000';
+            $balanceDue =
+                '0.0000';
         }
 
         /*
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          * 5. Update financial values
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          */
         $invoice->paid_amount =
             $paidAmount;
@@ -1012,9 +1290,9 @@ class CashPaymentService
             $balanceDue;
 
         /*
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          * 6. Determine invoice status
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          */
         if (
             bccomp(
@@ -1026,7 +1304,9 @@ class CashPaymentService
             $invoice->status =
                 'PAID';
 
-            if ($invoice->paid_at === null) {
+            if (
+                $invoice->paid_at === null
+            ) {
                 $invoice->paid_at =
                     now();
             }
@@ -1034,36 +1314,75 @@ class CashPaymentService
             $invoice->status =
                 'PARTIALLY_PAID';
 
+            /*
+             * The invoice is not fully paid.
+             */
             $invoice->paid_at =
                 null;
         }
 
         /*
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          * 7. Persist invoice
-         * -------------------------------------------------------------
+         * ------------------------------------------------------------
          */
         $invoice->save();
     }
 
     /**
-     * Authorize viewing a payment.
+     * ================================================================
+     * DISPATCH PAYMENT NOTIFICATION
+     * ================================================================
+     *
+     * Queue the SMS only after the current DB transaction commits.
+     *
+     * This prevents:
+     *
+     *     DB rollback
+     *         +
+     *     already-sent SMS
+     *
+     * Example:
+     *
+     *     Payment completed
+     *          ↓
+     *     Invoice updated
+     *          ↓
+     *     Receipt created
+     *          ↓
+     *     COMMIT
+     *          ↓
+     *     Queue SMS
      */
-    protected function authorizeView(
+    protected function dispatchPaymentNotificationAfterCommit(
         Payment $payment,
-        User $user,
+        string $notificationType,
     ): void {
-        if (
-            !$user->can(
-                'view',
-                $payment
-            )
-        ) {
-            throw new AuthorizationException(
-                'You are not authorized to view this payment.'
-            );
-        }
+        SendPaymentNotificationJob::dispatch(
+            paymentId: (string) $payment->getKey(),
+            notificationType: $notificationType,
+        )->afterCommit();
+
+        Log::info(
+            'Payment notification job dispatched after commit.',
+            [
+                'payment_id' =>
+                    $payment->getKey(),
+
+                'payment_number' =>
+                    $payment->payment_number,
+
+                'notification_type' =>
+                    $notificationType,
+            ]
+        );
     }
+
+    /**
+     * ================================================================
+     * PAYMENT STATUS HELPERS
+     * ================================================================
+     */
 
     /**
      * Determine whether payment is PENDING.
@@ -1118,7 +1437,11 @@ class CashPaymentService
     }
 
     /**
-     * Generate a unique transaction reference.
+     * ================================================================
+     * TRANSACTION REFERENCE
+     * ================================================================
+     *
+     * Generate internal municipal transaction reference.
      *
      * Example:
      *
@@ -1133,6 +1456,10 @@ class CashPaymentService
     }
 
     /**
+     * ================================================================
+     * NORMALIZE PAYMENT AMOUNT
+     * ================================================================
+     *
      * Normalize a positive payment amount.
      *
      * BCMath is used to avoid binary floating-point calculations.
@@ -1141,8 +1468,8 @@ class CashPaymentService
         mixed $amount,
     ): string {
         if (
-            $amount === null ||
-            $amount === ''
+            $amount === null
+            || $amount === ''
         ) {
             throw ValidationException::withMessages([
                 'amount' => [
@@ -1151,19 +1478,33 @@ class CashPaymentService
             ]);
         }
 
-        $value =
-            trim((string) $amount);
-
-        if (!is_numeric($value)) {
+        /*
+         * Do not silently convert arrays/objects/booleans into
+         * strings.
+         */
+        if (
+            is_array($amount)
+            || is_object($amount)
+            || is_bool($amount)
+        ) {
             throw ValidationException::withMessages([
                 'amount' => [
-                    'The payment amount must be a valid number.',
+                    'The payment amount must be a valid decimal number.',
                 ],
             ]);
         }
 
+        $value =
+            trim(
+                (string) $amount
+            );
+
         /*
-         * Reject scientific notation and malformed decimal values.
+         * Reject:
+         *
+         *     scientific notation
+         *     negative values
+         *     malformed decimals
          */
         if (
             !preg_match(
@@ -1178,6 +1519,33 @@ class CashPaymentService
             ]);
         }
 
+        /*
+         * Maximum four decimal places.
+         */
+        $decimalPosition =
+            strpos(
+                $value,
+                '.'
+            );
+
+        if (
+            $decimalPosition !== false
+            && (
+                strlen($value)
+                - $decimalPosition
+                - 1
+            ) > self::MONEY_SCALE
+        ) {
+            throw ValidationException::withMessages([
+                'amount' => [
+                    'The payment amount may have up to four decimal places.',
+                ],
+            ]);
+        }
+
+        /*
+         * Must be greater than zero.
+         */
         if (
             bccomp(
                 $value,
@@ -1200,24 +1568,73 @@ class CashPaymentService
     }
 
     /**
+     * ================================================================
+     * NORMALIZE MONEY
+     * ================================================================
+     *
      * Normalize a monetary value where zero is allowed.
      */
     protected function normalizeMoney(
         mixed $amount,
     ): string {
         if (
-            $amount === null ||
-            $amount === ''
+            $amount === null
+            || $amount === ''
         ) {
             return '0.0000';
         }
 
-        $value =
-            trim((string) $amount);
-
-        if (!is_numeric($value)) {
-            throw new \RuntimeException(
+        if (
+            is_array($amount)
+            || is_object($amount)
+            || is_bool($amount)
+        ) {
+            throw new RuntimeException(
                 'Invalid monetary value.'
+            );
+        }
+
+        $value =
+            trim(
+                (string) $amount
+            );
+
+        /*
+         * Monetary values must be ordinary decimal strings.
+         *
+         * Scientific notation is deliberately rejected.
+         */
+        if (
+            !preg_match(
+                '/^-?\d+(?:\.\d+)?$/',
+                $value
+            )
+        ) {
+            throw new RuntimeException(
+                'Invalid monetary value.'
+            );
+        }
+
+        /*
+         * Do not silently accept more precision than the financial
+         * domain supports.
+         */
+        $decimalPosition =
+            strpos(
+                $value,
+                '.'
+            );
+
+        if (
+            $decimalPosition !== false
+            && (
+                strlen($value)
+                - $decimalPosition
+                - 1
+            ) > self::MONEY_SCALE
+        ) {
+            throw new RuntimeException(
+                'Invalid monetary value precision.'
             );
         }
 

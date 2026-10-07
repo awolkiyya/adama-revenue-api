@@ -27,22 +27,69 @@ class PenaltyDiscountRequest extends Model
     */
 
     protected $fillable = [
+        /*
+        |--------------------------------------------------------------------------
+        | Target
+        |--------------------------------------------------------------------------
+        */
+
         'invoice_id',
         'citizen_id',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Request Details
+        |--------------------------------------------------------------------------
+        */
 
         'requested_amount',
         'reason',
 
+        /*
+        |--------------------------------------------------------------------------
+        | Request Lifecycle
+        |--------------------------------------------------------------------------
+        |
+        | DRAFT
+        | SUBMITTED
+        | APPROVED
+        | REJECTED
+        | APPLIED
+        | CANCELLED
+        |
+        */
+
         'status',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Request Creator
+        |--------------------------------------------------------------------------
+        */
 
         'created_by',
         'submitted_at',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Administrative Decision
+        |--------------------------------------------------------------------------
+        */
 
         'decision',
         'approved_amount',
         'decision_reason',
         'decided_by',
         'decided_at',
+
+        /*
+        |--------------------------------------------------------------------------
+        | Financial Application
+        |--------------------------------------------------------------------------
+        |
+        | Approval and application are separate operations.
+        |
+        */
 
         'applied_to_invoice',
         'applied_at',
@@ -57,10 +104,28 @@ class PenaltyDiscountRequest extends Model
     protected function casts(): array
     {
         return [
+            /*
+            |--------------------------------------------------------------------------
+            | Financial Values
+            |--------------------------------------------------------------------------
+            */
+
             'requested_amount' => 'decimal:4',
             'approved_amount' => 'decimal:4',
 
+            /*
+            |--------------------------------------------------------------------------
+            | Application State
+            |--------------------------------------------------------------------------
+            */
+
             'applied_to_invoice' => 'boolean',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Dates
+            |--------------------------------------------------------------------------
+            */
 
             'submitted_at' => 'datetime',
             'decided_at' => 'datetime',
@@ -82,7 +147,7 @@ class PenaltyDiscountRequest extends Model
      */
     public function invoice(): BelongsTo
     {
-        return $this->belongsTo(Invoice::class);
+        return $this->belongsTo(Invoice::class, 'invoice_id');
     }
 
     /**
@@ -90,11 +155,11 @@ class PenaltyDiscountRequest extends Model
      */
     public function citizen(): BelongsTo
     {
-        return $this->belongsTo(Citizen::class);
+        return $this->belongsTo(Citizen::class, 'citizen_id');
     }
 
     /**
-     * Revenue Compliance Officer who created the request.
+     * User who created the penalty discount request.
      */
     public function creator(): BelongsTo
     {
@@ -102,7 +167,7 @@ class PenaltyDiscountRequest extends Model
     }
 
     /**
-     * Revenue Tax Administrative Officer who made the decision.
+     * User who made the administrative decision.
      */
     public function decider(): BelongsTo
     {

@@ -18,11 +18,24 @@ return new class extends Migration
             |--------------------------------------------------------------------------
             | Target Invoice
             |--------------------------------------------------------------------------
+            |
+            | The invoice whose outstanding penalty is being considered
+            | for discount.
+            |
             */
 
             $table->foreignUuid('invoice_id')
                 ->constrained('invoices')
                 ->restrictOnDelete();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Citizen
+            |--------------------------------------------------------------------------
+            |
+            | Stored directly for reporting/audit consistency.
+            |
+            */
 
             $table->foreignUuid('citizen_id')
                 ->constrained('citizens')
@@ -30,10 +43,10 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Request
+            | Request Details
             |--------------------------------------------------------------------------
             |
-            | Created by the Revenue Compliance Officer.
+            | Created by the authorized revenue/compliance officer.
             |
             */
 
@@ -41,12 +54,47 @@ return new class extends Migration
 
             $table->text('reason');
 
+            /*
+            |--------------------------------------------------------------------------
+            | Request Lifecycle
+            |--------------------------------------------------------------------------
+            |
+            | DRAFT:
+            |   Request is being prepared and can be edited.
+            |
+            | SUBMITTED:
+            |   Request has been submitted for administrative review.
+            |
+            | APPROVED:
+            |   Discount has been administratively approved but has
+            |   not yet been applied to the invoice.
+            |
+            | REJECTED:
+            |   Request has been rejected.
+            |
+            | APPLIED:
+            |   The approved discount has actually been applied
+            |   to the invoice.
+            |
+            | CANCELLED:
+            |   Request was cancelled before completion.
+            |
+            */
+
             $table->enum('status', [
                 'DRAFT',
                 'SUBMITTED',
-                'DECIDED',
+                'APPROVED',
+                'REJECTED',
+                'APPLIED',
                 'CANCELLED',
             ])->default('DRAFT');
+
+            /*
+            |--------------------------------------------------------------------------
+            | Request Creator
+            |--------------------------------------------------------------------------
+            */
 
             $table->foreignUuid('created_by')
                 ->constrained('users')
@@ -59,7 +107,7 @@ return new class extends Migration
             | Administrative Decision
             |--------------------------------------------------------------------------
             |
-            | Completed by the Revenue Tax Administrative Officer.
+            | Completed by the authorized Revenue Tax Administrative Officer.
             |
             */
 
@@ -68,31 +116,49 @@ return new class extends Migration
                 'REJECTED',
             ])->nullable();
 
-            $table->decimal('approved_amount', 18, 4)->nullable();
+            /*
+            | The amount actually approved may be lower than the
+            | amount originally requested.
+            |
+            */
 
-            $table->text('decision_reason')->nullable();
+            $table->decimal('approved_amount', 18, 4)
+                ->nullable();
+
+            /*
+            | Explanation provided by the decision officer.
+            |
+            */
+
+            $table->text('decision_reason')
+                ->nullable();
 
             $table->foreignUuid('decided_by')
                 ->nullable()
                 ->constrained('users')
                 ->restrictOnDelete();
 
-            $table->timestamp('decided_at')->nullable();
+            $table->timestamp('decided_at')
+                ->nullable();
 
             /*
             |--------------------------------------------------------------------------
             | Application Tracking
             |--------------------------------------------------------------------------
             |
-            | Records whether the approved discount has actually been
-            | applied to the invoice.
+            | Administrative approval and financial application are
+            | intentionally separate operations.
+            |
+            | APPROVED does NOT automatically mean that the invoice
+            | has already been changed.
             |
             */
 
             $table->boolean('applied_to_invoice')
                 ->default(false);
 
-            $table->timestamp('applied_at')->nullable();
+            $table->timestamp('applied_at')
+                ->nullable();
 
             /*
             |--------------------------------------------------------------------------
@@ -129,7 +195,9 @@ return new class extends Migration
             );
 
             $table->index('submitted_at');
+
             $table->index('decided_at');
+
             $table->index('applied_to_invoice');
         });
     }

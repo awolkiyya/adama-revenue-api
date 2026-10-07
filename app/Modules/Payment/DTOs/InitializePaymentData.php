@@ -23,8 +23,6 @@ final readonly class InitializePaymentData
         |--------------------------------------------------------------------------
         |
         | Trusted citizen ID.
-        | This must come from the authenticated user's citizen account
-        | or a controlled testing mechanism.
         |
         */
 
@@ -69,6 +67,24 @@ final readonly class InitializePaymentData
         */
 
         public PaymentProvider $provider,
+
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Initiator
+        |--------------------------------------------------------------------------
+        |
+        | Municipal user who initiated/processed the payment record.
+        |
+        | This is NOT the same as verified_by.
+        |
+        | For automatic online verification:
+        |
+        | processed_by = initiating user
+        | verified_by  = null
+        |
+        */
+
+        public ?string $initiatedByUserId = null,
 
         /*
         |--------------------------------------------------------------------------
@@ -194,6 +210,17 @@ final readonly class InitializePaymentData
 
             /*
             |--------------------------------------------------------------------------
+            | Payment Initiator
+            |--------------------------------------------------------------------------
+            */
+
+            initiatedByUserId:
+                filled($data['initiated_by_user_id'] ?? null)
+                    ? (string) $data['initiated_by_user_id']
+                    : null,
+
+            /*
+            |--------------------------------------------------------------------------
             | Customer
             |--------------------------------------------------------------------------
             */
@@ -287,6 +314,9 @@ final readonly class InitializePaymentData
 
             'provider' =>
                 $this->provider->value,
+
+            'initiated_by_user_id' =>
+                $this->initiatedByUserId,
 
             'customer_id' =>
                 $this->customerId,
