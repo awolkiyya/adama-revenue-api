@@ -1,9 +1,8 @@
 <?php
 
-use App\Http\Controllers\Api\V1\LeaseAmendmentController;
+use App\Modules\Assessment\Controllers\LeaseAmendmentController;
 
-Route::middleware('auth:sanctum')
-    ->prefix('lease-amendments')
+Route::prefix('lease-amendments')
     ->group(function () {
 
         Route::get(

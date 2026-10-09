@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Requests\LeaseAmendment;
+namespace App\Http\Requests\Assessment;
 
 use Illuminate\Foundation\Http\FormRequest;
 

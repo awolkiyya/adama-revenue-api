@@ -238,6 +238,14 @@ Route::prefix('v1')->group(function () {
         );
 
 
+        // lease ammendment
+
+        require base_path(
+            'routes/Api/v1/lease-amendments.php'
+        );
+
+
+
         // ====================================================
         // PRIVATE FILE ACCESS
         // ====================================================
