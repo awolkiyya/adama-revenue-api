@@ -9,6 +9,12 @@ class LeaseAmendmentChange extends Model
 {
     protected $table = 'lease_amendment_changes';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Mass Assignment
+    |--------------------------------------------------------------------------
+    */
+
     protected $fillable = [
         'lease_amendment_id',
         'field_name',
@@ -20,10 +26,26 @@ class LeaseAmendmentChange extends Model
         'change_order',
     ];
 
-    protected $casts = [
-        'old_value' => 'json',
-        'new_value' => 'json',
-    ];
+    /*
+    |--------------------------------------------------------------------------
+    | Attribute Casting
+    |--------------------------------------------------------------------------
+    */
+
+    protected function casts(): array
+    {
+        return [
+            'old_value' => 'array',
+            'new_value' => 'array',
+            'change_order' => 'integer',
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Lease Amendment Relationship
+    |--------------------------------------------------------------------------
+    */
 
     public function leaseAmendment(): BelongsTo
     {
@@ -32,6 +54,12 @@ class LeaseAmendmentChange extends Model
             'lease_amendment_id'
         );
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Measurement Unit Relationship
+    |--------------------------------------------------------------------------
+    */
 
     public function measurementUnit(): BelongsTo
     {

@@ -11,22 +11,34 @@ class PenaltyDiscountRequestPolicy
     use ChecksHierarchy;
 
     /**
+     * Workflow statuses.
+     *
+     * Keep these synchronized with the status values stored
+     * in penalty_discount_requests.
+     */
+    private const DRAFT = 'DRAFT';
+    private const SUBMITTED = 'SUBMITTED';
+    private const APPROVED = 'APPROVED';
+    private const REJECTED = 'REJECTED';
+    private const APPLIED = 'APPLIED';
+    private const CANCELLED = 'CANCELLED';
+
+    /**
      * ============================================================
      * VIEW ANY PENALTY DISCOUNT REQUESTS
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.read
      *
-     * Allows retrieving and listing penalty discount requests.
+     * Allows listing and retrieving penalty discount requests.
      *
      * The `view` permission is intended for accessing the
-     * Penalty Discount Request Management interface, while
-     * `read` controls access to the actual request data.
+     * management interface, while `read` controls access
+     * to the actual request data.
      *
-     * Organizational scope should be enforced by the query/service
-     * layer where applicable.
+     * Organizational scope must also be enforced by the
+     * query or service layer where applicable.
      */
     public function viewAny(User $user): bool
     {
@@ -42,12 +54,9 @@ class PenaltyDiscountRequestPolicy
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.read
      *
-     * Allows retrieving an individual penalty discount request,
-     * including its invoice, requested amount, decision,
-     * approved amount, and application status.
+     * Allows retrieving an individual request and its details.
      */
     public function view(
         User $user,
@@ -65,13 +74,13 @@ class PenaltyDiscountRequestPolicy
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.create
      *
-     * Allows creating a penalty discount request for an
-     * eligible invoice.
+     * Allows creating a request for an eligible invoice.
      *
-     * The request is created by the Revenue Compliance Officer.
+     * The service layer must validate invoice eligibility,
+     * the taxpayer, the outstanding penalty and the requested
+     * discount amount.
      */
     public function create(User $user): bool
     {
@@ -83,22 +92,43 @@ class PenaltyDiscountRequestPolicy
 
     /**
      * ============================================================
+     * UPDATE PENALTY DISCOUNT REQUEST
+     * ============================================================
+     *
+     * Permission:
+     *     penalty_discount_requests.create
+     *
+     * The current permission catalog has no separate update
+     * permission, so the create permission is reused.
+     *
+     * Only draft requests may be updated.
+     */
+    public function update(
+        User $user,
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): bool {
+        return $this->hasPermission(
+            $user,
+            'penalty_discount_requests.create'
+        )
+            && $penaltyDiscountRequest->status === self::DRAFT
+            && ! $penaltyDiscountRequest->applied_to_invoice
+            && $penaltyDiscountRequest->applied_at === null;
+    }
+
+    /**
+     * ============================================================
      * SUBMIT PENALTY DISCOUNT REQUEST
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.submit
      *
-     * Allows submitting a draft penalty discount request for
-     * administrative review.
+     * Only draft requests may be submitted for administrative
+     * review.
      *
-     * The service layer must ensure that:
-     *
-     * - The request is in DRAFT status.
-     * - The invoice is eligible.
-     * - The requested amount is valid.
-     * - Required information is complete.
+     * The service layer must validate request completeness,
+     * invoice eligibility and the requested amount.
      */
     public function submit(
         User $user,
@@ -107,7 +137,10 @@ class PenaltyDiscountRequestPolicy
         return $this->hasPermission(
             $user,
             'penalty_discount_requests.submit'
-        );
+        )
+            && $penaltyDiscountRequest->status === self::DRAFT
+            && ! $penaltyDiscountRequest->applied_to_invoice
+            && $penaltyDiscountRequest->applied_at === null;
     }
 
     /**
@@ -116,23 +149,16 @@ class PenaltyDiscountRequestPolicy
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.decide
      *
-     * Allows an authorized Revenue Tax Administrative Officer
-     * to make the administrative decision.
+     * Allows an authorized officer to approve or reject
+     * a submitted request.
      *
-     * The decision may be:
+     * Only requests in SUBMITTED status may be decided.
      *
-     *     APPROVED
-     *     REJECTED
-     *
-     * When approved, the officer specifies the approved
-     * penalty discount amount.
-     *
-     * The service layer must enforce the actual business rules,
-     * including ensuring that the approved amount does not
-     * exceed the invoice's current penalty.
+     * The service layer must validate the decision, decision
+     * reason and approved amount. The approved amount must not
+     * exceed the eligible penalty amount.
      */
     public function decide(
         User $user,
@@ -141,7 +167,76 @@ class PenaltyDiscountRequestPolicy
         return $this->hasPermission(
             $user,
             'penalty_discount_requests.decide'
+        )
+            && $penaltyDiscountRequest->status === self::SUBMITTED
+            && ! $penaltyDiscountRequest->applied_to_invoice
+            && $penaltyDiscountRequest->applied_at === null;
+    }
+
+    /**
+     * ============================================================
+     * APPROVE PENALTY DISCOUNT REQUEST
+     * ============================================================
+     *
+     * Uses the shared `decide` permission.
+     *
+     * Only submitted requests may be approved.
+     */
+    public function approve(
+        User $user,
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): bool {
+        return $this->decide(
+            $user,
+            $penaltyDiscountRequest
         );
+    }
+
+    /**
+     * ============================================================
+     * REJECT PENALTY DISCOUNT REQUEST
+     * ============================================================
+     *
+     * Uses the shared `decide` permission.
+     *
+     * Only submitted requests may be rejected.
+     */
+    public function reject(
+        User $user,
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): bool {
+        return $this->decide(
+            $user,
+            $penaltyDiscountRequest
+        );
+    }
+
+    /**
+     * ============================================================
+     * APPLY APPROVED PENALTY DISCOUNT REQUEST
+     * ============================================================
+     *
+     * Permission:
+     *     penalty_discount_requests.apply
+     *
+     * Only approved requests that have not already been applied
+     * may be applied to an invoice.
+     *
+     * The service layer must apply the discount transactionally,
+     * prevent duplicate application and preserve invoice
+     * financial consistency.
+     */
+    public function apply(
+        User $user,
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): bool {
+        return $this->hasPermission(
+            $user,
+            'penalty_discount_requests.apply'
+        )
+            && $penaltyDiscountRequest->status === self::APPROVED
+            && ! $penaltyDiscountRequest->applied_to_invoice
+            && $penaltyDiscountRequest->applied_at === null;
     }
 
     /**
@@ -150,14 +245,13 @@ class PenaltyDiscountRequestPolicy
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.cancel
      *
-     * Allows cancelling an eligible penalty discount request
-     * before a final administrative decision is made.
+     * Draft, submitted and approved requests may be cancelled
+     * if the discount has not already been applied.
      *
-     * The service layer must prevent cancellation of requests
-     * that have already been finally decided.
+     * Rejected, applied and already cancelled requests cannot
+     * be cancelled again through this operation.
      */
     public function cancel(
         User $user,
@@ -166,7 +260,18 @@ class PenaltyDiscountRequestPolicy
         return $this->hasPermission(
             $user,
             'penalty_discount_requests.cancel'
-        );
+        )
+            && in_array(
+                $penaltyDiscountRequest->status,
+                [
+                    self::DRAFT,
+                    self::SUBMITTED,
+                    self::APPROVED,
+                ],
+                true
+            )
+            && ! $penaltyDiscountRequest->applied_to_invoice
+            && $penaltyDiscountRequest->applied_at === null;
     }
 
     /**
@@ -175,17 +280,9 @@ class PenaltyDiscountRequestPolicy
      * ============================================================
      *
      * Permission:
-     *
      *     penalty_discount_requests.view_history
      *
-     * Allows viewing the history of:
-     *
-     * - request creation
-     * - submission
-     * - administrative decision
-     * - approved amount
-     * - invoice application
-     * - cancellation
+     * Allows viewing the request's audit and workflow history.
      */
     public function viewHistory(
         User $user,
@@ -196,4 +293,24 @@ class PenaltyDiscountRequestPolicy
             'penalty_discount_requests.view_history'
         );
     }
+
+    /**
+     * ============================================================
+     * PERMISSION CHECK
+     * ============================================================
+     *
+     * Centralized Spatie permission check for the api guard.
+     *
+     * Requires the User model to use Spatie's HasRoles trait.
+     */
+    protected function hasPermission(
+        User $user,
+        string $permission
+    ): bool {
+        return $user->hasPermissionTo(
+            $permission,
+            'api'
+        );
+    }
 }
+

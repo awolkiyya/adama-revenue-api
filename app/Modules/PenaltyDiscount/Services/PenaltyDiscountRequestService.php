@@ -2,115 +2,161 @@
 
 namespace App\Modules\PenaltyDiscount\Services;
 
+use App\Models\File;
 use App\Models\Invoice;
 use App\Models\PenaltyDiscountRequest;
+use App\Models\RevenueSetting;
+use App\Services\Storage\StorageService;
 use Carbon\Carbon;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class PenaltyDiscountRequestService
 {
     /**
-     * Create a new penalty discount request.
+     * Supporting-document storage folder.
+     */
+    private const SUPPORTING_DOCUMENT_FOLDER = 'penalty-discount-requests';
+
+    /**
+     * File category used by StorageService.
+     */
+    private const SUPPORTING_DOCUMENT_CATEGORY =
+        'PENALTY_DISCOUNT_SUPPORTING_DOCUMENT';
+
+    public function __construct(
+        private readonly StorageService $storageService,
+    ) {}
+
+    /*
+    |--------------------------------------------------------------------------
+    | SUMMARY
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get penalty discount request summary statistics.
      *
-     * The Revenue Compliance Officer creates the request.
+     * The approved amount includes both APPROVED and APPLIED requests.
+     */
+    public function summary(): array
+    {
+        $statusCounts = PenaltyDiscountRequest::query()
+            ->selectRaw('status, COUNT(*) as total')
+            ->groupBy('status')
+            ->pluck('total', 'status');
+
+        $approvedAmount = PenaltyDiscountRequest::query()
+            ->whereIn('status', [
+                PenaltyDiscountRequest::STATUS_APPROVED,
+                PenaltyDiscountRequest::STATUS_APPLIED,
+            ])
+            ->sum('approved_amount');
+
+        return [
+            'total_requests' => (int) $statusCounts->sum(),
+
+            'pending_decision' => (int) (
+                $statusCounts[
+                    PenaltyDiscountRequest::STATUS_SUBMITTED
+                ] ?? 0
+            ),
+
+            'approved_requests' => (int) (
+                $statusCounts[
+                    PenaltyDiscountRequest::STATUS_APPROVED
+                ] ?? 0
+            ),
+
+            'applied_requests' => (int) (
+                $statusCounts[
+                    PenaltyDiscountRequest::STATUS_APPLIED
+                ] ?? 0
+            ),
+
+            'approved_amount' => round(
+                (float) $approvedAmount,
+                2
+            ),
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Create a DRAFT penalty discount request.
      *
-     * The request is always created as DRAFT.
+     * The supporting document is optional.
      */
     public function create(
         Invoice|string $invoice,
         float $requestedAmount,
         string $reason,
         string $createdBy,
+        ?UploadedFile $supportingFile = null,
     ): PenaltyDiscountRequest {
         return DB::transaction(function () use (
             $invoice,
             $requestedAmount,
             $reason,
             $createdBy,
+            $supportingFile,
         ) {
+            $invoiceId = $invoice instanceof Invoice
+                ? $invoice->id
+                : $invoice;
+
+            $invoiceModel = Invoice::query()
+                ->whereKey($invoiceId)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $invoiceModel) {
+                $this->validationError(
+                    'invoice_id',
+                    'The selected invoice was not found.'
+                );
+            }
+
             $requestedAmount = $this->normalizeAmount(
                 $requestedAmount
             );
 
             $reason = trim($reason);
 
-            if ($requestedAmount <= 0) {
-                throw ValidationException::withMessages([
-                    'requested_amount' =>
-                        'Requested discount amount must be greater than zero.',
-                ]);
-            }
+            $this->validatePositiveAmount(
+                $requestedAmount,
+                'requested_amount',
+                'Requested discount amount'
+            );
 
-            if ($reason === '') {
-                throw ValidationException::withMessages([
-                    'reason' =>
-                        'A reason is required for a penalty discount request.',
-                ]);
-            }
-
-            $invoiceModel = $this->resolveInvoice($invoice);
-
-            $invoiceModel = Invoice::query()
-                ->whereKey($invoiceModel->id)
-                ->lockForUpdate()
-                ->first();
-
-            if (! $invoiceModel) {
-                throw ValidationException::withMessages([
-                    'invoice' => 'Invoice was not found.',
-                ]);
-            }
+            $this->validateReason($reason, 'reason');
 
             $this->ensureInvoiceEligible($invoiceModel);
 
-            $penalty = $this->currentPenalty(
-                $invoiceModel
+            $this->ensureAmountWithinRemainingPenalty(
+                $invoiceModel,
+                $requestedAmount,
+                'requested_amount'
             );
 
-            $remainingPenalty = $this->remainingPenalty(
-                $invoiceModel
-            );
+            $this->ensureNoActiveRequest($invoiceModel);
 
-            if ($penalty <= 0) {
-                throw ValidationException::withMessages([
-                    'requested_amount' =>
-                        'This invoice has no penalty available for discount.',
-                ]);
-            }
-
-            if ($remainingPenalty <= 0) {
-                throw ValidationException::withMessages([
-                    'requested_amount' =>
-                        'The invoice penalty has already been fully discounted.',
-                ]);
-            }
-
-            if ($requestedAmount > $remainingPenalty) {
-                throw ValidationException::withMessages([
-                    'requested_amount' => sprintf(
-                        'Requested discount cannot exceed the remaining penalty of %.2f ETB.',
-                        $remainingPenalty
-                    ),
-                ]);
-            }
-
-            $this->ensureNoActiveRequest(
-                $invoiceModel
-            );
-
-            return PenaltyDiscountRequest::query()->create([
+            $requestModel = PenaltyDiscountRequest::query()->create([
                 'invoice_id' => $invoiceModel->id,
                 'citizen_id' => $invoiceModel->citizen_id,
-
                 'requested_amount' => $requestedAmount,
                 'reason' => $reason,
 
-                'status' =>
-                    PenaltyDiscountRequest::STATUS_DRAFT,
+                'status' => PenaltyDiscountRequest::STATUS_DRAFT,
 
                 'created_by' => $createdBy,
-
                 'submitted_at' => null,
 
                 'decision' => null,
@@ -122,11 +168,202 @@ class PenaltyDiscountRequestService
                 'applied_to_invoice' => false,
                 'applied_at' => null,
             ]);
+
+            if ($supportingFile !== null) {
+                $this->attachSupportingFile(
+                    $requestModel,
+                    $supportingFile,
+                    $createdBy
+                );
+            }
+
+            return $this->freshRequest($requestModel);
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Submit a DRAFT request for administrative decision.
+     * Update a DRAFT request.
+     *
+     * If a new supporting document is supplied, it is attached to
+     * the request. If no document is supplied, existing files remain.
+     */
+    public function update(
+        PenaltyDiscountRequest|string $request,
+        Invoice|string $invoice,
+        float $requestedAmount,
+        string $reason,
+        ?UploadedFile $supportingFile = null,
+        ?string $updatedBy = null,
+    ): PenaltyDiscountRequest {
+        return DB::transaction(function () use (
+            $request,
+            $invoice,
+            $requestedAmount,
+            $reason,
+            $supportingFile,
+            $updatedBy,
+        ) {
+            $requestModel = $this->lockRequest($request);
+
+            if (
+                $requestModel->status
+                !== PenaltyDiscountRequest::STATUS_DRAFT
+            ) {
+                $this->validationError(
+                    'status',
+                    'Only DRAFT requests can be updated.'
+                );
+            }
+
+            if ($requestModel->isApplied()) {
+                $this->validationError(
+                    'status',
+                    'An applied discount request cannot be updated.'
+                );
+            }
+
+            $invoiceId = $invoice instanceof Invoice
+                ? $invoice->id
+                : $invoice;
+
+            $invoiceModel = Invoice::query()
+                ->whereKey($invoiceId)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $invoiceModel) {
+                $this->validationError(
+                    'invoice_id',
+                    'The selected invoice was not found.'
+                );
+            }
+
+            $requestedAmount = $this->normalizeAmount(
+                $requestedAmount
+            );
+
+            $reason = trim($reason);
+
+            $this->validatePositiveAmount(
+                $requestedAmount,
+                'requested_amount',
+                'Requested discount amount'
+            );
+
+            $this->validateReason($reason, 'reason');
+
+            $this->ensureInvoiceEligible($invoiceModel);
+
+            $this->ensureAmountWithinRemainingPenalty(
+                $invoiceModel,
+                $requestedAmount,
+                'requested_amount'
+            );
+
+            $this->ensureNoActiveRequest(
+                $invoiceModel,
+                $requestModel->id
+            );
+
+            $requestModel->update([
+                'invoice_id' => $invoiceModel->id,
+                'citizen_id' => $invoiceModel->citizen_id,
+                'requested_amount' => $requestedAmount,
+                'reason' => $reason,
+            ]);
+
+            if ($supportingFile !== null) {
+                $this->attachSupportingFile(
+                    $requestModel,
+                    $supportingFile,
+                    $updatedBy
+                        ?? (string) $requestModel->created_by
+                );
+            }
+
+            return $this->freshRequest($requestModel);
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | SUPPORTING DOCUMENTS
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Store and associate a supporting document.
+     *
+     * StorageService owns physical storage and File registry creation.
+     * This service associates the resulting File record with the request.
+     *
+     * Existing documents are retained when another file is uploaded.
+     */
+    protected function attachSupportingFile(
+        PenaltyDiscountRequest $request,
+        UploadedFile $uploadedFile,
+        string $uploadedBy,
+    ): File {
+        $file = null;
+
+        try {
+            $file = $this->storageService->upload(
+                $uploadedFile,
+                self::SUPPORTING_DOCUMENT_FOLDER,
+                $uploadedBy,
+                self::SUPPORTING_DOCUMENT_CATEGORY,
+                'private',
+            );
+
+            $file = $this->storageService->attachToModel(
+                $file,
+                $request
+            );
+
+            /*
+             * The File model must have a `collection` column
+             * for supportingFiles() to filter by this value.
+             */
+            $file->collection =
+                PenaltyDiscountRequest::FILE_COLLECTION_SUPPORTING_DOCUMENTS;
+
+            $file->save();
+
+            return $file->refresh();
+        } catch (Throwable $exception) {
+            /*
+             * If attachment fails, remove the newly created file
+             * where possible. Do not remove existing attachments.
+             *
+             * Storage cleanup and database transactions are separate
+             * resources; cleanup failures are reported independently.
+             */
+            if ($file !== null) {
+                try {
+                    $this->storageService->delete($file);
+                } catch (Throwable $cleanupException) {
+                    report($cleanupException);
+                }
+            }
+
+            throw $exception;
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | SUBMIT
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Submit a DRAFT request for review.
      */
     public function submit(
         PenaltyDiscountRequest|string $request,
@@ -135,47 +372,56 @@ class PenaltyDiscountRequestService
             $requestModel = $this->lockRequest($request);
 
             if (
-                $requestModel->status !==
-                PenaltyDiscountRequest::STATUS_DRAFT
+                $requestModel->status
+                !== PenaltyDiscountRequest::STATUS_DRAFT
             ) {
-                throw ValidationException::withMessages([
-                    'status' => sprintf(
-                        'Only DRAFT requests can be submitted. Current status is "%s".',
-                        $requestModel->status
-                    ),
-                ]);
+                $this->validationError(
+                    'status',
+                    'Only DRAFT requests can be submitted.'
+                );
             }
 
-            $this->ensureRequestAmountStillValid(
-                $requestModel
+            $invoice = Invoice::query()
+                ->whereKey($requestModel->invoice_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $invoice) {
+                $this->validationError(
+                    'invoice',
+                    'The invoice associated with this request was not found.'
+                );
+            }
+
+            $this->ensureInvoiceEligible($invoice);
+
+            $this->ensureAmountWithinRemainingPenalty(
+                $invoice,
+                (float) $requestModel->requested_amount,
+                'requested_amount'
             );
 
-            $requestModel->update([
-                'status' =>
-                    PenaltyDiscountRequest::STATUS_SUBMITTED,
+            $this->ensureNoActiveRequest($invoice, $requestModel->id);
 
+            $requestModel->update([
+                'status' => PenaltyDiscountRequest::STATUS_SUBMITTED,
                 'submitted_at' => now(),
             ]);
 
-            return $requestModel->fresh([
-                'invoice',
-                'citizen',
-                'creator',
-                'decider',
-            ]);
+            return $this->freshRequest($requestModel);
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | DECIDE
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Make an administrative decision.
+     * Approve or reject a submitted request.
      *
-     * Only a submitted request can be decided.
-     *
-     * APPROVED:
-     *     approved_amount is required.
-     *
-     * REJECTED:
-     *     approved_amount must be null/zero.
+     * This records the decision only. The invoice changes only in apply().
      */
     public function decide(
         PenaltyDiscountRequest|string $request,
@@ -191,100 +437,81 @@ class PenaltyDiscountRequestService
             $decisionReason,
             $decidedBy,
         ) {
-            $requestModel = $this->lockRequest(
-                $request,
-                [
-                    'invoice',
-                ]
-            );
+            $requestModel = $this->lockRequest($request);
 
             if (
-                $requestModel->status !==
-                PenaltyDiscountRequest::STATUS_SUBMITTED
+                $requestModel->status
+                !== PenaltyDiscountRequest::STATUS_SUBMITTED
             ) {
-                throw ValidationException::withMessages([
-                    'status' => sprintf(
-                        'Only SUBMITTED requests can be decided. Current status is "%s".',
-                        $requestModel->status
-                    ),
-                ]);
+                $this->validationError(
+                    'status',
+                    'Only SUBMITTED requests can be decided.'
+                );
             }
 
-            $decision = strtoupper(
-                trim($decision)
-            );
+            if ($requestModel->isApplied()) {
+                $this->validationError(
+                    'status',
+                    'An applied discount request cannot be decided again.'
+                );
+            }
 
-            if (! in_array(
-                $decision,
-                [
-                    PenaltyDiscountRequest::DECISION_APPROVED,
-                    PenaltyDiscountRequest::DECISION_REJECTED,
-                ],
-                true
-            )) {
-                throw ValidationException::withMessages([
-                    'decision' =>
-                        'Decision must be APPROVED or REJECTED.',
-                ]);
+            $decision = strtoupper(trim($decision));
+
+            if (! in_array($decision, [
+                PenaltyDiscountRequest::DECISION_APPROVED,
+                PenaltyDiscountRequest::DECISION_REJECTED,
+            ], true)) {
+                $this->validationError(
+                    'decision',
+                    'Decision must be APPROVED or REJECTED.'
+                );
             }
 
             $decisionReason = $decisionReason !== null
                 ? trim($decisionReason)
                 : null;
 
-            if ($decision === PenaltyDiscountRequest::DECISION_REJECTED) {
-                if (
-                    $decisionReason === null
-                    || $decisionReason === ''
-                ) {
-                    throw ValidationException::withMessages([
-                        'decision_reason' =>
-                            'A decision reason is required when rejecting a request.',
-                    ]);
-                }
+            if (
+                $decision === PenaltyDiscountRequest::DECISION_REJECTED
+            ) {
+                $this->validateReason(
+                    $decisionReason ?? '',
+                    'decision_reason'
+                );
 
                 $requestModel->update([
-                    'status' =>
-                        PenaltyDiscountRequest::STATUS_DECIDED,
-
-                    'decision' =>
-                        PenaltyDiscountRequest::DECISION_REJECTED,
-
+                    'status' => PenaltyDiscountRequest::STATUS_REJECTED,
+                    'decision' => PenaltyDiscountRequest::DECISION_REJECTED,
                     'approved_amount' => null,
-
-                    'decision_reason' =>
-                        $decisionReason,
-
-                    'decided_by' =>
-                        $decidedBy,
-
-                    'decided_at' =>
-                        now(),
-
-                    'applied_to_invoice' =>
-                        false,
-
-                    'applied_at' =>
-                        null,
+                    'decision_reason' => $decisionReason,
+                    'decided_by' => $decidedBy,
+                    'decided_at' => now(),
+                    'applied_to_invoice' => false,
+                    'applied_at' => null,
                 ]);
 
-                return $requestModel->fresh([
-                    'invoice',
-                    'citizen',
-                    'creator',
-                    'decider',
-                ]);
+                return $this->freshRequest($requestModel);
             }
 
             $approvedAmount = $this->normalizeAmount(
                 $approvedAmount ?? 0
             );
 
-            if ($approvedAmount <= 0) {
-                throw ValidationException::withMessages([
-                    'approved_amount' =>
-                        'Approved discount amount must be greater than zero.',
-                ]);
+            $this->validatePositiveAmount(
+                $approvedAmount,
+                'approved_amount',
+                'Approved discount amount'
+            );
+
+            if (
+                $approvedAmount
+                > (float) $requestModel->requested_amount
+            ) {
+                $this->validationError(
+                    'approved_amount',
+                    'The approved discount cannot exceed the requested discount amount.'
+                );
             }
 
             $invoice = Invoice::query()
@@ -293,168 +520,161 @@ class PenaltyDiscountRequestService
                 ->first();
 
             if (! $invoice) {
-                throw ValidationException::withMessages([
-                    'invoice' =>
-                        'The invoice associated with this request was not found.',
-                ]);
+                $this->validationError(
+                    'invoice',
+                    'The invoice associated with this request was not found.'
+                );
             }
 
-            $this->ensureInvoiceEligible(
-                $invoice
+            $this->ensureInvoiceEligible($invoice);
+
+            $this->ensureAmountWithinRemainingPenalty(
+                $invoice,
+                $approvedAmount,
+                'approved_amount'
             );
 
-            $remainingPenalty = $this->remainingPenalty(
-                $invoice
-            );
+            $requestModel->update([
+                'status' => PenaltyDiscountRequest::STATUS_APPROVED,
+                'decision' => PenaltyDiscountRequest::DECISION_APPROVED,
+                'approved_amount' => $approvedAmount,
+                'decision_reason' => $decisionReason,
+                'decided_by' => $decidedBy,
+                'decided_at' => now(),
+                'applied_to_invoice' => false,
+                'applied_at' => null,
+            ]);
 
-            if ($remainingPenalty <= 0) {
-                throw ValidationException::withMessages([
-                    'approved_amount' =>
-                        'There is no remaining penalty available for discount.',
-                ]);
+            return $this->freshRequest($requestModel);
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | APPLY
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Apply an approved discount to the invoice.
+     */
+    public function apply(
+        PenaltyDiscountRequest|string $request,
+        string $appliedBy,
+    ): PenaltyDiscountRequest {
+        return DB::transaction(function () use ($request, $appliedBy) {
+            $requestModel = $this->lockRequest($request);
+
+            if (
+                $requestModel->status
+                !== PenaltyDiscountRequest::STATUS_APPROVED
+            ) {
+                $this->validationError(
+                    'status',
+                    'Only APPROVED requests can be applied.'
+                );
             }
 
-            if ($approvedAmount > $remainingPenalty) {
-                throw ValidationException::withMessages([
-                    'approved_amount' => sprintf(
-                        'Approved discount cannot exceed the remaining penalty of %.2f ETB.',
-                        $remainingPenalty
-                    ),
-                ]);
+            if ($requestModel->isApplied()) {
+                $this->validationError(
+                    'status',
+                    'This discount request has already been applied.'
+                );
             }
 
-            /*
-             * Prevent a second discount request from being approved
-             * while another approved request has already consumed
-             * part of the penalty.
-             */
-            $this->ensureNoOtherAppliedDiscount(
-                $requestModel
+            $approvedAmount = $this->normalizeAmount(
+                (float) $requestModel->approved_amount
             );
 
-            $currentDiscount = $this->currentPenaltyDiscount(
-                $invoice
+            $this->validatePositiveAmount(
+                $approvedAmount,
+                'approved_amount',
+                'Approved discount amount'
             );
+
+            $invoice = Invoice::query()
+                ->whereKey($requestModel->invoice_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $invoice) {
+                $this->validationError(
+                    'invoice',
+                    'The invoice associated with this request was not found.'
+                );
+            }
+
+            $this->ensureInvoiceEligible($invoice);
+
+            $this->ensureAmountWithinRemainingPenalty(
+                $invoice,
+                $approvedAmount,
+                'approved_amount'
+            );
+
+            $currentDiscount = $this->currentPenaltyDiscount($invoice);
 
             $newPenaltyDiscount = round(
                 $currentDiscount + $approvedAmount,
                 2
             );
 
-            $penalty = $this->currentPenalty(
-                $invoice
-            );
-
-            $interest = $this->currentInterest(
-                $invoice
-            );
-
-            $subtotal = $this->currentSubtotal(
-                $invoice
-            );
-
-            $totalAmount = round(
-                $subtotal
-                + $penalty
+            $newTotalAmount = round(
+                $this->currentSubtotal($invoice)
+                + $this->currentPenalty($invoice)
                 - $newPenaltyDiscount
-                + $interest,
+                + $this->currentInterest($invoice),
                 2
             );
 
-            $totalAmount = max(
-                0,
-                $totalAmount
-            );
+            $newTotalAmount = max(0, $newTotalAmount);
 
             $paidAmount = round(
-                max(
-                    0,
-                    (float) $invoice->paid_amount
-                ),
+                max(0, (float) $invoice->paid_amount),
                 2
             );
 
-            $this->ensureNoOverpayment(
-                $invoice,
-                $totalAmount
-            );
+            $this->ensureNoOverpayment($invoice, $newTotalAmount);
 
             $balanceDue = round(
-                max(
-                    0,
-                    $totalAmount - $paidAmount
-                ),
+                max(0, $newTotalAmount - $paidAmount),
                 2
             );
 
-            $status = $this->resolveInvoiceStatus(
+            $invoiceStatus = $this->resolveInvoiceStatus(
                 $invoice,
                 $paidAmount,
                 $balanceDue
             );
 
-            $paidAt = $balanceDue <= 0
-                ? ($invoice->paid_at ?? now())
-                : null;
-
-            /*
-             * Apply the approved discount to the invoice
-             * atomically with the administrative decision.
-             */
             $invoice->update([
-                'penalty_discount_amount' =>
-                    $newPenaltyDiscount,
-
-                'total_amount' =>
-                    $totalAmount,
-
-                'balance_due' =>
-                    $balanceDue,
-
-                'status' =>
-                    $status,
-
-                'paid_at' =>
-                    $paidAt,
+                'penalty_discount_amount' => $newPenaltyDiscount,
+                'total_amount' => $newTotalAmount,
+                'balance_due' => $balanceDue,
+                'status' => $invoiceStatus,
+                'paid_at' => $balanceDue <= 0
+                    ? ($invoice->paid_at ?? now())
+                    : null,
             ]);
 
             $requestModel->update([
-                'status' =>
-                    PenaltyDiscountRequest::STATUS_DECIDED,
-
-                'decision' =>
-                    PenaltyDiscountRequest::DECISION_APPROVED,
-
-                'approved_amount' =>
-                    $approvedAmount,
-
-                'decision_reason' =>
-                    $decisionReason,
-
-                'decided_by' =>
-                    $decidedBy,
-
-                'decided_at' =>
-                    now(),
-
-                'applied_to_invoice' =>
-                    true,
-
-                'applied_at' =>
-                    now(),
+                'status' => PenaltyDiscountRequest::STATUS_APPLIED,
+                'applied_to_invoice' => true,
+                'applied_at' => now(),
             ]);
 
-            return $requestModel->fresh([
-                'invoice',
-                'citizen',
-                'creator',
-                'decider',
-            ]);
+            return $this->freshRequest($requestModel);
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | CANCEL
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Cancel a DRAFT or SUBMITTED request.
+     * Cancel a DRAFT, SUBMITTED, or unapplied APPROVED request.
      */
     public function cancel(
         PenaltyDiscountRequest|string $request,
@@ -462,247 +682,218 @@ class PenaltyDiscountRequestService
         return DB::transaction(function () use ($request) {
             $requestModel = $this->lockRequest($request);
 
-            if (! in_array(
-                $requestModel->status,
-                [
-                    PenaltyDiscountRequest::STATUS_DRAFT,
-                    PenaltyDiscountRequest::STATUS_SUBMITTED,
-                ],
-                true
-            )) {
-                throw ValidationException::withMessages([
-                    'status' => sprintf(
-                        'Only DRAFT or SUBMITTED requests can be cancelled. Current status is "%s".',
-                        $requestModel->status
-                    ),
-                ]);
+            if (! in_array($requestModel->status, [
+                PenaltyDiscountRequest::STATUS_DRAFT,
+                PenaltyDiscountRequest::STATUS_SUBMITTED,
+                PenaltyDiscountRequest::STATUS_APPROVED,
+            ], true)) {
+                $this->validationError(
+                    'status',
+                    'Only DRAFT, SUBMITTED, or unapplied APPROVED requests can be cancelled.'
+                );
+            }
+
+            if ($requestModel->isApplied()) {
+                $this->validationError(
+                    'status',
+                    'An applied discount request cannot be cancelled.'
+                );
             }
 
             $requestModel->update([
-                'status' =>
-                    PenaltyDiscountRequest::STATUS_CANCELLED,
+                'status' => PenaltyDiscountRequest::STATUS_CANCELLED,
             ]);
 
-            return $requestModel->fresh([
-                'invoice',
-                'citizen',
-                'creator',
-                'decider',
-            ]);
+            return $this->freshRequest($requestModel);
         });
     }
 
-    /**
-     * Resolve an invoice from model or UUID.
-     */
-    protected function resolveInvoice(
-        Invoice|string $invoice
-    ): Invoice {
-        if ($invoice instanceof Invoice) {
-            return $invoice;
-        }
-
-        $model = Invoice::query()->find($invoice);
-
-        if (! $model) {
-            throw ValidationException::withMessages([
-                'invoice' => 'Invoice was not found.',
-            ]);
-        }
-
-        return $model;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | REQUEST RETRIEVAL
+    |--------------------------------------------------------------------------
+    */
 
     /**
-     * Lock the request for a state-changing operation.
+     * Find and lock a request for safe state transitions.
      */
     protected function lockRequest(
         PenaltyDiscountRequest|string $request,
-        array $with = []
     ): PenaltyDiscountRequest {
         $id = $request instanceof PenaltyDiscountRequest
             ? $request->id
             : $request;
 
-        $query = PenaltyDiscountRequest::query()
+        $model = PenaltyDiscountRequest::query()
             ->whereKey($id)
-            ->lockForUpdate();
-
-        if ($with !== []) {
-            $query->with($with);
-        }
-
-        $model = $query->first();
+            ->lockForUpdate()
+            ->first();
 
         if (! $model) {
-            throw ValidationException::withMessages([
-                'request' =>
-                    'Penalty discount request was not found.',
-            ]);
+            $this->validationError(
+                'request',
+                'Penalty discount request was not found.'
+            );
         }
 
         return $model;
     }
 
     /**
-     * Ensure invoice is eligible for a penalty discount request.
+     * Refresh a request with its primary relationships and documents.
      */
-    protected function ensureInvoiceEligible(
-        Invoice $invoice
-    ): void {
-        if (! in_array(
-            $invoice->status,
-            [
-                'ISSUED',
-                'PARTIALLY_PAID',
-                'OVERDUE',
-            ],
-            true
-        )) {
-            throw ValidationException::withMessages([
-                'invoice' => sprintf(
-                    'Penalty discount cannot be requested for an invoice with status "%s".',
+    protected function freshRequest(
+        PenaltyDiscountRequest $request,
+    ): PenaltyDiscountRequest {
+        return $request->fresh([
+            'invoice',
+            'citizen',
+            'creator',
+            'decider',
+            'supportingFiles',
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | INVOICE VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
+    protected function ensureInvoiceEligible(Invoice $invoice): void
+    {
+        if (! in_array($invoice->status, [
+            'ISSUED',
+            'PARTIALLY_PAID',
+            'OVERDUE',
+        ], true)) {
+            $this->validationError(
+                'invoice',
+                sprintf(
+                    'Penalty discounts are not allowed for an invoice with status "%s".',
                     $invoice->status
-                ),
-            ]);
+                )
+            );
         }
     }
 
     /**
-     * Ensure there is no active request for the invoice.
+     * Prevent multiple active requests for the same invoice.
      */
     protected function ensureNoActiveRequest(
-        Invoice $invoice
+        Invoice $invoice,
+        ?string $exceptRequestId = null,
     ): void {
-        $exists = PenaltyDiscountRequest::query()
+        $query = PenaltyDiscountRequest::query()
             ->where('invoice_id', $invoice->id)
             ->whereIn('status', [
                 PenaltyDiscountRequest::STATUS_DRAFT,
                 PenaltyDiscountRequest::STATUS_SUBMITTED,
-            ])
-            ->exists();
-
-        if ($exists) {
-            throw ValidationException::withMessages([
-                'invoice' =>
-                    'This invoice already has an active penalty discount request.',
+                PenaltyDiscountRequest::STATUS_APPROVED,
             ]);
+
+        if ($exceptRequestId !== null) {
+            $query->where('id', '!=', $exceptRequestId);
+        }
+
+        if ($query->exists()) {
+            $this->validationError(
+                'invoice',
+                'This invoice already has an active penalty discount request.'
+            );
         }
     }
 
     /**
-     * Ensure another request has not already applied
-     * a discount while this request was waiting for decision.
+     * Ensure a discount does not exceed the remaining penalty.
      */
-    protected function ensureNoOtherAppliedDiscount(
-        PenaltyDiscountRequest $request
+    protected function ensureAmountWithinRemainingPenalty(
+        Invoice $invoice,
+        float $amount,
+        string $field,
     ): void {
-        $exists = PenaltyDiscountRequest::query()
-            ->where('invoice_id', $request->invoice_id)
-            ->whereKeyNot($request->id)
-            ->where('status', PenaltyDiscountRequest::STATUS_DECIDED)
-            ->where('decision', PenaltyDiscountRequest::DECISION_APPROVED)
-            ->where('applied_to_invoice', true)
-            ->exists();
+        $remainingPenalty = $this->remainingPenalty($invoice);
 
-        /*
-         * Multiple approved requests can technically be supported
-         * if the remaining penalty is still available. Therefore,
-         * this method intentionally does not reject such requests.
-         *
-         * The actual remaining-penalty check is authoritative.
-         */
-        unset($exists);
-    }
-
-    /**
-     * Revalidate requested amount before submission.
-     */
-    protected function ensureRequestAmountStillValid(
-        PenaltyDiscountRequest $request
-    ): void {
-        $invoice = Invoice::query()
-            ->whereKey($request->invoice_id)
-            ->lockForUpdate()
-            ->first();
-
-        if (! $invoice) {
-            throw ValidationException::withMessages([
-                'invoice' =>
-                    'The invoice associated with this request was not found.',
-            ]);
+        if ($remainingPenalty <= 0) {
+            $this->validationError(
+                $field,
+                'This invoice has no remaining penalty available for discount.'
+            );
         }
 
-        $this->ensureInvoiceEligible($invoice);
-
-        $remainingPenalty = $this->remainingPenalty(
-            $invoice
-        );
-
-        if (
-            (float) $request->requested_amount
-            > $remainingPenalty
-        ) {
-            throw ValidationException::withMessages([
-                'requested_amount' => sprintf(
-                    'Requested discount cannot exceed the current remaining penalty of %.2f ETB.',
+        if ($amount > $remainingPenalty) {
+            $this->validationError(
+                $field,
+                sprintf(
+                    'The discount cannot exceed the remaining penalty of %.2f ETB.',
                     $remainingPenalty
-                ),
-            ]);
+                )
+            );
         }
     }
 
-    protected function currentSubtotal(
-        Invoice $invoice
-    ): float {
+    /*
+    |--------------------------------------------------------------------------
+    | FIELD VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
+    protected function validatePositiveAmount(
+        float $amount,
+        string $field,
+        string $label,
+    ): void {
+        if ($amount <= 0) {
+            $this->validationError(
+                $field,
+                $label . ' must be greater than zero.'
+            );
+        }
+    }
+
+    protected function validateReason(
+        string $reason,
+        string $field,
+    ): void {
+        if (trim($reason) === '') {
+            $this->validationError(
+                $field,
+                'A reason is required.'
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | INVOICE FINANCIAL VALUES
+    |--------------------------------------------------------------------------
+    */
+
+    protected function currentSubtotal(Invoice $invoice): float
+    {
+        return round(max(0, (float) $invoice->subtotal), 2);
+    }
+
+    protected function currentPenalty(Invoice $invoice): float
+    {
+        return round(max(0, (float) $invoice->penalty_amount), 2);
+    }
+
+    protected function currentPenaltyDiscount(Invoice $invoice): float
+    {
         return round(
-            max(
-                0,
-                (float) $invoice->subtotal
-            ),
+            max(0, (float) $invoice->penalty_discount_amount),
             2
         );
     }
 
-    protected function currentPenalty(
-        Invoice $invoice
-    ): float {
-        return round(
-            max(
-                0,
-                (float) $invoice->penalty_amount
-            ),
-            2
-        );
+    protected function currentInterest(Invoice $invoice): float
+    {
+        return round(max(0, (float) $invoice->interest_amount), 2);
     }
 
-    protected function currentPenaltyDiscount(
-        Invoice $invoice
-    ): float {
-        return round(
-            max(
-                0,
-                (float) $invoice->penalty_discount_amount
-            ),
-            2
-        );
-    }
-
-    protected function currentInterest(
-        Invoice $invoice
-    ): float {
-        return round(
-            max(
-                0,
-                (float) $invoice->interest_amount
-            ),
-            2
-        );
-    }
-
-    protected function remainingPenalty(
-        Invoice $invoice
-    ): float {
+    protected function remainingPenalty(Invoice $invoice): float
+    {
         return round(
             max(
                 0,
@@ -713,16 +904,18 @@ class PenaltyDiscountRequestService
         );
     }
 
-    /**
-     * Ensure an approved discount does not create an
-     * overpayment when overpayment is disabled.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | OVERPAYMENT VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
     protected function ensureNoOverpayment(
         Invoice $invoice,
-        float $totalAmount
+        float $newTotalAmount,
     ): void {
         $allowOverpayment = (bool) (
-            \App\Models\RevenueSetting::query()
+            RevenueSetting::query()
                 ->where('is_active', true)
                 ->value('invoice_allow_overpayment')
             ?? false
@@ -733,28 +926,32 @@ class PenaltyDiscountRequestService
         }
 
         $paidAmount = round(
-            max(
-                0,
-                (float) $invoice->paid_amount
-            ),
+            max(0, (float) $invoice->paid_amount),
             2
         );
 
-        if ($paidAmount > $totalAmount) {
-            throw ValidationException::withMessages([
-                'approved_amount' => sprintf(
-                    'The approved discount would reduce the invoice total below the amount already paid. Paid amount is %.2f ETB and the resulting invoice total would be %.2f ETB.',
+        if ($paidAmount > $newTotalAmount) {
+            $this->validationError(
+                'approved_amount',
+                sprintf(
+                    'The discount would reduce the invoice total below the amount already paid. Paid: %.2f ETB; resulting total: %.2f ETB.',
                     $paidAmount,
-                    $totalAmount
-                ),
-            ]);
+                    $newTotalAmount
+                )
+            );
         }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | INVOICE STATUS
+    |--------------------------------------------------------------------------
+    */
 
     protected function resolveInvoiceStatus(
         Invoice $invoice,
         float $paidAmount,
-        float $balanceDue
+        float $balanceDue,
     ): string {
         if ($balanceDue <= 0) {
             return 'PAID';
@@ -776,10 +973,29 @@ class PenaltyDiscountRequestService
         return 'ISSUED';
     }
 
-    protected function normalizeAmount(
-        float $amount
-    ): float {
+    /*
+    |--------------------------------------------------------------------------
+    | AMOUNT NORMALIZATION
+    |--------------------------------------------------------------------------
+    */
+
+    protected function normalizeAmount(float $amount): float
+    {
         return round($amount, 2);
     }
-}
 
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDATION EXCEPTION
+    |--------------------------------------------------------------------------
+    */
+
+    protected function validationError(
+        string $field,
+        string $message,
+    ): never {
+        throw ValidationException::withMessages([
+            $field => $message,
+        ]);
+    }
+}

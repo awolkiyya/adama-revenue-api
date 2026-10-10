@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\InterestRule;
+use App\Models\LeaseAmendment;
 use App\Models\MeasurementUnit;
 use App\Models\PenaltyRule;
 use App\Models\RevenueCategory;
@@ -11,6 +12,7 @@ use App\Models\Role;
 use App\Models\ServiceAccessRule;
 
 use App\Policies\InterestRulePolicy;
+use App\Policies\LeaseAmendmentPolicy;
 use App\Policies\MeasurementUnitPolicy;
 use App\Policies\PenaltyRulePolicy;
 use App\Policies\PermissionPolicy;
@@ -92,6 +94,11 @@ class AppServiceProvider extends ServiceProvider
             InterestRulePolicy::class
         );
 
+        Gate::policy(
+            LeaseAmendment::class,
+            LeaseAmendmentPolicy::class
+        );
+
         /*
         |--------------------------------------------------------------------------
         | Login Rate Limiting
@@ -121,3 +128,4 @@ class AppServiceProvider extends ServiceProvider
         });
     }
 }
+

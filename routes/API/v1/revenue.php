@@ -542,37 +542,7 @@ Route::prefix('revenue')
         ->name('revenue-settings.update');
 
 
-        Route::prefix('penalty-discount-requests')
-            ->controller(PenaltyDiscountRequestController::class)
-            ->group(function () {
-                Route::get('/', 'index');
-                Route::post('/', 'store');
-        
-                Route::get(
-                    '/{penaltyDiscountRequest}',
-                    'show'
-                );
-        
-                Route::post(
-                    '/{penaltyDiscountRequest}/submit',
-                    'submit'
-                );
-        
-                Route::post(
-                    '/{penaltyDiscountRequest}/decide',
-                    'decide'
-                );
-        
-                Route::post(
-                    '/{penaltyDiscountRequest}/cancel',
-                    'cancel'
-                );
-        
-                Route::get(
-                    '/{penaltyDiscountRequest}/history',
-                    'history'
-                );
-            });
+    
 
 
     /*

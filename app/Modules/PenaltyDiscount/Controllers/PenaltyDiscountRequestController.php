@@ -1,19 +1,18 @@
 <?php
 
 namespace App\Modules\PenaltyDiscount\Controllers;
+
 use App\Http\Controllers\Controller;
-
-
-
-use App\Http\Requests\PenaltyDiscount\CancelPenaltyDiscountRequest;
-use App\Http\Requests\PenaltyDiscount\DecidePenaltyDiscountRequest;
-use App\Http\Requests\PenaltyDiscount\StorePenaltyDiscountRequest;
-use App\Http\Requests\PenaltyDiscount\SubmitPenaltyDiscountRequest;
-use App\Http\Resources\PenaltyDiscountRequestResource;
 use App\Models\PenaltyDiscountRequest;
+use App\Modules\PenaltyDiscount\Requests\DecidePenaltyDiscountRequest;
+use App\Modules\PenaltyDiscount\Requests\StorePenaltyDiscountRequest;
+use App\Modules\PenaltyDiscount\Requests\UpdatePenaltyDiscountRequest;
+use App\Modules\PenaltyDiscount\Resources\PenaltyDiscountRequestResource;
 use App\Modules\PenaltyDiscount\Services\PenaltyDiscountRequestService;
+use App\Services\ApiResponse;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 
 class PenaltyDiscountRequestController extends Controller
 {
@@ -23,13 +22,33 @@ class PenaltyDiscountRequestController extends Controller
     }
 
     /**
-     * Display a listing of penalty discount requests.
+     * Load all relations required by the API resource.
      */
-    public function index(): AnonymousResourceCollection
+    private function loadRelations(
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): PenaltyDiscountRequest {
+        return $penaltyDiscountRequest->load([
+            'invoice',
+            'citizen',
+            'creator',
+            'decider',
+            'supportingFiles',
+        ]);
+    }
+
+    /**
+     * List penalty discount requests with pagination and summary.
+     */
+    public function index(): JsonResponse
     {
         $this->authorize(
             'viewAny',
             PenaltyDiscountRequest::class
+        );
+
+        $perPage = min(
+            max(request()->integer('per_page', 20), 1),
+            100
         );
 
         $requests = PenaltyDiscountRequest::query()
@@ -38,131 +57,235 @@ class PenaltyDiscountRequestController extends Controller
                 'citizen',
                 'creator',
                 'decider',
+                'supportingFiles',
             ])
             ->latest()
-            ->paginate(
-                request()->integer('per_page', 20)
-            );
+            ->paginate($perPage);
 
-        return PenaltyDiscountRequestResource::collection(
-            $requests
+        $summary = $this->service->summary();
+
+        return ApiResponse::success(
+            data: PenaltyDiscountRequestResource::collection(
+                $requests
+            ),
+            message: 'Penalty discount requests retrieved successfully.',
+            meta: [
+                'current_page' => $requests->currentPage(),
+                'last_page' => $requests->lastPage(),
+                'per_page' => $requests->perPage(),
+                'total' => $requests->total(),
+            ],
+            summary: $summary,
         );
     }
 
     /**
-     * Store a newly created penalty discount request.
+     * Get the penalty discount request dashboard summary.
+     */
+    public function summary(): JsonResponse
+    {
+        $this->authorize(
+            'viewAny',
+            PenaltyDiscountRequest::class
+        );
+
+        return ApiResponse::success(
+            data: $this->service->summary(),
+            message: 'Penalty discount request summary retrieved successfully.'
+        );
+    }
+
+    /**
+     * Create a penalty discount request.
      */
     public function store(
         StorePenaltyDiscountRequest $request
-    ): PenaltyDiscountRequestResource {
+    ): JsonResponse {
+        $supportingFile = $request->file('supporting_file');
+
         $penaltyDiscountRequest = $this->service->create(
             invoice: $request->string('invoice_id')->toString(),
             requestedAmount: $request->float('requested_amount'),
             reason: $request->string('reason')->toString(),
-            createdBy: $request->user()->id,
+            createdBy: (string) $request->user()->id,
+            supportingFile: $supportingFile instanceof UploadedFile
+                ? $supportingFile
+                : null,
         );
 
-        return new PenaltyDiscountRequestResource(
-            $penaltyDiscountRequest->load([
-                'invoice',
-                'citizen',
-                'creator',
-                'decider',
-            ])
+        return ApiResponse::created(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($penaltyDiscountRequest)
+            ),
+            message: 'Penalty discount request created successfully.'
         );
     }
 
     /**
-     * Display the specified request.
+     * Show a penalty discount request.
      */
     public function show(
         PenaltyDiscountRequest $penaltyDiscountRequest
-    ): PenaltyDiscountRequestResource {
+    ): JsonResponse {
         $this->authorize(
             'view',
             $penaltyDiscountRequest
         );
 
-        return new PenaltyDiscountRequestResource(
-            $penaltyDiscountRequest->load([
-                'invoice',
-                'citizen',
-                'creator',
-                'decider',
-            ])
+        return ApiResponse::success(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($penaltyDiscountRequest)
+            ),
+            message: 'Penalty discount request retrieved successfully.'
         );
     }
 
     /**
-     * Submit a draft request.
+     * Update a draft penalty discount request.
+     */
+    public function update(
+        UpdatePenaltyDiscountRequest $request,
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): JsonResponse {
+        $supportingFile = $request->file('supporting_file');
+
+        $updatedRequest = $this->service->update(
+            request: $penaltyDiscountRequest,
+            invoice: $request->string('invoice_id')->toString(),
+            requestedAmount: $request->float('requested_amount'),
+            reason: $request->string('reason')->toString(),
+            supportingFile: $supportingFile instanceof UploadedFile
+                ? $supportingFile
+                : null,
+        );
+
+        return ApiResponse::updated(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($updatedRequest)
+            ),
+            message: 'Penalty discount request updated successfully.'
+        );
+    }
+
+    /**
+     * Submit a draft penalty discount request.
      */
     public function submit(
-        SubmitPenaltyDiscountRequest $request,
+        Request $request,
         PenaltyDiscountRequest $penaltyDiscountRequest
-    ): PenaltyDiscountRequestResource {
+    ): JsonResponse {
+        $this->authorize(
+            'submit',
+            $penaltyDiscountRequest
+        );
+
         $updatedRequest = $this->service->submit(
             $penaltyDiscountRequest
         );
 
-        return new PenaltyDiscountRequestResource(
-            $updatedRequest
+        return ApiResponse::updated(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($updatedRequest)
+            ),
+            message: 'Penalty discount request submitted successfully.'
         );
     }
 
     /**
-     * Make an administrative decision.
+     * Approve or reject a submitted penalty discount request.
      */
     public function decide(
         DecidePenaltyDiscountRequest $request,
         PenaltyDiscountRequest $penaltyDiscountRequest
-    ): PenaltyDiscountRequestResource {
+    ): JsonResponse {
         $updatedRequest = $this->service->decide(
             request: $penaltyDiscountRequest,
             decision: $request->string('decision')->toString(),
-            approvedAmount: $request->input('approved_amount'),
+            approvedAmount: $request->filled('approved_amount')
+                ? (float) $request->input('approved_amount')
+                : null,
             decisionReason: $request->input('decision_reason'),
-            decidedBy: $request->user()->id,
+            decidedBy: (string) $request->user()->id,
         );
 
-        return new PenaltyDiscountRequestResource(
-            $updatedRequest
+        $message = $updatedRequest->decision
+            === PenaltyDiscountRequest::DECISION_APPROVED
+                ? 'Penalty discount request approved successfully.'
+                : 'Penalty discount request rejected successfully.';
+
+        return ApiResponse::updated(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($updatedRequest)
+            ),
+            message: $message
         );
     }
 
     /**
-     * Cancel a draft or submitted request.
+     * Apply an approved discount to the invoice.
+     */
+    public function apply(
+        Request $request,
+        PenaltyDiscountRequest $penaltyDiscountRequest
+    ): JsonResponse {
+        $this->authorize(
+            'apply',
+            $penaltyDiscountRequest
+        );
+
+        $updatedRequest = $this->service->apply(
+            $penaltyDiscountRequest,
+            (string) $request->user()->id
+        );
+
+        return ApiResponse::updated(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($updatedRequest)
+            ),
+            message: 'Approved penalty discount applied to the invoice successfully.'
+        );
+    }
+
+    /**
+     * Cancel a penalty discount request.
      */
     public function cancel(
-        CancelPenaltyDiscountRequest $request,
+        Request $request,
         PenaltyDiscountRequest $penaltyDiscountRequest
-    ): PenaltyDiscountRequestResource {
+    ): JsonResponse {
+        $this->authorize(
+            'cancel',
+            $penaltyDiscountRequest
+        );
+
         $updatedRequest = $this->service->cancel(
             $penaltyDiscountRequest
         );
 
-        return new PenaltyDiscountRequestResource(
-            $updatedRequest
+        return ApiResponse::updated(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($updatedRequest)
+            ),
+            message: 'Penalty discount request cancelled successfully.'
         );
     }
 
     /**
-     * Display request history.
+     * View a penalty discount request and its history information.
      */
     public function history(
         PenaltyDiscountRequest $penaltyDiscountRequest
-    ): PenaltyDiscountRequestResource {
+    ): JsonResponse {
         $this->authorize(
             'viewHistory',
             $penaltyDiscountRequest
         );
 
-        return new PenaltyDiscountRequestResource(
-            $penaltyDiscountRequest->load([
-                'invoice',
-                'citizen',
-                'creator',
-                'decider',
-            ])
+        return ApiResponse::success(
+            data: new PenaltyDiscountRequestResource(
+                $this->loadRelations($penaltyDiscountRequest)
+            ),
+            message: 'Penalty discount request history retrieved successfully.'
         );
     }
 }

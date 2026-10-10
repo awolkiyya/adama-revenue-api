@@ -2,36 +2,86 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class LeaseAmendment extends Model
 {
+    use HasUuids;
+    use SoftDeletes;
+
     protected $table = 'lease_amendments';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Mass Assignment
+    |--------------------------------------------------------------------------
+    */
+
     protected $fillable = [
+        // Amendment identification
         'amendment_number',
-        'previous_assessment_id',
-        'new_assessment_id',
         'amendment_type',
         'status',
+
+        // Assessment references
+        'previous_assessment_id',
+        'new_assessment_id',
+
+        // Amendment explanation
         'reason',
-        'created_by',
-        'approved_by',
+        'other_amendment_description',
+
+        // Submission
+        'submitted_at',
+
+        // Decision and approval
+        'decided_by',
+        'decision_notes',
+        'decided_at',
         'approved_at',
-        'rejected_by',
         'rejected_at',
-        'rejection_reason',
+
+        // Application tracking
         'applied_by',
         'applied_at',
+
+        // Additional structured data
+        'metadata',
+
+        // Audit users
+        'created_by',
+        'updated_by',
     ];
 
-    protected $casts = [
-        'approved_at' => 'datetime',
-        'rejected_at' => 'datetime',
-        'applied_at' => 'datetime',
-    ];
+    /*
+    |--------------------------------------------------------------------------
+    | Attribute Casting
+    |--------------------------------------------------------------------------
+    */
+
+    protected function casts(): array
+    {
+        return [
+            'metadata' => 'array',
+
+            'submitted_at' => 'datetime',
+            'decided_at' => 'datetime',
+            'approved_at' => 'datetime',
+            'rejected_at' => 'datetime',
+            'applied_at' => 'datetime',
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Assessment Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function previousAssessment(): BelongsTo
     {
@@ -49,6 +99,16 @@ class LeaseAmendment extends Model
         );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Amendment Changes
+    |--------------------------------------------------------------------------
+    |
+    | Taxpayer changes, land-area changes, and other field-level
+    | modifications are recorded in lease_amendment_changes.
+    |
+    */
+
     public function changes(): HasMany
     {
         return $this->hasMany(
@@ -56,6 +116,12 @@ class LeaseAmendment extends Model
             'lease_amendment_id'
         )->orderBy('change_order');
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | User Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function createdBy(): BelongsTo
     {
@@ -65,19 +131,19 @@ class LeaseAmendment extends Model
         );
     }
 
-    public function approvedBy(): BelongsTo
+    public function updatedBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
-            'approved_by'
+            'updated_by'
         );
     }
 
-    public function rejectedBy(): BelongsTo
+    public function decidedBy(): BelongsTo
     {
         return $this->belongsTo(
             User::class,
-            'rejected_by'
+            'decided_by'
         );
     }
 
@@ -89,14 +155,18 @@ class LeaseAmendment extends Model
         );
     }
 
-    public function files()
+    /*
+    |--------------------------------------------------------------------------
+    | Supporting Files
+    |--------------------------------------------------------------------------
+    */
+
+    public function files(): MorphMany
     {
-        /*
-         * Replace with your project's actual file relationship.
-         */
         return $this->morphMany(
-            PrivateFile::class,
+            File::class,
             'fileable'
         );
     }
 }
+

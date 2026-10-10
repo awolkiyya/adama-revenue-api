@@ -244,7 +244,11 @@ Route::prefix('v1')->group(function () {
             'routes/Api/v1/lease-amendments.php'
         );
 
+        // penalty-discount-requests
 
+        require base_path(
+            'routes/Api/v1/penalty-discount-requests.php'
+        );
 
         // ====================================================
         // PRIVATE FILE ACCESS

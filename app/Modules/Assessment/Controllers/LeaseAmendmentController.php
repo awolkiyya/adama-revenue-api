@@ -4,12 +4,12 @@ namespace App\Modules\Assessment\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Models\LeaseAmendment;
-use App\Modules\Assessment\Requests\ApplyLeaseAmendmentRequest;
 use App\Modules\Assessment\Requests\RejectLeaseAmendmentRequest;
 use App\Modules\Assessment\Requests\StoreLeaseAmendmentRequest;
 use App\Modules\Assessment\Requests\UpdateLeaseAmendmentRequest;
 use App\Modules\Assessment\Resources\LeaseAmendmentResource;
 use App\Modules\Assessment\Services\LeaseAmendmentService;
+use App\Services\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -24,24 +24,44 @@ class LeaseAmendmentController extends Controller
     }
 
     /**
-     * List lease amendments with validated filters and pagination.
+     * List lease amendments with validated filters, pagination,
+     * and summary statistics scoped to the authenticated user.
      */
     public function index(Request $request): JsonResponse
     {
+        $this->authorize('viewAny', LeaseAmendment::class);
+
+        $user = $request->user();
+
         $filters = $request->validate([
-            'search' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'status' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'search' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'status' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:50',
+            ],
+
             'amendment_type' => [
                 'sometimes',
                 'nullable',
                 'string',
                 'max:100',
             ],
+
             'previous_assessment_id' => [
                 'sometimes',
                 'nullable',
                 'uuid',
+                'exists:assessments,id',
             ],
+
             'per_page' => [
                 'sometimes',
                 'nullable',
@@ -51,69 +71,101 @@ class LeaseAmendmentController extends Controller
             ],
         ]);
 
-        $amendments = $this->leaseAmendmentService->paginate($filters);
+        // The service must apply the user's administrative-unit scope.
+        $amendments = $this->leaseAmendmentService->paginate(
+            $filters,
+            $user
+        );
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Lease amendments retrieved successfully.',
-            'data' => LeaseAmendmentResource::collection($amendments),
-            'meta' => [
+        $amendments->getCollection()->each(
+            fn (LeaseAmendment $amendment) => $amendment->loadMissing(
+                $this->resourceRelationships()
+            )
+        );
+
+        // Summary statistics must use the same user scope as the list.
+        $summary = $this->leaseAmendmentService->summary(
+            [
+                'previous_assessment_id' =>
+                    $filters['previous_assessment_id'] ?? null,
+
+                'amendment_type' =>
+                    $filters['amendment_type'] ?? null,
+            ],
+            $user
+        );
+
+        return ApiResponse::success(
+            data: LeaseAmendmentResource::collection($amendments),
+            message: 'Lease amendments retrieved successfully.',
+            meta: [
                 'current_page' => $amendments->currentPage(),
                 'last_page' => $amendments->lastPage(),
                 'per_page' => $amendments->perPage(),
                 'total' => $amendments->total(),
             ],
-        ]);
+            summary: $summary,
+        );
     }
 
     /**
-     * Show a single amendment.
+     * Show a single lease amendment.
      */
-    public function show(LeaseAmendment $leaseAmendment): JsonResponse
-    {
+    public function show(
+        Request $request,
+        LeaseAmendment $leaseAmendment
+    ): JsonResponse {
+        $this->authorize('view', $leaseAmendment);
+
         $amendment = $this->leaseAmendmentService->find(
-            $leaseAmendment
+            $leaseAmendment,
+            $request->user()
         );
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Lease amendment retrieved successfully.',
-            'data' => new LeaseAmendmentResource($amendment),
-        ]);
+        $amendment->loadMissing($this->resourceRelationships());
+
+        return $this->successResponse(
+            $amendment,
+            'Lease amendment retrieved successfully.'
+        );
     }
 
     /**
-     * Create a new amendment.
+     * Create a lease amendment.
      */
     public function store(
         StoreLeaseAmendmentRequest $request
     ): JsonResponse {
+        $this->authorize('create', LeaseAmendment::class);
+
         try {
             $amendment = $this->leaseAmendmentService->create(
                 $request->validated(),
                 $request->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment created successfully.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ], 201);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment created successfully.',
+                201
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to create the lease amendment.'
             );
         }
     }
 
     /**
-     * Update a draft amendment.
+     * Update an editable lease amendment.
      */
     public function update(
         UpdateLeaseAmendmentRequest $request,
         LeaseAmendment $leaseAmendment
     ): JsonResponse {
+        $this->authorize('update', $leaseAmendment);
+
         try {
             $amendment = $this->leaseAmendmentService->update(
                 $leaseAmendment,
@@ -121,14 +173,13 @@ class LeaseAmendmentController extends Controller
                 $request->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment updated successfully.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ]);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment updated successfully.'
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to update the lease amendment.'
             );
         }
@@ -138,22 +189,24 @@ class LeaseAmendmentController extends Controller
      * Submit an amendment for approval.
      */
     public function submit(
+        Request $request,
         LeaseAmendment $leaseAmendment
     ): JsonResponse {
+        $this->authorize('submit', $leaseAmendment);
+
         try {
             $amendment = $this->leaseAmendmentService->submit(
                 $leaseAmendment,
-                request()->user()
+                $request->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment submitted for approval.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ]);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment submitted for approval.'
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to submit the lease amendment.'
             );
         }
@@ -163,22 +216,24 @@ class LeaseAmendmentController extends Controller
      * Approve an amendment.
      */
     public function approve(
+        Request $request,
         LeaseAmendment $leaseAmendment
     ): JsonResponse {
+        $this->authorize('approve', $leaseAmendment);
+
         try {
             $amendment = $this->leaseAmendmentService->approve(
                 $leaseAmendment,
-                request()->user()
+                $request->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment approved successfully.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ]);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment approved successfully.'
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to approve the lease amendment.'
             );
         }
@@ -191,87 +246,118 @@ class LeaseAmendmentController extends Controller
         RejectLeaseAmendmentRequest $request,
         LeaseAmendment $leaseAmendment
     ): JsonResponse {
-        try {
-            $validated = $request->validated();
+        $this->authorize('reject', $leaseAmendment);
 
+        try {
             $amendment = $this->leaseAmendmentService->reject(
                 $leaseAmendment,
-                $validated['reason'],
+                $request->validated('reason'),
                 $request->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment rejected successfully.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ]);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment rejected successfully.'
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to reject the lease amendment.'
             );
         }
     }
 
+ 
     /**
      * Apply an approved amendment.
-     *
-     * The service must verify that the replacement assessment is valid.
-     * Applying an amendment must not silently modify the previous
-     * assessment, its payments, or its payment schedule.
      */
     public function apply(
-        ApplyLeaseAmendmentRequest $request,
         LeaseAmendment $leaseAmendment
     ): JsonResponse {
+        $this->authorize('apply', $leaseAmendment);
+
         try {
             $amendment = $this->leaseAmendmentService->apply(
                 $leaseAmendment,
-                $request->validated(),
-                $request->user()
+                auth()->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment applied successfully.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ]);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment applied successfully.'
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to apply the lease amendment.'
             );
         }
     }
-
+    
     /**
      * Cancel an amendment.
      */
     public function cancel(
+        Request $request,
         LeaseAmendment $leaseAmendment
     ): JsonResponse {
+        $this->authorize('cancel', $leaseAmendment);
+
         try {
             $amendment = $this->leaseAmendmentService->cancel(
                 $leaseAmendment,
-                request()->user()
+                $request->user()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Lease amendment cancelled successfully.',
-                'data' => new LeaseAmendmentResource($amendment),
-            ]);
-        } catch (Throwable $e) {
+            return $this->successResponse(
+                $amendment,
+                'Lease amendment cancelled successfully.'
+            );
+        } catch (Throwable $exception) {
             return $this->handleActionException(
-                $e,
+                $exception,
                 'Unable to cancel the lease amendment.'
             );
         }
     }
 
     /**
-     * Handle expected action failures without exposing internal
-     * exception messages or stack traces to API clients.
+     * Return all relationships required by LeaseAmendmentResource.
+     *
+     * These relationship names must exist on the LeaseAmendment model.
+     */
+    private function resourceRelationships(): array
+    {
+        return [
+            'previousAssessment',
+            'newAssessment',
+            'changes',
+            'createdBy',
+            'decidedBy',
+            'appliedBy',
+            'files',
+        ];
+    }
+
+    /**
+     * Return a consistent success response.
+     */
+    private function successResponse(
+        LeaseAmendment $amendment,
+        string $message,
+        int $status = 200
+    ): JsonResponse {
+        $amendment->loadMissing($this->resourceRelationships());
+
+        return response()->json([
+            'success' => true,
+            'message' => $message,
+            'data' => new LeaseAmendmentResource($amendment),
+        ], $status);
+    }
+
+    /**
+     * Handle action exceptions without exposing internal details.
      */
     private function handleActionException(
         Throwable $exception,

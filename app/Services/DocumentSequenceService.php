@@ -6,6 +6,7 @@ use Andegna\DateTimeFactory;
 use App\Models\Assessment;
 use App\Models\DocumentSequence;
 use App\Models\Invoice;
+use App\Models\LeaseAmendment;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -14,41 +15,30 @@ use RuntimeException;
 
 class DocumentSequenceService
 {
-    /**
-     * Number of digits used for the sequence portion.
-     */
     protected const SEQUENCE_DIGITS = 6;
 
-    /**
-     * Maximum supported sequence value.
-     */
     protected const MAX_SEQUENCE_VALUE = 999999;
 
-    /**
-     * Official document prefixes.
-     */
     protected const DOCUMENT_PREFIXES = [
         'assessment' => 'ASM',
         'invoice' => 'INV',
         'payment' => 'PAY',
         'receipt' => 'RCP',
+        'lease_amendment' => 'LAM',
     ];
 
     /**
      * Generate the next document number.
      *
-     * Examples:
+     * The sequence is independent for each sequence type and year.
      *
+     * Examples:
      * ASM-2019-000001
      * INV-2019-000001
      * PAY-2019-000001
-     * RCP-2019-000001
+     * LAM-2019-000001
      *
      * Ethiopian calendar is used by default.
-     *
-     * Sequence is maintained independently by:
-     *
-     * sequence_type + year
      */
     public function generate(
         string $sequenceType,
@@ -63,7 +53,7 @@ class DocumentSequenceService
             );
         }
 
-        if (! isset(self::DOCUMENT_PREFIXES[$sequenceType])) {
+        if (!isset(self::DOCUMENT_PREFIXES[$sequenceType])) {
             throw new InvalidArgumentException(
                 sprintf(
                     'Unsupported sequence type [%s]. Supported types are: %s.',
@@ -77,153 +67,113 @@ class DocumentSequenceService
 
         $date ??= now();
 
-        $year = $this->getYear(
-            $date,
-            $calendar
-        );
+        $year = $this->getYear($date, $calendar);
 
-        return DB::transaction(
-            function () use (
+        return DB::transaction(function () use (
+            $sequenceType,
+            $prefix,
+            $year
+        ): string {
+            /*
+             * 1. Initialize the sequence row if it does not exist.
+             *
+             * Requires a unique constraint on (sequence_type, year).
+             */
+            DocumentSequence::query()->insertOrIgnore([
+                'sequence_type' => $sequenceType,
+                'year' => $year,
+                'current_value' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            /*
+             * 2. Lock the sequence row to prevent concurrent
+             * requests from allocating the same number.
+             */
+            $sequence = DocumentSequence::query()
+                ->where('sequence_type', $sequenceType)
+                ->where('year', $year)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$sequence) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Unable to initialize document sequence [%s/%d].',
+                        $sequenceType,
+                        $year
+                    )
+                );
+            }
+
+            $currentValue = (int) $sequence->current_value;
+
+            if ($currentValue < 0) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Invalid current sequence value [%d] for [%s/%d].',
+                        $currentValue,
+                        $sequenceType,
+                        $year
+                    )
+                );
+            }
+
+            /*
+             * 3. Synchronize with existing document numbers.
+             *
+             * This supports installations that already have
+             * assessments, invoices, payments, or amendments.
+             */
+            $existingMaximum = $this->getExistingMaximumValue(
                 $sequenceType,
                 $prefix,
                 $year
-            ): string {
-                /*
-                 |--------------------------------------------------------------------------
-                 | 1. Ensure sequence row exists
-                 |--------------------------------------------------------------------------
-                 */
+            );
 
-                DocumentSequence::query()->insertOrIgnore([
-                    'sequence_type' => $sequenceType,
-                    'year' => $year,
-                    'current_value' => 0,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-
-                /*
-                 |--------------------------------------------------------------------------
-                 | 2. Lock sequence row
-                 |--------------------------------------------------------------------------
-                 */
-
-                $sequence = DocumentSequence::query()
-                    ->where('sequence_type', $sequenceType)
-                    ->where('year', $year)
-                    ->lockForUpdate()
-                    ->first();
-
-                if (! $sequence) {
-                    throw new RuntimeException(
-                        sprintf(
-                            'Unable to initialize document sequence [%s/%d].',
-                            $sequenceType,
-                            $year
-                        )
-                    );
-                }
-
-                /*
-                 |--------------------------------------------------------------------------
-                 | 3. Validate current value
-                 |--------------------------------------------------------------------------
-                 */
-
-                $currentValue = (int) $sequence->current_value;
-
-                if ($currentValue < 0) {
-                    throw new RuntimeException(
-                        sprintf(
-                            'Invalid current sequence value [%d] for [%s/%d].',
-                            $currentValue,
-                            $sequenceType,
-                            $year
-                        )
-                    );
-                }
-
-                if ($currentValue >= self::MAX_SEQUENCE_VALUE) {
-                    throw new RuntimeException(
-                        sprintf(
-                            'Document sequence for [%s/%d] has reached the maximum value of %d.',
-                            $sequenceType,
-                            $year,
-                            self::MAX_SEQUENCE_VALUE
-                        )
-                    );
-                }
-
-                /*
-                 |--------------------------------------------------------------------------
-                 | 4. Synchronize with existing documents
-                 |--------------------------------------------------------------------------
-                 */
-
-                $existingMaximum = $this->getExistingMaximumValue(
-                    $sequenceType,
-                    $prefix,
-                    $year
-                );
-
-                if (
-                    $existingMaximum !== null &&
-                    $existingMaximum > $currentValue
-                ) {
-                    $currentValue = $existingMaximum;
-
-                    $sequence->forceFill([
-                        'current_value' => $currentValue,
-                    ])->save();
-                }
-
-                /*
-                 |--------------------------------------------------------------------------
-                 | 5. Generate next value
-                 |--------------------------------------------------------------------------
-                 */
-
-                $nextValue = $currentValue + 1;
-
-                if ($nextValue > self::MAX_SEQUENCE_VALUE) {
-                    throw new RuntimeException(
-                        sprintf(
-                            'Document sequence for [%s/%d] has reached the maximum value of %d.',
-                            $sequenceType,
-                            $year,
-                            self::MAX_SEQUENCE_VALUE
-                        )
-                    );
-                }
-
-                /*
-                 |--------------------------------------------------------------------------
-                 | 6. Persist sequence
-                 |--------------------------------------------------------------------------
-                 */
+            if (
+                $existingMaximum !== null &&
+                $existingMaximum > $currentValue
+            ) {
+                $currentValue = $existingMaximum;
 
                 $sequence->forceFill([
-                    'current_value' => $nextValue,
+                    'current_value' => $currentValue,
                 ])->save();
+            }
 
-                /*
-                 |--------------------------------------------------------------------------
-                 | 7. Generate document number
-                 |--------------------------------------------------------------------------
-                 */
-
-                return sprintf(
-                    '%s-%d-%0' . self::SEQUENCE_DIGITS . 'd',
-                    $prefix,
-                    $year,
-                    $nextValue
+            /*
+             * 4. Generate the next number.
+             */
+            if ($currentValue >= self::MAX_SEQUENCE_VALUE) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Document sequence for [%s/%d] has reached the maximum value of %d.',
+                        $sequenceType,
+                        $year,
+                        self::MAX_SEQUENCE_VALUE
+                    )
                 );
             }
-        );
+
+            $nextValue = $currentValue + 1;
+
+            $sequence->forceFill([
+                'current_value' => $nextValue,
+            ])->save();
+
+            return sprintf(
+                '%s-%d-%0' . self::SEQUENCE_DIGITS . 'd',
+                $prefix,
+                $year,
+                $nextValue
+            );
+        });
     }
 
     /**
-     * Get the highest existing document number.
+     * Get the highest existing number for the selected document type.
      */
     protected function getExistingMaximumValue(
         string $sequenceType,
@@ -246,9 +196,12 @@ class DocumentSequenceService
                 $year
             ),
 
-            /*
-             * Add this once the Receipt model/table exists.
-             */
+            'lease_amendment' => $this->getExistingLeaseAmendmentMaximum(
+                $prefix,
+                $year
+            ),
+
+            // Implement when a Receipt model/table is available.
             'receipt' => $this->getExistingReceiptMaximum(
                 $prefix,
                 $year
@@ -262,18 +215,10 @@ class DocumentSequenceService
         string $prefix,
         int $year
     ): ?int {
-        $documentPrefix = sprintf(
-            '%s-%d-',
-            $prefix,
-            $year
-        );
+        $documentPrefix = sprintf('%s-%d-', $prefix, $year);
 
         $number = Assessment::query()
-            ->where(
-                'assessment_number',
-                'like',
-                $documentPrefix . '%'
-            )
+            ->where('assessment_number', 'like', $documentPrefix . '%')
             ->orderByDesc('assessment_number')
             ->value('assessment_number');
 
@@ -290,18 +235,10 @@ class DocumentSequenceService
         string $prefix,
         int $year
     ): ?int {
-        $documentPrefix = sprintf(
-            '%s-%d-',
-            $prefix,
-            $year
-        );
+        $documentPrefix = sprintf('%s-%d-', $prefix, $year);
 
         $number = Invoice::query()
-            ->where(
-                'invoice_number',
-                'like',
-                $documentPrefix . '%'
-            )
+            ->where('invoice_number', 'like', $documentPrefix . '%')
             ->orderByDesc('invoice_number')
             ->value('invoice_number');
 
@@ -318,18 +255,10 @@ class DocumentSequenceService
         string $prefix,
         int $year
     ): ?int {
-        $documentPrefix = sprintf(
-            '%s-%d-',
-            $prefix,
-            $year
-        );
+        $documentPrefix = sprintf('%s-%d-', $prefix, $year);
 
         $number = Payment::query()
-            ->where(
-                'payment_number',
-                'like',
-                $documentPrefix . '%'
-            )
+            ->where('payment_number', 'like', $documentPrefix . '%')
             ->orderByDesc('payment_number')
             ->value('payment_number');
 
@@ -343,38 +272,41 @@ class DocumentSequenceService
     }
 
     /**
-     * Get the highest existing receipt number.
-     *
-     * Enable after the Receipt model is implemented.
+     * Get the highest existing lease amendment number.
+     */
+    protected function getExistingLeaseAmendmentMaximum(
+        string $prefix,
+        int $year
+    ): ?int {
+        $documentPrefix = sprintf('%s-%d-', $prefix, $year);
+
+        $number = LeaseAmendment::query()
+            ->where('amendment_number', 'like', $documentPrefix . '%')
+            ->orderByDesc('amendment_number')
+            ->value('amendment_number');
+
+        return $number !== null
+            ? $this->extractSequenceValue(
+                $number,
+                $documentPrefix,
+                'lease amendment'
+            )
+            : null;
+    }
+
+    /**
+     * Receipt sequence synchronization can be implemented
+     * when the Receipt model and table are available.
      */
     protected function getExistingReceiptMaximum(
         string $prefix,
         int $year
     ): ?int {
-        /*
-         * Example when Receipt model exists:
-         *
-         * $documentPrefix = sprintf('%s-%d-', $prefix, $year);
-         *
-         * $number = Receipt::query()
-         *     ->where('receipt_number', 'like', $documentPrefix . '%')
-         *     ->orderByDesc('receipt_number')
-         *     ->value('receipt_number');
-         *
-         * return $number !== null
-         *     ? $this->extractSequenceValue(
-         *         $number,
-         *         $documentPrefix,
-         *         'receipt'
-         *     )
-         *     : null;
-         */
-
         return null;
     }
 
     /**
-     * Extract numeric sequence from a document number.
+     * Extract and validate the numeric sequence.
      */
     protected function extractSequenceValue(
         string $documentNumber,
@@ -386,7 +318,7 @@ class DocumentSequenceService
             strlen($documentPrefix)
         );
 
-        if (! preg_match('/^\d{1,6}$/', $sequencePart)) {
+        if (!preg_match('/^\d{1,6}$/', $sequencePart)) {
             throw new RuntimeException(
                 sprintf(
                     'Invalid %s number format [%s]. Expected format [%sNNNNNN].',
@@ -417,20 +349,15 @@ class DocumentSequenceService
     }
 
     /**
-     * Resolve calendar year.
+     * Resolve the calendar year.
      */
     protected function getYear(
         Carbon $date,
         string $calendar
     ): int {
         return match (strtolower(trim($calendar))) {
-            'ethiopian',
-            'et',
-            'am' => $this->getEthiopianYear($date),
-
-            'gregorian',
-            'ge',
-            'en' => $date->year,
+            'ethiopian', 'et', 'am' => $this->getEthiopianYear($date),
+            'gregorian', 'ge', 'en' => $date->year,
 
             default => throw new InvalidArgumentException(
                 sprintf(
@@ -442,7 +369,7 @@ class DocumentSequenceService
     }
 
     /**
-     * Get Ethiopian calendar year.
+     * Get the Ethiopian calendar year.
      */
     protected function getEthiopianYear(
         Carbon $date

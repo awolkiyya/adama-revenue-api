@@ -1,52 +1,63 @@
 <?php
 
+use Illuminate\Support\Facades\Route;
 use App\Modules\Assessment\Controllers\LeaseAmendmentController;
 
 Route::prefix('lease-amendments')
+    ->middleware(['auth:sanctum'])
     ->group(function () {
 
-        Route::get(
-            '/',
-            [LeaseAmendmentController::class, 'index']
-        );
+        // List lease amendments
+        Route::get('/', [
+            LeaseAmendmentController::class,
+            'index',
+        ]);
 
-        Route::post(
-            '/',
-            [LeaseAmendmentController::class, 'store']
-        );
+        // Create a lease amendment
+        Route::post('/', [
+            LeaseAmendmentController::class,
+            'store',
+        ]);
 
-        Route::get(
-            '/{leaseAmendment}',
-            [LeaseAmendmentController::class, 'show']
-        );
+        // View a specific lease amendment
+        Route::get('/{leaseAmendment}', [
+            LeaseAmendmentController::class,
+            'show',
+        ])->whereUuid('leaseAmendment');
 
-        Route::put(
-            '/{leaseAmendment}',
-            [LeaseAmendmentController::class, 'update']
-        );
+        // Update a draft lease amendment
+        Route::put('/{leaseAmendment}', [
+            LeaseAmendmentController::class,
+            'update',
+        ])->whereUuid('leaseAmendment');
 
-        Route::post(
-            '/{leaseAmendment}/submit',
-            [LeaseAmendmentController::class, 'submit']
-        );
+        // Submit for approval
+        Route::post('/{leaseAmendment}/submit', [
+            LeaseAmendmentController::class,
+            'submit',
+        ])->whereUuid('leaseAmendment');
 
-        Route::post(
-            '/{leaseAmendment}/approve',
-            [LeaseAmendmentController::class, 'approve']
-        );
+        // Approve
+        Route::post('/{leaseAmendment}/approve', [
+            LeaseAmendmentController::class,
+            'approve',
+        ])->whereUuid('leaseAmendment');
 
-        Route::post(
-            '/{leaseAmendment}/reject',
-            [LeaseAmendmentController::class, 'reject']
-        );
+        // Reject
+        Route::post('/{leaseAmendment}/reject', [
+            LeaseAmendmentController::class,
+            'reject',
+        ])->whereUuid('leaseAmendment');
 
-        Route::post(
-            '/{leaseAmendment}/apply',
-            [LeaseAmendmentController::class, 'apply']
-        );
+        // Apply an approved amendment
+        Route::post('/{leaseAmendment}/apply', [
+            LeaseAmendmentController::class,
+            'apply',
+        ])->whereUuid('leaseAmendment');
 
-        Route::post(
-            '/{leaseAmendment}/cancel',
-            [LeaseAmendmentController::class, 'cancel']
-        );
+        // Cancel an amendment
+        Route::post('/{leaseAmendment}/cancel', [
+            LeaseAmendmentController::class,
+            'cancel',
+        ])->whereUuid('leaseAmendment');
     });
