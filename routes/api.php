@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Modules\System\MobileAppRelease\Controllers\MobileAppReleaseController;
 use App\Http\Controllers\PrivateFileController;
 
 
@@ -75,6 +76,34 @@ Route::prefix('v1')->group(function () {
     require base_path(
         'routes/Api/v1/payment-webhook.php'
     );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Public Mobile App Release Routes
+    |--------------------------------------------------------------------------
+    |
+    | These endpoints are used by the Android application to check for
+    | updates and download published APK files without office login.
+    |
+    */
+
+    Route::prefix('mobile-app-releases')->group(function () {
+
+        // Check the latest published Android release.
+        Route::get('/latest', [
+            MobileAppReleaseController::class,
+            'latest',
+        ])->name('mobile-app-releases.latest');
+
+        // Download an eligible published APK.
+        Route::get('/{mobile_app_release}/download', [
+            MobileAppReleaseController::class,
+            'download',
+        ])->whereUuid('mobile_app_release')
+            ->name('mobile-app-releases.download');
+    });
+
 
 
     // ========================================================
@@ -248,6 +277,12 @@ Route::prefix('v1')->group(function () {
 
         require base_path(
             'routes/Api/v1/penalty-discount-requests.php'
+        );
+
+
+        // mobile-app-releases
+        require base_path(
+            'routes/Api/v1/mobile-app-releases.php'
         );
 
         // ====================================================

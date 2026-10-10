@@ -1,7 +1,6 @@
-
 <?php
 
-namespace App\Http\Requests;
+namespace App\Modules\System\MobileAppRelease\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -10,8 +9,20 @@ class StoreMobileAppReleaseRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        // Protect this endpoint with your administrator permissions middleware.
-        return $this->user() !== null;
+        return true;
+    }
+
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('is_mandatory')) {
+            $value = $this->input('is_mandatory');
+
+            if ($value === 'true' || $value === '1') {
+                $this->merge(['is_mandatory' => true]);
+            } elseif ($value === 'false' || $value === '0') {
+                $this->merge(['is_mandatory' => false]);
+            }
+        }
     }
 
     public function rules(): array
@@ -52,12 +63,41 @@ class StoreMobileAppReleaseRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'version_name.required' => 'The release version name is required.',
-            'version_code.required' => 'The Android version code is required.',
-            'version_code.unique' => 'This version code already exists.',
-            'apk.required' => 'Please upload an APK file.',
-            'apk.extensions' => 'The uploaded file must have the .apk extension.',
-            'apk.max' => 'The APK must not exceed 200 MB.',
+            'version_name.required' =>
+                'The release version name is required.',
+
+            'version_name.max' =>
+                'The release version name cannot exceed 50 characters.',
+
+            'version_code.required' =>
+                'The Android version code is required.',
+
+            'version_code.integer' =>
+                'The Android version code must be an integer.',
+
+            'version_code.min' =>
+                'The Android version code must be at least 1.',
+
+            'version_code.unique' =>
+                'This version code already exists. Please use a different version code.',
+
+            'release_notes.string' =>
+                'Release notes must be valid text.',
+
+            'is_mandatory.boolean' =>
+                'The mandatory release field must be true or false.',
+
+            'apk.required' =>
+                'Please upload an APK file.',
+
+            'apk.file' =>
+                'The uploaded APK could not be read. Please select the file again.',
+
+            'apk.extensions' =>
+                'The uploaded file must have the .apk extension.',
+
+            'apk.max' =>
+                'The APK must not exceed 200 MB.',
         ];
     }
 }

@@ -1,7 +1,6 @@
-
 <?php
 
-namespace App\Http\Requests;
+namespace App\Modules\System\MobileAppRelease\Requests;
 
 use App\Models\MobileAppRelease;
 use Illuminate\Foundation\Http\FormRequest;
