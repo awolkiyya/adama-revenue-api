@@ -1186,6 +1186,62 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Cash Reconciliation
+            |--------------------------------------------------------------------------
+            |
+            | Cash reconciliation allows revenue collectors to record and submit
+            | their cash closing, while authorized finance officers review the
+            | submitted reconciliation.
+            |
+            | Expected cash and the difference are calculated by the backend.
+            | Collectors cannot review their own reconciliations.
+            |
+            */
+
+            [
+                'name' => 'cash-reconciliations.view',
+                'label' => 'View Cash Reconciliations',
+                'module' => 'cash-reconciliations',
+                'description' => 'Allows accessing the cash reconciliation management interface.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'cash-reconciliations.view-all',
+                'label' => 'View All Cash Reconciliations',
+                'module' => 'cash-reconciliations',
+                'description' => 'Allows viewing cash reconciliations belonging to all authorized revenue collectors instead of only the authenticated collector.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'cash-reconciliations.create',
+                'label' => 'Create Cash Reconciliation',
+                'module' => 'cash-reconciliations',
+                'description' => 'Allows creating cash reconciliation drafts for the authenticated revenue collector.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'cash-reconciliations.submit',
+                'label' => 'Submit Cash Reconciliation',
+                'module' => 'cash-reconciliations',
+                'description' => 'Allows submitting a cash closing for review after the backend calculates expected cash and the difference between expected and physically counted amounts.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'cash-reconciliations.review',
+                'label' => 'Review Cash Reconciliation',
+                'module' => 'cash-reconciliations',
+                'description' => 'Allows authorized finance officers to review submitted cash reconciliations, record review notes, reconcile balanced closings, flag discrepancies, or return closings for correction.',
+                'is_system' => false,
+            ],
+
             /*
             |--------------------------------------------------------------------------
             | Penalty Discount Management

@@ -665,6 +665,7 @@ class PaymentManagementController extends Controller
         }
     }
 
+   
     /*
     |--------------------------------------------------------------------------
     | Show Payment
@@ -672,33 +673,32 @@ class PaymentManagementController extends Controller
     |
     | Returns the complete administrative view of a single payment.
     |
+    | Includes:
+    | - Payment information
+    | - Invoice and invoice items
+    | - Billed revenue services
+    | - Assessment and payment-schedule context
+    | - Taxpayer information
+    | - Cash, bank transfer, and online payment details
+    | - Receipt and attachments
+    |
     */
 
     public function show(
         Request $request,
         string $payment
     ): JsonResponse {
-        $requestId =
-            $request->header('X-Request-ID')
+        $requestId = $request->header('X-Request-ID')
             ?? (string) Str::uuid();
 
         Log::info(
             'Payment management detail request started.',
             [
-                'request_id' =>
-                    $requestId,
-
-                'user_id' =>
-                    $request->user()?->id,
-
-                'payment_id' =>
-                    $payment,
-
-                'ip' =>
-                    $request->ip(),
-
-                'user_agent' =>
-                    $request->userAgent(),
+                'request_id' => $requestId,
+                'user_id' => $request->user()?->id,
+                'payment_id' => $payment,
+                'ip' => $request->ip(),
+                'user_agent' => $request->userAgent(),
             ]
         );
 
@@ -713,16 +713,11 @@ class PaymentManagementController extends Controller
 
             if (! $user) {
                 Log::warning(
-                    'Payment management detail rejected because the user is unauthenticated.',
+                    'Payment detail request rejected: unauthenticated.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'payment_id' =>
-                            $payment,
-
-                        'ip' =>
-                            $request->ip(),
+                        'request_id' => $requestId,
+                        'payment_id' => $payment,
+                        'ip' => $request->ip(),
                     ]
                 );
 
@@ -734,51 +729,65 @@ class PaymentManagementController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Retrieve Payment
+            | Retrieve Payment With Required Relationships
             |--------------------------------------------------------------------------
             |
-            | Use the common Payment model and load all relationships
-            | needed by the administrative detail/resource response.
+            | Invoice items are the source of truth for the services
+            | actually billed on this invoice.
             |
             */
 
             $paymentModel = Payment::query()
                 ->with([
-                    'invoice',
+                    // Invoice and its billed services.
+                    'invoice.items.service.revenueCode',
+
+                    // Assessment context for applicable invoice items.
+                    'invoice.items.assessmentService.assessment',
+
+                    // Scheduled payment context for applicable items.
+                    'invoice.items.paymentSchedule',
+
+                    // Invoice taxpayer.
+                    'invoice.citizen',
+
+                    // Payment-level taxpayer and audit users.
                     'citizen',
                     'processedBy',
                     'verifiedBy',
-            
-                    // Cash payment
+
+                    // Cash payment details.
                     'cashDetails.receivedBy',
-            
-                    // Bank transfer payment
+
+                    // Bank transfer details.
                     'bankTransferDetails.bankAccount',
                     'bankTransferDetails.verifiedBy',
                     'bankTransferDetails.files',
-            
-                    // Online payment
+
+                    // Online payment details.
                     'onlineDetails.paymentProvider',
-            
-                    // Receipt
+
+                    // Official receipt.
                     'receipt.issuedBy',
+
+                    // Payment-level attachments.
+                    'files',
                 ])
                 ->find($payment);
-            
-            
+
+            /*
+            |--------------------------------------------------------------------------
+            | Not Found
+            |--------------------------------------------------------------------------
+            */
 
             if (! $paymentModel) {
                 Log::warning(
-                    'Payment management detail failed because the payment was not found.',
+                    'Payment detail request failed: payment not found.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'user_id' =>
-                            $user->id,
-
-                        'payment_id' =>
-                            $payment,
+                        'request_id' => $requestId,
+                        'user_id' => $user->id,
+                        'payment_id' => $payment,
                     ]
                 );
 
@@ -792,74 +801,64 @@ class PaymentManagementController extends Controller
             |--------------------------------------------------------------------------
             | Authorization
             |--------------------------------------------------------------------------
+            |
+            | Enforce your application's payment-view permission or policy.
+            | Uncomment the policy call only if PaymentPolicy::view is
+            | configured to enforce the intended authorization rules.
+            |
             */
 
-            // $this->authorize(
-            //     'view',
-            //     $paymentModel
-            // );
+            // $this->authorize('view', $paymentModel);
 
             /*
             |--------------------------------------------------------------------------
-            | Response
+            | Log Successful Retrieval
             |--------------------------------------------------------------------------
             */
 
             Log::info(
                 'Payment management detail retrieved successfully.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'user_id' =>
-                        $user->id,
-
-                    'payment_id' =>
-                        $paymentModel->id,
-
-                    'payment_number' =>
-                        $paymentModel->payment_number,
-
-                    'status' =>
-                        $this->safeEnumValue(
-                            $paymentModel->status
-                        ),
+                    'request_id' => $requestId,
+                    'user_id' => $user->id,
+                    'payment_id' => $paymentModel->id,
+                    'payment_number' => $paymentModel->payment_number,
+                    'status' => $this->safeEnumValue(
+                        $paymentModel->status
+                    ),
+                    'invoice_id' => $paymentModel->invoice_id,
+                    'invoice_items_count' => $paymentModel->invoice
+                        ? $paymentModel->invoice->items->count()
+                        : 0,
                 ]
             );
 
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            |
+            | PaymentResource remains responsible for the API response
+            | structure and conditional relationship serialization.
+            |
+            */
+
             return ApiResponse::success(
-                new PaymentResource(
-                    $paymentModel
-                ),
+                new PaymentResource($paymentModel),
                 'Payment retrieved successfully.'
             );
         } catch (Throwable $exception) {
             Log::error(
                 'Payment management detail retrieval failed.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'user_id' =>
-                        $request->user()?->id,
-
-                    'payment_id' =>
-                        $payment,
-
-                    'exception' =>
-                        $exception::class,
-
-                    'message' =>
-                        $exception->getMessage(),
-
-                    'file' =>
-                        $exception->getFile(),
-
-                    'line' =>
-                        $exception->getLine(),
-
-                    'trace' =>
-                        $exception->getTraceAsString(),
+                    'request_id' => $requestId,
+                    'user_id' => $request->user()?->id,
+                    'payment_id' => $payment,
+                    'exception' => $exception::class,
+                    'message' => $exception->getMessage(),
+                    'file' => $exception->getFile(),
+                    'line' => $exception->getLine(),
+                    'trace' => $exception->getTraceAsString(),
                 ]
             );
 

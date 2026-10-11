@@ -285,6 +285,35 @@ Route::prefix('v1')->group(function () {
             'routes/Api/v1/mobile-app-releases.php'
         );
 
+        // ------------------------------------------------
+        // CASH RECONCILIATION
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/cash-reconciliations.php'
+        );
+
+
+        // ------------------------------------------------
+        // REVENUE COLLECTION REPORT
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/revenue-reports.php'
+        );
+
+
+        // ------------------------------------------------
+        // PAYMENT REPORT
+        // ------------------------------------------------
+
+        require base_path(
+            'routes/Api/v1/payment-reports.php'
+        );
+
+
+       
+
         // ====================================================
         // PRIVATE FILE ACCESS
         // ====================================================

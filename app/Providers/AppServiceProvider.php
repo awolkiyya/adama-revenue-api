@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Models\CashReconciliation;
 use App\Models\InterestRule;
 use App\Models\LeaseAmendment;
 use App\Models\MeasurementUnit;
@@ -11,6 +12,7 @@ use App\Models\RevenueService;
 use App\Models\Role;
 use App\Models\ServiceAccessRule;
 
+use App\Policies\CashReconciliationPolicy;
 use App\Policies\InterestRulePolicy;
 use App\Policies\LeaseAmendmentPolicy;
 use App\Policies\MeasurementUnitPolicy;
@@ -99,6 +101,11 @@ class AppServiceProvider extends ServiceProvider
             LeaseAmendmentPolicy::class
         );
 
+        Gate::policy(
+            CashReconciliation::class,
+            CashReconciliationPolicy::class
+        );
+
         /*
         |--------------------------------------------------------------------------
         | Login Rate Limiting
@@ -117,15 +124,14 @@ class AppServiceProvider extends ServiceProvider
 
             return [
 
-                // Maximum 10 login requests per minute from one IP
+                // Maximum 10 login requests per minute from one IP.
                 Limit::perMinute(10)
                     ->by("login-ip:{$ip}"),
 
-                // Maximum 5 login requests per minute for one account
+                // Maximum 5 login requests per minute for one account.
                 Limit::perMinute(5)
                     ->by("login-account:{$email}"),
             ];
         });
     }
 }
-
