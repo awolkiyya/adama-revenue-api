@@ -4,17 +4,14 @@ namespace App\Modules\Taxpayer\Services;
 
 use App\Models\Invoice;
 use App\Models\Payment;
-use Illuminate\Support\Facades\DB;
 
 class TaxpayerDashboardService
 {
     /**
      * Get dashboard data for the authenticated taxpayer.
      *
-     * IMPORTANT:
-     *
-     * All financial values are read from the authoritative
-     * invoice/payment domain.
+     * Financial totals are read from the authoritative
+     * invoice and payment records.
      *
      * This service does not calculate tariff amounts.
      */
@@ -23,31 +20,38 @@ class TaxpayerDashboardService
         $invoiceQuery = Invoice::query()
             ->where('citizen_id', $citizenId);
 
+        $outstandingStatuses = [
+            'ISSUED',
+            'PARTIALLY_PAID',
+            'OVERDUE',
+        ];
+
         $totalOutstanding = (clone $invoiceQuery)
-            ->whereIn('status', [
-                'ISSUED',
-                'PARTIALLY_PAID',
-                'OVERDUE',
-            ])
+            ->whereIn('status', $outstandingStatuses)
             ->sum('balance_due');
 
-        $totalInvoices = (clone $invoiceQuery)->count();
+        $totalInvoices = (clone $invoiceQuery)
+            ->count();
 
         $outstandingInvoices = (clone $invoiceQuery)
-            ->whereIn('status', [
-                'ISSUED',
-                'PARTIALLY_PAID',
-                'OVERDUE',
-            ])
+            ->whereIn('status', $outstandingStatuses)
             ->count();
 
         $paidInvoices = (clone $invoiceQuery)
             ->where('status', 'PAID')
             ->count();
 
-        $totalPaid = Payment::query()
+        /*
+         * Count only successfully completed payments.
+         *
+         * Do not include pending, processing, failed,
+         * cancelled, or expired payments.
+         */
+        $completedPaymentsQuery = Payment::query()
             ->where('citizen_id', $citizenId)
-            ->where('status', 'SUCCESS')
+            ->where('status', 'COMPLETED');
+
+        $totalPaid = (clone $completedPaymentsQuery)
             ->sum('amount');
 
         $recentInvoices = Invoice::query()
@@ -59,10 +63,12 @@ class TaxpayerDashboardService
             ->limit(5)
             ->get();
 
-        $recentPayments = Payment::query()
-            ->where('citizen_id', $citizenId)
-            ->where('status', 'SUCCESS')
-            ->latest('payment_date')
+        /*
+         * Use created_at instead of payment_date because
+         * payment_date does not exist in the reported schema.
+         */
+        $recentPayments = (clone $completedPaymentsQuery)
+            ->latest('created_at')
             ->limit(5)
             ->get();
 
@@ -80,13 +86,10 @@ class TaxpayerDashboardService
                 'PARTIALLY_PAID',
             ])
             ->whereNotNull('due_date')
-            ->whereBetween(
-                'due_date',
-                [
-                    now()->toDateString(),
-                    now()->addDays(7)->toDateString(),
-                ]
-            )
+            ->whereBetween('due_date', [
+                now()->toDateString(),
+                now()->addDays(7)->toDateString(),
+            ])
             ->orderBy('due_date')
             ->limit(5)
             ->get();
@@ -102,11 +105,8 @@ class TaxpayerDashboardService
             ],
 
             'recent_invoices' => $recentInvoices,
-
             'recent_payments' => $recentPayments,
-
             'overdue_invoices' => $overdueInvoices,
-
             'due_soon_invoices' => $dueSoonInvoices,
         ];
     }

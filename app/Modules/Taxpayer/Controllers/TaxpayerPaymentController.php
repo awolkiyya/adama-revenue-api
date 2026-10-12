@@ -3,7 +3,7 @@
 namespace App\Modules\Taxpayer\Controllers;
 
 use App\Http\Controllers\Controller;
-use App\Modules\Taxpayer\Resources\TaxpayerPaymentResource;
+use App\Modules\Payment\Resources\PaymentResource;
 use App\Modules\Taxpayer\Services\TaxpayerPaymentService;
 use App\Services\ApiResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -19,418 +19,376 @@ class TaxpayerPaymentController extends Controller
     ) {
     }
 
-    /**
-     * Get authenticated taxpayer payment history.
-     *
-     * GET /api/v1/taxpayer/payments
-     */
-    public function index(Request $request)
-    {
-        $requestId = $request->header('X-Request-ID');
+    
+/**
+ * Get authenticated taxpayer payment history.
+ *
+ * GET /api/v1/taxpayer/payments
+ *
+ * Supported query parameters:
+ * - page: integer, minimum 1
+ * - per_page: integer, between 1 and 100
+ * - search: payment number, transaction reference, invoice number, etc.
+ * - status: PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED, EXPIRED
+ */
+public function index(Request $request)
+{
+    $requestId = $request->header('X-Request-ID');
 
-        Log::debug('============================================================');
-        Log::debug('Taxpayer payment history request received.', [
-            'request_id' => $requestId,
-            'method' => $request->method(),
-            'path' => $request->path(),
-            'url' => $request->fullUrl(),
-            'ip' => $request->ip(),
-        ]);
-        Log::debug('============================================================');
+    Log::debug('============================================================');
+    Log::debug('Taxpayer payment history request received.', [
+        'request_id' => $requestId,
+        'method' => $request->method(),
+        'path' => $request->path(),
+        'url' => $request->fullUrl(),
+        'ip' => $request->ip(),
+    ]);
+    Log::debug('============================================================');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Authenticated User
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Authenticated User
+    |--------------------------------------------------------------------------
+    */
 
-        $user = $request->user();
+    $user = $request->user();
 
-        Log::debug('Authenticated taxpayer lookup.', [
-            'request_id' => $requestId,
-            'authenticated' => $user !== null,
-            'user_id' => $user?->id,
-            'user_type' => $user?->user_type,
-            'user_email' => $user?->email,
-            'user_phone' => $user?->phone,
-            'is_active' => $user?->is_active,
-        ]);
+    Log::debug('Authenticated taxpayer lookup.', [
+        'request_id' => $requestId,
+        'authenticated' => $user !== null,
+        'user_id' => $user?->id,
+        'user_type' => $user?->user_type,
+        'user_email' => $user?->email,
+        'user_phone' => $user?->phone,
+        'is_active' => $user?->is_active,
+    ]);
 
-        if (! $user) {
-            Log::warning(
-                'Taxpayer payment history request rejected: no authenticated user.',
-                [
-                    'request_id' => $requestId,
-                ]
-            );
+    if (! $user) {
+        Log::warning(
+            'Taxpayer payment history request rejected: no authenticated user.',
+            [
+                'request_id' => $requestId,
+            ]
+        );
 
-            return ApiResponse::unauthorized(
-                'Authentication is required.'
-            );
-        }
+        return ApiResponse::unauthorized(
+            'Authentication is required.'
+        );
+    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate User Type
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Validate User Type
+    |--------------------------------------------------------------------------
+    */
 
-        if (! $user->isCitizen()) {
-            Log::warning(
-                'Taxpayer payment history request rejected: authenticated user is not a citizen.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'user_type' => $user->user_type,
-                ]
-            );
+    if (! $user->isCitizen()) {
+        Log::warning(
+            'Taxpayer payment history request rejected: authenticated user is not a citizen.',
+            [
+                'request_id' => $requestId,
+                'user_id' => $user->id,
+                'user_type' => $user->user_type,
+            ]
+        );
 
-            return ApiResponse::forbidden(
-                'Authenticated account is not a citizen account.'
-            );
-        }
+        return ApiResponse::forbidden(
+            'Authenticated account is not a citizen account.'
+        );
+    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Citizen Account
-        |--------------------------------------------------------------------------
-        |
-        | users.id
-        |     ↓
-        | citizen_accounts.user_id
-        |
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Citizen Account
+    |--------------------------------------------------------------------------
+    */
 
-        Log::debug('Resolving citizen account.', [
-            'request_id' => $requestId,
-            'user_id' => $user->id,
-        ]);
+    Log::debug('Resolving citizen account.', [
+        'request_id' => $requestId,
+        'user_id' => $user->id,
+    ]);
 
-        $citizenAccount = $user->citizenAccount;
+    $citizenAccount = $user->citizenAccount;
 
-        Log::debug('Citizen account lookup completed.', [
-            'request_id' => $requestId,
-            'user_id' => $user->id,
-            'citizen_account_exists' => $citizenAccount !== null,
-            'citizen_account_id' => $citizenAccount?->id,
-            'citizen_id' => $citizenAccount?->citizen_id,
-            'login_type' => $citizenAccount?->login_type,
-            'is_active' => $citizenAccount?->is_active,
-            'last_login_at' => $citizenAccount?->last_login_at,
-        ]);
+    Log::debug('Citizen account lookup completed.', [
+        'request_id' => $requestId,
+        'user_id' => $user->id,
+        'citizen_account_exists' => $citizenAccount !== null,
+        'citizen_account_id' => $citizenAccount?->id,
+        'citizen_id' => $citizenAccount?->citizen_id,
+        'login_type' => $citizenAccount?->login_type,
+        'is_active' => $citizenAccount?->is_active,
+        'last_login_at' => $citizenAccount?->last_login_at,
+    ]);
 
-        if (! $citizenAccount) {
-            Log::warning(
-                'Authenticated citizen does not have a citizen account.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                ]
-            );
+    if (! $citizenAccount) {
+        Log::warning(
+            'Authenticated citizen does not have a citizen account.',
+            [
+                'request_id' => $requestId,
+                'user_id' => $user->id,
+            ]
+        );
 
-            return ApiResponse::forbidden(
-                'Authenticated taxpayer does not have a citizen account.'
-            );
-        }
+        return ApiResponse::forbidden(
+            'Authenticated taxpayer does not have a citizen account.'
+        );
+    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Citizen Account Status
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Citizen Account Status
+    |--------------------------------------------------------------------------
+    */
 
-        if (! $citizenAccount->is_active) {
-            Log::warning(
-                'Citizen account is inactive.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'citizen_account_id' => $citizenAccount->id,
-                    'citizen_id' => $citizenAccount->citizen_id,
-                ]
-            );
-
-            return ApiResponse::forbidden(
-                'Citizen account is inactive.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Citizen Profile
-        |--------------------------------------------------------------------------
-        |
-        | citizen_accounts.citizen_id
-        |     ↓
-        | citizens.id
-        |
-        */
-
-        Log::debug('Resolving citizen profile.', [
+    if (! $citizenAccount->is_active) {
+        Log::warning('Citizen account is inactive.', [
             'request_id' => $requestId,
             'user_id' => $user->id,
             'citizen_account_id' => $citizenAccount->id,
             'citizen_id' => $citizenAccount->citizen_id,
         ]);
 
-        $citizen = $citizenAccount->citizen;
-
-        Log::debug('Citizen profile lookup completed.', [
-            'request_id' => $requestId,
-            'user_id' => $user->id,
-            'citizen_account_id' => $citizenAccount->id,
-            'citizen_exists' => $citizen !== null,
-            'citizen_id' => $citizen?->id,
-            'citizen_uid' => $citizen?->citizen_uid,
-            'citizen_name' => $citizen?->full_name,
-            'citizen_phone' => $citizen?->phone,
-            'citizen_email' => $citizen?->email,
-            'citizen_active' => $citizen?->is_active,
-        ]);
-
-        if (! $citizen) {
-            Log::warning(
-                'Citizen account is not linked to a citizen profile.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'citizen_account_id' => $citizenAccount->id,
-                    'citizen_id' => $citizenAccount->citizen_id,
-                ]
-            );
-
-            return ApiResponse::forbidden(
-                'Citizen account is not linked to a citizen profile.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Citizen Status
-        |--------------------------------------------------------------------------
-        */
-
-        if (! $citizen->is_active) {
-            Log::warning(
-                'Citizen profile is inactive.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'citizen_account_id' => $citizenAccount->id,
-                    'citizen_id' => $citizen->id,
-                ]
-            );
-
-            return ApiResponse::forbidden(
-                'Citizen profile is inactive.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Resolve Pagination
-        |--------------------------------------------------------------------------
-        |
-        | Laravel's paginator automatically reads the `page` query
-        | parameter from the current HTTP request.
-        |
-        | Example:
-        |
-        | GET /api/v1/taxpayer/payments?page=2&per_page=100
-        |
-        | Therefore `page` is used for validation/logging here, but
-        | it must NOT be passed to TaxpayerPaymentService::paginate()
-        | unless that service explicitly accepts a page parameter.
-        |
-        */
-
-        $perPage = min(
-            max(
-                (int) $request->input(
-                    'per_page',
-                    15
-                ),
-                1
-            ),
-            100
+        return ApiResponse::forbidden(
+            'Citizen account is inactive.'
         );
+    }
 
-        $page = max(
-            (int) $request->input(
-                'page',
-                1
-            ),
-            1
-        );
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Citizen Profile
+    |--------------------------------------------------------------------------
+    |
+    | users.id
+    |     -> citizen_accounts.user_id
+    |     -> citizen_accounts.citizen_id
+    |     -> citizens.id
+    |
+    */
 
-        Log::debug('Payment pagination parameters resolved.', [
-            'request_id' => $requestId,
-            'user_id' => $user->id,
-            'citizen_id' => $citizen->id,
-            'requested_page' => $request->input('page'),
-            'resolved_page' => $page,
-            'requested_per_page' => $request->input('per_page'),
-            'resolved_per_page' => $perPage,
-        ]);
+    Log::debug('Resolving citizen profile.', [
+        'request_id' => $requestId,
+        'user_id' => $user->id,
+        'citizen_account_id' => $citizenAccount->id,
+        'citizen_id' => $citizenAccount->citizen_id,
+    ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Payment History
-        |--------------------------------------------------------------------------
-        */
+    $citizen = $citizenAccount->citizen;
 
-        Log::info(
-            'Authenticated taxpayer resolved successfully for payment history.',
+    Log::debug('Citizen profile lookup completed.', [
+        'request_id' => $requestId,
+        'user_id' => $user->id,
+        'citizen_account_id' => $citizenAccount->id,
+        'citizen_exists' => $citizen !== null,
+        'citizen_id' => $citizen?->id,
+        'citizen_uid' => $citizen?->citizen_uid,
+        'citizen_name' => $citizen?->full_name,
+        'citizen_phone' => $citizen?->phone,
+        'citizen_email' => $citizen?->email,
+        'citizen_active' => $citizen?->is_active,
+    ]);
+
+    if (! $citizen) {
+        Log::warning(
+            'Citizen account is not linked to a citizen profile.',
             [
                 'request_id' => $requestId,
                 'user_id' => $user->id,
                 'citizen_account_id' => $citizenAccount->id,
-                'citizen_id' => $citizen->id,
+                'citizen_id' => $citizenAccount->citizen_id,
             ]
         );
 
-        Log::debug(
-            'Calling taxpayer payment service.',
+        return ApiResponse::forbidden(
+            'Citizen account is not linked to a citizen profile.'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Citizen Profile Status
+    |--------------------------------------------------------------------------
+    */
+
+    if (! $citizen->is_active) {
+        Log::warning('Citizen profile is inactive.', [
+            'request_id' => $requestId,
+            'user_id' => $user->id,
+            'citizen_account_id' => $citizenAccount->id,
+            'citizen_id' => $citizen->id,
+        ]);
+
+        return ApiResponse::forbidden(
+            'Citizen profile is inactive.'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Query Parameters
+    |--------------------------------------------------------------------------
+    */
+
+    $validated = $request->validate([
+        'page' => [
+            'sometimes',
+            'integer',
+            'min:1',
+        ],
+        'per_page' => [
+            'sometimes',
+            'integer',
+            'min:1',
+            'max:100',
+        ],
+        'search' => [
+            'sometimes',
+            'nullable',
+            'string',
+            'max:100',
+        ],
+        'status' => [
+            'sometimes',
+            'nullable',
+            'string',
+            'in:PENDING,PROCESSING,COMPLETED,FAILED,CANCELLED,EXPIRED',
+        ],
+    ]);
+
+    $page = (int) ($validated['page'] ?? 1);
+
+    $perPage = (int) ($validated['per_page'] ?? 15);
+
+    $search = isset($validated['search'])
+        ? trim($validated['search'])
+        : null;
+
+    $status = $validated['status'] ?? null;
+
+    if ($search === '') {
+        $search = null;
+    }
+
+    if ($status === '') {
+        $status = null;
+    }
+
+    Log::debug('Taxpayer payment filters resolved.', [
+        'request_id' => $requestId,
+        'user_id' => $user->id,
+        'citizen_id' => $citizen->id,
+        'requested_page' => $request->input('page'),
+        'resolved_page' => $page,
+        'requested_per_page' => $request->input('per_page'),
+        'resolved_per_page' => $perPage,
+        'search' => $search,
+        'status' => $status,
+    ]);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Retrieve Filtered Payment History
+    |--------------------------------------------------------------------------
+    */
+
+    Log::info(
+        'Authenticated taxpayer resolved successfully for payment history.',
+        [
+            'request_id' => $requestId,
+            'user_id' => $user->id,
+            'citizen_account_id' => $citizenAccount->id,
+            'citizen_id' => $citizen->id,
+        ]
+    );
+
+    Log::debug('Calling taxpayer payment service.', [
+        'request_id' => $requestId,
+        'user_id' => $user->id,
+        'citizen_id' => $citizen->id,
+        'page' => $page,
+        'per_page' => $perPage,
+        'search' => $search,
+        'status' => $status,
+    ]);
+
+    try {
+        $payments = $this->paymentService->paginate(
+            citizenId: $citizen->id,
+            perPage: $perPage,
+            search: $search,
+            status: $status,
+            page: $page,
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Log Pagination Metadata
+        |--------------------------------------------------------------------------
+        */
+
+        Log::debug('Taxpayer payment service completed.', [
+            'request_id' => $requestId,
+            'user_id' => $user->id,
+            'citizen_id' => $citizen->id,
+            'payment_result_type' => get_class($payments),
+            'payment_count' => $payments->count(),
+            'total' => $payments->total(),
+            'current_page' => $payments->currentPage(),
+            'last_page' => $payments->lastPage(),
+            'per_page' => $payments->perPage(),
+            'from' => $payments->firstItem(),
+            'to' => $payments->lastItem(),
+            'has_more' => $payments->hasMorePages(),
+        ]);
+
+        Log::info(
+            'Taxpayer payment history retrieved successfully.',
             [
                 'request_id' => $requestId,
                 'user_id' => $user->id,
                 'citizen_id' => $citizen->id,
-                'page' => $page,
-                'per_page' => $perPage,
+                'result_count' => $payments->count(),
+                'total_payments' => $payments->total(),
+                'current_page' => $payments->currentPage(),
+                'last_page' => $payments->lastPage(),
+                'per_page' => $payments->perPage(),
+                'search' => $search,
+                'status' => $status,
             ]
         );
 
-        try {
-            /*
-             * IMPORTANT:
-             *
-             * Do not pass `page:` here.
-             *
-             * Laravel's paginator reads the current page directly
-             * from the HTTP request.
-             */
-            $payments = $this->paymentService->paginate(
-                citizenId: $citizen->id,
-                perPage: $perPage
-            );
+        /*
+        |--------------------------------------------------------------------------
+        | Return Standardized API Response
+        |--------------------------------------------------------------------------
+        */
 
-            Log::debug(
-                'Taxpayer payment service completed.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'citizen_id' => $citizen->id,
-                    'payment_result_type' => is_object($payments)
-                        ? get_class($payments)
-                        : gettype($payments),
-                    'payment_count' => method_exists(
-                        $payments,
-                        'count'
-                    )
-                        ? $payments->count()
-                        : null,
-                    'total' => method_exists(
-                        $payments,
-                        'total'
-                    )
-                        ? $payments->total()
-                        : null,
-                    'current_page' => method_exists(
-                        $payments,
-                        'currentPage'
-                    )
-                        ? $payments->currentPage()
-                        : null,
-                    'last_page' => method_exists(
-                        $payments,
-                        'lastPage'
-                    )
-                        ? $payments->lastPage()
-                        : null,
-                    'per_page' => method_exists(
-                        $payments,
-                        'perPage'
-                    )
-                        ? $payments->perPage()
-                        : null,
-                    'from' => method_exists(
-                        $payments,
-                        'firstItem'
-                    )
-                        ? $payments->firstItem()
-                        : null,
-                    'to' => method_exists(
-                        $payments,
-                        'lastItem'
-                    )
-                        ? $payments->lastItem()
-                        : null,
-                    'has_more' => method_exists(
-                        $payments,
-                        'hasMorePages'
-                    )
-                        ? $payments->hasMorePages()
-                        : null,
-                ]
-            );
+        return ApiResponse::success(
+            data: PaymentResource::collection($payments),
+            message: 'Payment history retrieved successfully.'
+        );
+    } catch (Throwable $e) {
+        Log::error('Taxpayer payment history retrieval failed.', [
+            'request_id' => $requestId,
+            'user_id' => $user->id,
+            'citizen_id' => $citizen->id,
+            'page' => $page,
+            'per_page' => $perPage,
+            'search' => $search,
+            'status' => $status,
+            'exception_class' => get_class($e),
+            'exception_message' => $e->getMessage(),
+            'exception_file' => $e->getFile(),
+            'exception_line' => $e->getLine(),
+        ]);
 
-            Log::info(
-                'Taxpayer payment history retrieved successfully.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'citizen_id' => $citizen->id,
-                    'payment_count' => method_exists(
-                        $payments,
-                        'count'
-                    )
-                        ? $payments->count()
-                        : null,
-                    'total_payments' => method_exists(
-                        $payments,
-                        'total'
-                    )
-                        ? $payments->total()
-                        : null,
-                    'current_page' => method_exists(
-                        $payments,
-                        'currentPage'
-                    )
-                        ? $payments->currentPage()
-                        : null,
-                ]
-            );
+        report($e);
 
-            return ApiResponse::success(
-                data: TaxpayerPaymentResource::collection(
-                    $payments
-                ),
-                message: 'Payment history retrieved successfully.'
-            );
-        } catch (Throwable $e) {
-            Log::error(
-                'Taxpayer payment service failed.',
-                [
-                    'request_id' => $requestId,
-                    'user_id' => $user->id,
-                    'citizen_id' => $citizen->id,
-                    'page' => $page,
-                    'per_page' => $perPage,
-                    'exception_class' => get_class($e),
-                    'exception_message' => $e->getMessage(),
-                    'exception_file' => $e->getFile(),
-                    'exception_line' => $e->getLine(),
-                    'exception_trace' => $e->getTraceAsString(),
-                ]
-            );
-
-            report($e);
-
-            return ApiResponse::serverError(
-                exception: $e
-            );
-        }
+        return ApiResponse::serverError(
+            exception: $e
+        );
     }
+}
 
     /**
      * Get a single taxpayer payment.
@@ -681,7 +639,7 @@ class TaxpayerPaymentController extends Controller
             );
 
             return ApiResponse::success(
-                data: new TaxpayerPaymentResource(
+                data: new PaymentResource(
                     $model
                 ),
                 message: 'Payment retrieved successfully.'
@@ -1010,7 +968,7 @@ class TaxpayerPaymentController extends Controller
             );
 
             return ApiResponse::success(
-                data: new TaxpayerPaymentResource(
+                data: new PaymentResource(
                     $model
                 ),
                 message: 'Payment receipt retrieved successfully.'
