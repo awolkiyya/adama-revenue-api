@@ -8,193 +8,101 @@ use App\Models\User;
 class CashReconciliationPolicy
 {
     /**
-     * =========================================================
-     * VIEW ANY CASH RECONCILIATIONS
-     * =========================================================
-     *
-     * Permission:
-     *
-     *     cash-reconciliations.view
-     *
-     * This permits access to the reconciliation listing.
-     *
-     * The query must still be scoped:
-     *
-     * - Ordinary users: their own reconciliations.
-     * - Users with view-all: all authorized reconciliations.
+     * Determine whether the user can view the reconciliation list.
      */
     public function viewAny(User $user): bool
     {
-        return $this->hasPermission(
-            $user,
-            'cash-reconciliations.view'
-        );
+        return $user->can('cash_reconciliations.view')
+            || $user->can('cash_reconciliations.view_all');
     }
 
     /**
-     * =========================================================
-     * VIEW CASH RECONCILIATION
-     * =========================================================
-     *
-     * Permission:
-     *
-     *     cash-reconciliations.view
-     *
-     * +
-     *
-     * Record ownership or view-all permission.
+     * Determine whether the user can view a specific reconciliation.
      */
     public function view(
         User $user,
-        CashReconciliation $reconciliation
+        CashReconciliation $cashReconciliation
     ): bool {
-        if (!$this->hasPermission(
-            $user,
-            'cash-reconciliations.view'
-        )) {
+        $hasViewPermission =
+            $user->can('cash_reconciliations.view')
+            || $user->can('cash_reconciliations.view_all');
+
+        if (! $hasViewPermission) {
             return false;
         }
 
-        return $this->canAccessRecord(
-            $user,
-            $reconciliation
-        );
+        return $this->canAccessRecord($user, $cashReconciliation);
     }
 
     /**
-     * =========================================================
-     * CREATE CASH RECONCILIATION
-     * =========================================================
-     *
-     * Permission:
-     *
-     *     cash-reconciliations.create
-     *
-     * The authenticated user must be assigned as collector
-     * by the backend. Do not accept collector_id from the
-     * request as the authoritative identity.
+     * Determine whether the user can create a reconciliation.
      */
     public function create(User $user): bool
     {
-        return $this->hasPermission(
-            $user,
-            'cash-reconciliations.create'
-        );
+        return $user->can('cash_reconciliations.create');
     }
 
     /**
-     * =========================================================
-     * UPDATE CASH RECONCILIATION
-     * =========================================================
+     * Determine whether the user can update a reconciliation.
      *
-     * Permission:
-     *
-     *     cash-reconciliations.create
-     *
-     * +
-     *
-     * Ownership.
-     *
-     * The service must additionally restrict updates to
-     * DRAFT or RETURNED records.
+     * Only the owning collector may update a draft or returned record.
      */
     public function update(
         User $user,
-        CashReconciliation $reconciliation
+        CashReconciliation $cashReconciliation
     ): bool {
-        return $this->hasPermission(
-            $user,
-            'cash-reconciliations.create'
-        )
-            && $this->isCollector(
-                $user,
-                $reconciliation
-            )
-            && in_array(
-                $reconciliation->status,
-                [
-                    CashReconciliation::STATUS_DRAFT,
-                    CashReconciliation::STATUS_RETURNED,
-                ],
-                true
-            );
-    }
-
-    /**
-     * =========================================================
-     * SUBMIT CASH RECONCILIATION
-     * =========================================================
-     *
-     * Permission:
-     *
-     *     cash-reconciliations.submit
-     *
-     * +
-     *
-     * Ownership and editable status.
-     *
-     * Expected amount and difference must be calculated
-     * by the backend during submission.
-     */
-    public function submit(
-        User $user,
-        CashReconciliation $reconciliation
-    ): bool {
-        return $this->hasPermission(
-            $user,
-            'cash-reconciliations.submit'
-        )
-            && $this->isCollector(
-                $user,
-                $reconciliation
-            )
-            && in_array(
-                $reconciliation->status,
-                [
-                    CashReconciliation::STATUS_DRAFT,
-                    CashReconciliation::STATUS_RETURNED,
-                ],
-                true
-            );
-    }
-
-    /**
-     * =========================================================
-     * REVIEW CASH RECONCILIATION
-     * =========================================================
-     *
-     * Permission:
-     *
-     *     cash-reconciliations.review
-     *
-     * +
-     *
-     * Separation of duties.
-     *
-     * A collector cannot review their own reconciliation.
-     * Only records awaiting review or requiring discrepancy
-     * resolution can be reviewed.
-     */
-    public function review(
-        User $user,
-        CashReconciliation $reconciliation
-    ): bool {
-        if (!$this->hasPermission(
-            $user,
-            'cash-reconciliations.review'
-        )) {
+        if (! $user->can('cash_reconciliations.update')) {
             return false;
         }
 
-        if ($this->isCollector(
-            $user,
-            $reconciliation
-        )) {
+        if (! $this->isOwner($user, $cashReconciliation)) {
+            return false;
+        }
+
+        return $cashReconciliation->isEditable();
+    }
+
+    /**
+     * Determine whether the user can submit a reconciliation.
+     *
+     * Only the owning collector may submit a draft or returned record.
+     */
+    public function submit(
+        User $user,
+        CashReconciliation $cashReconciliation
+    ): bool {
+        if (! $user->can('cash_reconciliations.submit')) {
+            return false;
+        }
+
+        if (! $this->isOwner($user, $cashReconciliation)) {
+            return false;
+        }
+
+        return $cashReconciliation->isEditable();
+    }
+
+    /**
+     * Determine whether the user can review a reconciliation.
+     *
+     * A collector cannot review their own reconciliation.
+     * Only submitted records awaiting review or discrepancy resolution
+     * can be reviewed.
+     */
+    public function review(
+        User $user,
+        CashReconciliation $cashReconciliation
+    ): bool {
+        if (! $user->can('cash_reconciliations.review')) {
+            return false;
+        }
+
+        if ($this->isOwner($user, $cashReconciliation)) {
             return false;
         }
 
         return in_array(
-            $reconciliation->status,
+            $cashReconciliation->status,
             [
                 CashReconciliation::STATUS_PENDING_REVIEW,
                 CashReconciliation::STATUS_DISCREPANCY,
@@ -204,96 +112,59 @@ class CashReconciliationPolicy
     }
 
     /**
-     * =========================================================
-     * CANCEL CASH RECONCILIATION
-     * =========================================================
+     * Determine whether the user can cancel a reconciliation.
      *
-     * Permission:
-     *
-     *     cash-reconciliations.create
-     *
-     * +
-     *
-     * Ownership and cancellable status.
-     *
-     * Submitted reconciliations cannot be cancelled through
-     * this action.
+     * Only the owning collector may cancel a draft or returned record.
      */
     public function cancel(
         User $user,
-        CashReconciliation $reconciliation
+        CashReconciliation $cashReconciliation
     ): bool {
-        return $this->hasPermission(
-            $user,
-            'cash-reconciliations.create'
-        )
-            && $this->isCollector(
-                $user,
-                $reconciliation
-            )
-            && in_array(
-                $reconciliation->status,
-                [
-                    CashReconciliation::STATUS_DRAFT,
-                    CashReconciliation::STATUS_RETURNED,
-                ],
-                true
-            );
+        if (! $user->can('cash_reconciliations.cancel')) {
+            return false;
+        }
+
+        if (! $this->isOwner($user, $cashReconciliation)) {
+            return false;
+        }
+
+        return $cashReconciliation->isEditable();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Private Authorization Helpers
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * =========================================================
-     * CHECK RECORD ACCESS
-     * =========================================================
+     * Determine whether the user can access a particular record.
      *
-     * This method checks record-level access.
-     *
-     * It does not replace the base view permission.
+     * Users with view_all can access records from any collector.
+     * Other users can access only their own records.
      */
-    protected function canAccessRecord(
+    private function canAccessRecord(
         User $user,
-        CashReconciliation $reconciliation
+        CashReconciliation $cashReconciliation
     ): bool {
-        if ($this->hasPermission(
-            $user,
-            'cash-reconciliations.view-all'
-        )) {
+        if ($user->can('cash_reconciliations.view_all')) {
             return true;
         }
 
-        return $this->isCollector(
-            $user,
-            $reconciliation
-        );
+        return $this->isOwner($user, $cashReconciliation);
     }
 
     /**
-     * =========================================================
-     * CHECK COLLECTOR OWNERSHIP
-     * =========================================================
-     */
-    protected function isCollector(
-        User $user,
-        CashReconciliation $reconciliation
-    ): bool {
-        return $user->getKey() !== null
-            && $reconciliation->collector_id !== null
-            && (string) $user->getKey()
-                === (string) $reconciliation->collector_id;
-    }
-
-    /**
-     * =========================================================
-     * CHECK PERMISSION
-     * =========================================================
+     * Determine whether the reconciliation belongs to the user.
      *
-     * Permission-driven authorization.
-     * No role names are hard-coded.
+     * String comparison supports UUID identifiers.
      */
-    protected function hasPermission(
+    private function isOwner(
         User $user,
-        string $permission
+        CashReconciliation $cashReconciliation
     ): bool {
-        return $user->can($permission);
+        return (string) $cashReconciliation->collector_id
+            === (string) $user->getKey();
     }
 }
+

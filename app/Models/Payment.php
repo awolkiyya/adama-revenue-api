@@ -25,7 +25,6 @@ class Payment extends Model
 
     protected $table = 'payments';
 
-
     /*
     |--------------------------------------------------------------------------
     | Primary Key
@@ -38,7 +37,6 @@ class Payment extends Model
 
     public $incrementing = false;
 
-
     /*
     |--------------------------------------------------------------------------
     | Mass Assignment
@@ -46,177 +44,76 @@ class Payment extends Model
     */
 
     protected $fillable = [
-
-        /*
-        |--------------------------------------------------------------------------
-        | Business References
-        |--------------------------------------------------------------------------
-        */
-
+        // Business references
         'payment_number',
-
+        'request_id',
         'invoice_id',
-
         'citizen_id',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Classification
-        |--------------------------------------------------------------------------
-        */
-
+        // Payment classification
         'payment_method',
-
         'payment_provider',
-
         'payment_source',
-
         'status',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Transaction
-        |--------------------------------------------------------------------------
-        */
-
+        // Transaction references
         'transaction_reference',
-
         'provider_reference',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Financial Information
-        |--------------------------------------------------------------------------
-        */
-
+        // Financial information
         'amount',
-
         'currency',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Processing
-        |--------------------------------------------------------------------------
-        */
-
+        // Processing
         'processed_by',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Verification
-        |--------------------------------------------------------------------------
-        */
-
+        // Verification
         'verified_by',
-
         'verified_at',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payer Snapshot
-        |--------------------------------------------------------------------------
-        */
-
+        // Payer snapshot
         'payer_name',
-
         'payer_email',
-
         'payer_phone',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Provider / Checkout
-        |--------------------------------------------------------------------------
-        */
-
+        // Provider and checkout
         'checkout_url',
-
         'provider_response',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Failure Information
-        |--------------------------------------------------------------------------
-        */
-
+        // Failure information
         'failure_reason',
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Metadata
-        |--------------------------------------------------------------------------
-        */
-
+        // Additional metadata
         'metadata',
     ];
 
-
     /*
     |--------------------------------------------------------------------------
-    | Casts
+    | Attribute Casts
     |--------------------------------------------------------------------------
     */
 
     protected function casts(): array
     {
         return [
-
-            /*
-            |--------------------------------------------------------------------------
-            | Enums
-            |--------------------------------------------------------------------------
-            */
-
+            // Enums
             'payment_method' => PaymentMethod::class,
-
             'payment_provider' => PaymentProvider::class,
-
             'status' => PaymentStatus::class,
 
-
-            /*
-            |--------------------------------------------------------------------------
-            | Financial Values
-            |--------------------------------------------------------------------------
-            */
-
+            // Financial values
             'amount' => 'decimal:2',
 
-
-            /*
-            |--------------------------------------------------------------------------
-            | JSON
-            |--------------------------------------------------------------------------
-            */
-
+            // JSON fields
             'metadata' => 'array',
-
             'provider_response' => 'array',
 
-
-            /*
-            |--------------------------------------------------------------------------
-            | Dates
-            |--------------------------------------------------------------------------
-            */
-
+            // Dates
             'verified_at' => 'datetime',
-
             'created_at' => 'datetime',
-
             'updated_at' => 'datetime',
         ];
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -225,56 +122,38 @@ class Payment extends Model
     */
 
     /**
-     * Invoice this payment belongs to.
+     * Invoice associated with this payment.
      *
-     * One invoice can have many payments.
-     *
-     * This supports partial payments.
+     * An invoice can have multiple payments, including partial payments.
      */
     public function invoice(): BelongsTo
     {
-        return $this->belongsTo(
-            Invoice::class,
-            'invoice_id'
-        );
+        return $this->belongsTo(Invoice::class, 'invoice_id');
     }
 
-
     /**
-     * Citizen associated with the payment.
+     * Citizen associated with this payment.
      */
     public function citizen(): BelongsTo
     {
-        return $this->belongsTo(
-            Citizen::class,
-            'citizen_id'
-        );
+        return $this->belongsTo(Citizen::class, 'citizen_id');
     }
 
-
     /**
-     * User who processed or recorded the payment.
+     * User who recorded or processed the payment.
      */
     public function processedBy(): BelongsTo
     {
-        return $this->belongsTo(
-            User::class,
-            'processed_by'
-        );
+        return $this->belongsTo(User::class, 'processed_by');
     }
-
 
     /**
      * User who verified the payment.
      */
     public function verifiedBy(): BelongsTo
     {
-        return $this->belongsTo(
-            User::class,
-            'verified_by'
-        );
+        return $this->belongsTo(User::class, 'verified_by');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -283,40 +162,28 @@ class Payment extends Model
     */
 
     /**
-     * Cash payment information.
+     * Cash-specific payment information.
      */
     public function cashDetails(): HasOne
     {
-        return $this->hasOne(
-            CashPaymentDetail::class,
-            'payment_id'
-        );
+        return $this->hasOne(CashPaymentDetail::class, 'payment_id');
     }
 
-
     /**
-     * Bank transfer information.
+     * Bank-transfer-specific payment information.
      */
     public function bankTransferDetails(): HasOne
     {
-        return $this->hasOne(
-            BankTransferDetail::class,
-            'payment_id'
-        );
+        return $this->hasOne(BankTransferDetail::class, 'payment_id');
     }
 
-
     /**
-     * Online payment information.
+     * Online-payment-specific information.
      */
     public function onlineDetails(): HasOne
     {
-        return $this->hasOne(
-            OnlinePaymentDetail::class,
-            'payment_id'
-        );
+        return $this->hasOne(OnlinePaymentDetail::class, 'payment_id');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -325,19 +192,15 @@ class Payment extends Model
     */
 
     /**
-     * Generic files attached directly to the payment.
+     * Files attached directly to the payment.
      *
-     * Method-specific supporting documents should preferably
-     * be attached to the corresponding payment detail.
+     * Method-specific supporting documents can instead be attached
+     * to their respective payment-detail models.
      */
     public function files(): MorphMany
     {
-        return $this->morphMany(
-            File::class,
-            'fileable'
-        );
+        return $this->morphMany(File::class, 'fileable');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -345,14 +208,13 @@ class Payment extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Receipt generated for this payment.
+     */
     public function receipt(): HasOne
     {
-        return $this->hasOne(
-            Receipt::class,
-            'payment_id'
-        );
+        return $this->hasOne(Receipt::class, 'payment_id');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -360,71 +222,48 @@ class Payment extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Determine whether the payment is pending.
-     */
     public function isPending(): bool
     {
         return $this->status === PaymentStatus::PENDING;
     }
 
-
-    /**
-     * Determine whether the payment is processing.
-     */
     public function isProcessing(): bool
     {
         return $this->status === PaymentStatus::PROCESSING;
     }
 
-
-    /**
-     * Determine whether the payment is completed.
-     */
     public function isCompleted(): bool
     {
         return $this->status === PaymentStatus::COMPLETED;
     }
 
-
-    /**
-     * Determine whether the payment failed.
-     */
     public function isFailed(): bool
     {
         return $this->status === PaymentStatus::FAILED;
     }
 
-
-    /**
-     * Determine whether the payment was cancelled.
-     */
     public function isCancelled(): bool
     {
         return $this->status === PaymentStatus::CANCELLED;
     }
 
-
-    /**
-     * Determine whether the payment was reversed.
-     */
     public function isReversed(): bool
     {
         return $this->status === PaymentStatus::REVERSED;
     }
 
-
     /**
-     * Determine whether the payment successfully completed.
+     * Determine whether the payment was successfully completed.
      */
     public function isSuccessful(): bool
     {
-        return $this->status === PaymentStatus::COMPLETED;
+        return $this->isCompleted();
     }
-
 
     /**
      * Determine whether the payment has reached a final state.
+     *
+     * Pending and processing payments are not final.
      */
     public function isFinal(): bool
     {
@@ -440,7 +279,6 @@ class Payment extends Model
         );
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | Payment State Changes
@@ -448,33 +286,25 @@ class Payment extends Model
     */
 
     /**
-     * Mark payment as completed.
+     * Mark a payment as completed.
      *
-     * Invoice financial updates must be handled by
-     * PaymentService inside a database transaction.
+     * Invoice balances and payment totals must be updated by the
+     * appropriate payment service within a database transaction.
      */
-    public function markAsCompleted(
-        string $verifiedBy
-    ): bool {
+    public function markAsCompleted(string $verifiedBy): bool
+    {
         return $this->forceFill([
             'status' => PaymentStatus::COMPLETED,
-
             'verified_by' => $verifiedBy,
-
             'verified_at' => now(),
-
             'failure_reason' => null,
         ])->save();
     }
 
-
     /**
-     * Mark payment as failed.
+     * Mark a payment as failed.
      *
-     * A payment can fail automatically because of a provider/system
-     * error, or manually during verification.
-     *
-     * Failed payments must not affect invoice balances.
+     * Failed payments must not increase the amount paid on an invoice.
      */
     public function markAsFailed(
         string $reason,
@@ -482,20 +312,17 @@ class Payment extends Model
     ): bool {
         return $this->forceFill([
             'status' => PaymentStatus::FAILED,
-
             'failure_reason' => $reason,
-
             'verified_by' => $verifiedBy,
-
-            'verified_at' => $verifiedBy !== null
-                ? now()
-                : null,
+            'verified_at' => $verifiedBy !== null ? now() : null,
         ])->save();
     }
-   
 
     /**
-     * Cancel the payment.
+     * Cancel a payment.
+     *
+     * Any necessary invoice adjustments must be handled by the
+     * appropriate payment service within a database transaction.
      */
     public function markAsCancelled(): bool
     {
@@ -504,12 +331,11 @@ class Payment extends Model
         ])->save();
     }
 
-
     /**
-     * Mark the payment as reversed.
+     * Mark a payment as reversed.
      *
-     * Any invoice balance reversal must be handled by
-     * PaymentService inside a database transaction.
+     * The associated invoice balance must be adjusted by the payment
+     * service within the same database transaction.
      */
     public function markAsReversed(): bool
     {

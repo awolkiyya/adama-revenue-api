@@ -24,8 +24,11 @@ class CashReconciliationController extends Controller
     /**
      * GET /api/v1/cash-reconciliations
      *
-     * List reconciliations according to the authenticated user's
-     * permissions and access scope.
+     * List cash reconciliations visible to the authenticated user.
+     *
+     * Users with cash_reconciliations.view_all can access all
+     * reconciliations. Other authorized users are restricted to
+     * their own reconciliations by the service.
      */
     public function index(
         IndexCashReconciliationRequest $request
@@ -45,7 +48,11 @@ class CashReconciliationController extends Controller
     /**
      * POST /api/v1/cash-reconciliations
      *
-     * Create a draft cash closing.
+     * Create a draft cash reconciliation.
+     *
+     * The service assigns collector_id from the authenticated user.
+     * Clients cannot choose another collector or submit authoritative
+     * financial totals through this endpoint.
      */
     public function store(
         StoreCashReconciliationRequest $request
@@ -57,9 +64,9 @@ class CashReconciliationController extends Controller
             $request->validated()
         );
 
-        return (new CashReconciliationResource(
-            $reconciliation->load(['collector', 'reviewer'])
-        ))
+        $reconciliation->load(['collector', 'reviewer']);
+
+        return (new CashReconciliationResource($reconciliation))
             ->response()
             ->setStatusCode(201);
     }
@@ -67,7 +74,7 @@ class CashReconciliationController extends Controller
     /**
      * GET /api/v1/cash-reconciliations/{cashReconciliation}
      *
-     * View an individual reconciliation.
+     * Retrieve one reconciliation.
      */
     public function show(
         Request $request,
@@ -80,15 +87,18 @@ class CashReconciliationController extends Controller
             $cashReconciliation->getKey()
         );
 
-        return new CashReconciliationResource(
-            $reconciliation->loadMissing(['collector', 'reviewer'])
-        );
+        $reconciliation->loadMissing(['collector', 'reviewer']);
+
+        return new CashReconciliationResource($reconciliation);
     }
 
     /**
      * PUT/PATCH /api/v1/cash-reconciliations/{cashReconciliation}
      *
-     * Update a draft or returned closing.
+     * Update an editable draft or returned reconciliation.
+     *
+     * Authorization and state-transition checks are enforced by both
+     * the policy and the service.
      */
     public function update(
         UpdateCashReconciliationRequest $request,
@@ -102,15 +112,19 @@ class CashReconciliationController extends Controller
             $request->validated()
         );
 
-        return new CashReconciliationResource(
-            $reconciliation->loadMissing(['collector', 'reviewer'])
-        );
+        $reconciliation->loadMissing(['collector', 'reviewer']);
+
+        return new CashReconciliationResource($reconciliation);
     }
 
     /**
      * POST /api/v1/cash-reconciliations/{cashReconciliation}/submit
      *
-     * Submit the physical cash count for finance review.
+     * Submit the physical cash count for review.
+     *
+     * The service calculates expected cash from eligible completed
+     * cash payments, calculates the difference, and changes the status
+     * to PENDING_REVIEW.
      */
     public function submit(
         SubmitCashReconciliationRequest $request,
@@ -124,15 +138,23 @@ class CashReconciliationController extends Controller
             $request->validated()
         );
 
-        return new CashReconciliationResource(
-            $reconciliation->loadMissing(['collector', 'reviewer'])
-        );
+        $reconciliation->loadMissing(['collector', 'reviewer']);
+
+        return new CashReconciliationResource($reconciliation);
     }
 
     /**
      * POST /api/v1/cash-reconciliations/{cashReconciliation}/review
      *
-     * Review a submitted cash closing.
+     * Review a submitted reconciliation.
+     *
+     * Supported decisions:
+     * - RECONCILED: expected and actual cash match.
+     * - DISCREPANCY: a shortage or overage exists.
+     * - RETURNED: return the reconciliation to the collector.
+     *
+     * The service prevents a collector from reviewing their own
+     * reconciliation and validates the decision against the amounts.
      */
     public function review(
         ReviewCashReconciliationRequest $request,
@@ -146,15 +168,18 @@ class CashReconciliationController extends Controller
             $request->validated()
         );
 
-        return new CashReconciliationResource(
-            $reconciliation->loadMissing(['collector', 'reviewer'])
-        );
+        $reconciliation->loadMissing(['collector', 'reviewer']);
+
+        return new CashReconciliationResource($reconciliation);
     }
 
     /**
      * POST /api/v1/cash-reconciliations/{cashReconciliation}/cancel
      *
-     * Cancel an eligible draft or returned closing.
+     * Cancel an editable draft or returned reconciliation.
+     *
+     * Submitted reconciliations cannot be cancelled through this
+     * endpoint unless the service's business rules explicitly change.
      */
     public function cancel(
         Request $request,
@@ -167,8 +192,8 @@ class CashReconciliationController extends Controller
             $cashReconciliation
         );
 
-        return new CashReconciliationResource(
-            $reconciliation->loadMissing(['collector', 'reviewer'])
-        );
+        $reconciliation->loadMissing(['collector', 'reviewer']);
+
+        return new CashReconciliationResource($reconciliation);
     }
 }

@@ -173,8 +173,6 @@ class AssessmentCreationService
     {
         return $this->documentSequenceService->generate(
             sequenceType: 'assessment',
-            prefix: 'ASM',
-            calendar: 'ethiopian',
         );
     }
 }

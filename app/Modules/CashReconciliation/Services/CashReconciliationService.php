@@ -11,8 +11,14 @@ use Illuminate\Validation\ValidationException;
 
 class CashReconciliationService
 {
+    /*
+    |--------------------------------------------------------------------------
+    | Listing
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * List records visible to the authenticated user.
+     * List reconciliations visible to the authenticated user.
      */
     public function paginate(
         User $user,
@@ -21,7 +27,10 @@ class CashReconciliationService
         $query = CashReconciliation::query()
             ->with(['collector', 'reviewer']);
 
-        if (! $user->can('cash-reconciliations.view-all')) {
+        /*
+         * Enforce record visibility independently of supplied filters.
+         */
+        if (! $user->can('cash_reconciliations.view_all')) {
             $query->where('collector_id', $user->getKey());
         }
 
@@ -50,20 +59,73 @@ class CashReconciliationService
         }
 
         if (! empty($filters['from'])) {
-            $query->whereDate('created_at', '>=', $filters['from']);
+            $query->whereDate(
+                'created_at',
+                '>=',
+                $filters['from']
+            );
         }
 
         if (! empty($filters['to'])) {
-            $query->whereDate('created_at', '<=', $filters['to']);
+            $query->whereDate(
+                'created_at',
+                '<=',
+                $filters['to']
+            );
         }
 
+        /*
+         * Whitelist sortable columns even if this method is called
+         * without going through the Index Form Request.
+         */
+        $sortableColumns = [
+            'created_at',
+            'period_start',
+            'period_end',
+            'expected_amount',
+            'actual_amount',
+            'difference_amount',
+            'submitted_at',
+            'reviewed_at',
+            'status',
+        ];
+
+        $sortBy = $filters['sort_by'] ?? 'created_at';
+
+        if (! in_array($sortBy, $sortableColumns, true)) {
+            $sortBy = 'created_at';
+        }
+
+        $sortDirection = strtolower(
+            (string) ($filters['sort_direction'] ?? 'desc')
+        );
+
+        if (! in_array($sortDirection, ['asc', 'desc'], true)) {
+            $sortDirection = 'desc';
+        }
+
+        $perPage = max(
+            1,
+            min(100, (int) ($filters['per_page'] ?? 15))
+        );
+
         return $query
-            ->orderByDesc('created_at')
-            ->paginate((int) ($filters['per_page'] ?? 15));
+            ->orderBy($sortBy, $sortDirection)
+            ->paginate($perPage)
+            ->withQueryString();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Retrieval
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Retrieve a record while enforcing record visibility.
+     * Retrieve a reconciliation within the user's authorized data scope.
+     *
+     * The controller should also authorize viewing the record through
+     * CashReconciliationPolicy.
      */
     public function findForUser(
         User $user,
@@ -72,40 +134,67 @@ class CashReconciliationService
         $query = CashReconciliation::query()
             ->with(['collector', 'reviewer']);
 
-        if (! $user->can('cash-reconciliations.view-all')) {
+        if (! $user->can('cash_reconciliations.view_all')) {
             $query->where('collector_id', $user->getKey());
         }
 
         return $query->findOrFail($id);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Create
+    |--------------------------------------------------------------------------
+    */
+
     /**
      * Create a draft for the authenticated collector.
+     *
+     * Financial totals and workflow fields are assigned by the backend.
      */
     public function createDraft(
         User $user,
         array $data
     ): CashReconciliation {
-        $this->validatePeriod(
-            $data['period_start'],
-            $data['period_end']
+        $this->assertPermission(
+            $user,
+            'cash_reconciliations.create'
         );
 
-        return CashReconciliation::create([
+        $this->validatePeriod(
+            $data['period_start'] ?? null,
+            $data['period_end'] ?? null
+        );
+
+        $reconciliation = CashReconciliation::create([
             'collector_id' => $user->getKey(),
+
             'period_start' => $data['period_start'],
             'period_end' => $data['period_end'],
+
             'expected_amount' => '0.00',
             'actual_amount' => null,
             'difference_amount' => null,
+
             'collector_notes' => $data['collector_notes'] ?? null,
+
             'submitted_at' => null,
+
             'reviewed_by' => null,
             'reviewed_at' => null,
             'review_notes' => null,
+
             'status' => CashReconciliation::STATUS_DRAFT,
         ]);
+
+        return $reconciliation->load(['collector', 'reviewer']);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Update
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Update a draft or returned reconciliation.
@@ -115,11 +204,16 @@ class CashReconciliationService
         CashReconciliation $reconciliation,
         array $data
     ): CashReconciliation {
+        $this->assertPermission(
+            $user,
+            'cash_reconciliations.update'
+        );
+
         return DB::transaction(function () use (
             $user,
             $reconciliation,
             $data
-        ) {
+        ): CashReconciliation {
             $reconciliation = CashReconciliation::query()
                 ->lockForUpdate()
                 ->findOrFail($reconciliation->getKey());
@@ -140,7 +234,20 @@ class CashReconciliationService
 
             if (array_key_exists('actual_amount', $data)) {
                 $reconciliation->actual_amount =
-                    $data['actual_amount'];
+                    $data['actual_amount'] === null
+                        ? null
+                        : $this->formatMoney(
+                            $this->moneyToCents(
+                                $data['actual_amount']
+                            )
+                        );
+
+                /*
+                 * A changed actual amount invalidates a previously
+                 * calculated difference. Recalculate during submission.
+                 */
+                $reconciliation->expected_amount = '0.00';
+                $reconciliation->difference_amount = null;
             }
 
             if (array_key_exists('collector_notes', $data)) {
@@ -154,21 +261,33 @@ class CashReconciliationService
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Submit
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Submit the closing for Finance review.
+     * Submit a closing for finance review.
      *
-     * Expected cash and the difference are always calculated server-side.
+     * Expected cash is calculated from completed cash payments recorded
+     * by this collector during the reconciliation period.
      */
     public function submit(
         User $user,
         CashReconciliation $reconciliation,
         array $data
     ): CashReconciliation {
+        $this->assertPermission(
+            $user,
+            'cash_reconciliations.submit'
+        );
+
         return DB::transaction(function () use (
             $user,
             $reconciliation,
             $data
-        ) {
+        ): CashReconciliation {
             $reconciliation = CashReconciliation::query()
                 ->lockForUpdate()
                 ->findOrFail($reconciliation->getKey());
@@ -181,25 +300,38 @@ class CashReconciliationService
                 $reconciliation->period_end
             );
 
+            /*
+             * Serialize submissions for the same collector. Locking only
+             * the reconciliation row would not prevent two different
+             * drafts from being submitted with overlapping periods.
+             */
+            User::query()
+                ->whereKey($reconciliation->collector_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
             $this->assertNoOverlappingSubmittedPeriod(
                 $reconciliation
             );
 
-            $expected = $this->calculateExpectedCash(
-                $reconciliation
+            $expectedCents = $this->moneyToCents(
+                $this->calculateExpectedCash($reconciliation)
             );
 
-            $actual = bcadd(
-                (string) $data['actual_amount'],
-                '0.00',
-                2
+            $actualCents = $this->moneyToCents(
+                $data['actual_amount'] ?? null
             );
 
-            $difference = bcsub($actual, $expected, 2);
+            $differenceCents = $actualCents - $expectedCents;
 
-            $reconciliation->expected_amount = $expected;
-            $reconciliation->actual_amount = $actual;
-            $reconciliation->difference_amount = $difference;
+            $reconciliation->expected_amount =
+                $this->formatMoney($expectedCents);
+
+            $reconciliation->actual_amount =
+                $this->formatMoney($actualCents);
+
+            $reconciliation->difference_amount =
+                $this->formatMoney($differenceCents);
 
             if (array_key_exists('collector_notes', $data)) {
                 $reconciliation->collector_notes =
@@ -207,9 +339,15 @@ class CashReconciliationService
             }
 
             $reconciliation->submitted_at = now();
+
+            /*
+             * Clear any previous review when a returned reconciliation
+             * is resubmitted.
+             */
             $reconciliation->reviewed_by = null;
             $reconciliation->reviewed_at = null;
             $reconciliation->review_notes = null;
+
             $reconciliation->status =
                 CashReconciliation::STATUS_PENDING_REVIEW;
 
@@ -219,19 +357,32 @@ class CashReconciliationService
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Review
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Finance Officer reviews a submitted closing.
+     * Review a submitted reconciliation.
+     *
+     * The controller must authorize the review through the policy.
      */
     public function review(
         User $user,
         CashReconciliation $reconciliation,
         array $data
     ): CashReconciliation {
+        $this->assertPermission(
+            $user,
+            'cash_reconciliations.review'
+        );
+
         return DB::transaction(function () use (
             $user,
             $reconciliation,
             $data
-        ) {
+        ): CashReconciliation {
             $reconciliation = CashReconciliation::query()
                 ->lockForUpdate()
                 ->findOrFail($reconciliation->getKey());
@@ -246,25 +397,74 @@ class CashReconciliationService
                 ]);
             }
 
-            if (
-                $reconciliation->status
-                !== CashReconciliation::STATUS_PENDING_REVIEW
-                && $reconciliation->status
-                !== CashReconciliation::STATUS_DISCREPANCY
-            ) {
+            if (! in_array(
+                $reconciliation->status,
+                [
+                    CashReconciliation::STATUS_PENDING_REVIEW,
+                    CashReconciliation::STATUS_DISCREPANCY,
+                ],
+                true
+            )) {
                 throw ValidationException::withMessages([
                     'status' =>
                         'Only pending-review or discrepancy reconciliations can be reviewed.',
                 ]);
             }
 
-            $decision = $data['decision'];
+            $decision = strtoupper(
+                trim((string) ($data['decision'] ?? ''))
+            );
 
-            $difference = (string) $reconciliation->difference_amount;
+            $allowedDecisions = [
+                CashReconciliation::STATUS_RECONCILED,
+                CashReconciliation::STATUS_DISCREPANCY,
+                CashReconciliation::STATUS_RETURNED,
+            ];
+
+            if (! in_array($decision, $allowedDecisions, true)) {
+                throw ValidationException::withMessages([
+                    'decision' => 'The selected review decision is invalid.',
+                ]);
+            }
+
+            $notes = trim(
+                (string) ($data['review_notes'] ?? '')
+            );
+
+            if (
+                in_array(
+                    $decision,
+                    [
+                        CashReconciliation::STATUS_DISCREPANCY,
+                        CashReconciliation::STATUS_RETURNED,
+                    ],
+                    true
+                )
+                && $notes === ''
+            ) {
+                throw ValidationException::withMessages([
+                    'review_notes' =>
+                        'Review notes are required when flagging a discrepancy or returning a reconciliation.',
+                ]);
+            }
+
+            if (
+                $reconciliation->actual_amount === null
+                || $reconciliation->difference_amount === null
+            ) {
+                throw ValidationException::withMessages([
+                    'decision' =>
+                        'The reconciliation must have recorded financial amounts before review.',
+                ]);
+            }
+
+            $differenceCents = $this->moneyToCents(
+                $reconciliation->difference_amount
+            );
 
             if (
                 $decision === CashReconciliation::STATUS_RECONCILED
-                && bccomp($difference, '0.00', 2) !== 0
+                && $differenceCents !== 0
             ) {
                 throw ValidationException::withMessages([
                     'decision' =>
@@ -274,7 +474,7 @@ class CashReconciliationService
 
             if (
                 $decision === CashReconciliation::STATUS_DISCREPANCY
-                && bccomp($difference, '0.00', 2) === 0
+                && $differenceCents === 0
             ) {
                 throw ValidationException::withMessages([
                     'decision' =>
@@ -285,18 +485,9 @@ class CashReconciliationService
             $reconciliation->reviewed_by = $user->getKey();
             $reconciliation->reviewed_at = now();
             $reconciliation->review_notes =
-                $data['review_notes'] ?? null;
+                $notes !== '' ? $notes : null;
 
-            $reconciliation->status = match ($decision) {
-                'RECONCILED' =>
-                    CashReconciliation::STATUS_RECONCILED,
-
-                'DISCREPANCY' =>
-                    CashReconciliation::STATUS_DISCREPANCY,
-
-                'RETURNED' =>
-                    CashReconciliation::STATUS_RETURNED,
-            };
+            $reconciliation->status = $decision;
 
             $reconciliation->save();
 
@@ -304,38 +495,34 @@ class CashReconciliationService
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Cancel
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Cancel a draft or returned closing.
+     * Cancel a draft or returned reconciliation.
      */
     public function cancel(
         User $user,
         CashReconciliation $reconciliation
     ): CashReconciliation {
+        $this->assertPermission(
+            $user,
+            'cash_reconciliations.cancel'
+        );
+
         return DB::transaction(function () use (
             $user,
             $reconciliation
-        ) {
+        ): CashReconciliation {
             $reconciliation = CashReconciliation::query()
                 ->lockForUpdate()
                 ->findOrFail($reconciliation->getKey());
 
             $this->assertCollectorOwns($user, $reconciliation);
-
-            if (
-                ! in_array(
-                    $reconciliation->status,
-                    [
-                        CashReconciliation::STATUS_DRAFT,
-                        CashReconciliation::STATUS_RETURNED,
-                    ],
-                    true
-                )
-            ) {
-                throw ValidationException::withMessages([
-                    'status' =>
-                        'Only draft or returned reconciliations can be cancelled.',
-                ]);
-            }
+            $this->assertEditable($reconciliation);
 
             $reconciliation->status =
                 CashReconciliation::STATUS_CANCELLED;
@@ -346,32 +533,55 @@ class CashReconciliationService
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Expected Cash Calculation
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Calculate the collector's completed cash payments during the period.
+     * Calculate completed cash payments recorded by this collector
+     * during the reconciliation period.
      *
-     * IMPORTANT: Verify these column names against your Payment model.
+     * This uses columns present in the supplied Payment model:
+     * - processed_by
+     * - payment_method
+     * - status
+     * - amount
+     * - created_at
+     *
+     * Assumption: processed_by identifies the collector who recorded
+     * the cash payment, and created_at is the intended payment date.
      */
     protected function calculateExpectedCash(
         CashReconciliation $reconciliation
     ): string {
-        $amount = Payment::query()
+        $total = Payment::query()
             ->where(
-                'received_by',
+                'processed_by',
                 $reconciliation->collector_id
             )
             ->where('payment_method', 'CASH')
             ->where('status', 'COMPLETED')
-            ->whereBetween('payment_date', [
+            ->whereBetween('created_at', [
                 $reconciliation->period_start,
                 $reconciliation->period_end,
             ])
             ->sum('amount');
 
-        return bcadd((string) $amount, '0.00', 2);
+        return $this->formatMoney(
+            $this->moneyToCents($total)
+        );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Period Validation
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Validate the closing time range.
+     * Validate that both dates exist and the end is not before the start.
      */
     protected function validatePeriod(
         mixed $start,
@@ -390,9 +600,12 @@ class CashReconciliationService
     }
 
     /**
-     * Prevent a payment period from being included in multiple closings.
+     * Prevent a collector from submitting overlapping reconciliation
+     * periods.
      *
      * Draft and cancelled records do not reserve a period.
+     * Returned records still reserve their period until resubmitted,
+     * cancelled, or otherwise resolved.
      */
     protected function assertNoOverlappingSubmittedPeriod(
         CashReconciliation $reconciliation
@@ -402,7 +615,11 @@ class CashReconciliationService
                 'collector_id',
                 $reconciliation->collector_id
             )
-            ->where('id', '<>', $reconciliation->getKey())
+            ->where(
+                'id',
+                '<>',
+                $reconciliation->getKey()
+            )
             ->whereNotIn('status', [
                 CashReconciliation::STATUS_DRAFT,
                 CashReconciliation::STATUS_CANCELLED,
@@ -427,8 +644,26 @@ class CashReconciliationService
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization and Workflow Guards
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * A collector may only edit their own closing.
+     * Ensure the user has the required permission.
+     */
+    protected function assertPermission(
+        User $user,
+        string $permission
+    ): void {
+        if (! $user->can($permission)) {
+            abort(403, 'You are not authorized to perform this action.');
+        }
+    }
+
+    /**
+     * Ensure that the reconciliation belongs to the authenticated collector.
      */
     protected function assertCollectorOwns(
         User $user,
@@ -438,33 +673,97 @@ class CashReconciliationService
             (string) $reconciliation->collector_id
             !== (string) $user->getKey()
         ) {
-            throw ValidationException::withMessages([
-                'reconciliation' =>
-                    'You are not authorized to modify this reconciliation.',
-            ]);
+            abort(
+                403,
+                'You are not authorized to modify this reconciliation.'
+            );
         }
     }
 
     /**
-     * Only drafts and returned records can be edited or resubmitted.
+     * Ensure that the reconciliation is editable.
      */
     protected function assertEditable(
         CashReconciliation $reconciliation
     ): void {
-        if (
-            ! in_array(
-                $reconciliation->status,
-                [
-                    CashReconciliation::STATUS_DRAFT,
-                    CashReconciliation::STATUS_RETURNED,
-                ],
-                true
-            )
-        ) {
+        if (! $reconciliation->isEditable()) {
             throw ValidationException::withMessages([
                 'status' =>
-                    'Only draft or returned reconciliations can be edited or submitted.',
+                    'Only draft or returned reconciliations can be edited, submitted, or cancelled.',
             ]);
         }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Monetary Precision
+    |--------------------------------------------------------------------------
+    |
+    | Use integer cents for arithmetic and comparisons.
+    | This avoids floating-point arithmetic for financial decisions
+    | and does not require the BCMath PHP extension.
+    */
+
+    /**
+     * Convert a monetary value to integer cents.
+     *
+     * Values must have no more than two decimal places.
+     */
+    protected function moneyToCents(mixed $amount): int
+    {
+        if ($amount === null || $amount === '') {
+            throw ValidationException::withMessages([
+                'actual_amount' => 'A valid monetary amount is required.',
+            ]);
+        }
+
+        $value = trim((string) $amount);
+
+        if (! preg_match(
+            '/^(-?)(\d+)(?:\.(\d{1,2}))?$/',
+            $value,
+            $matches
+        )) {
+            throw ValidationException::withMessages([
+                'actual_amount' =>
+                    'The monetary amount must have no more than two decimal places.',
+            ]);
+        }
+
+        $sign = ($matches[1] ?? '') === '-' ? -1 : 1;
+        $whole = (int) $matches[2];
+
+        $fraction = str_pad(
+            $matches[3] ?? '',
+            2,
+            '0',
+            STR_PAD_RIGHT
+        );
+
+        $cents = ($whole * 100) + (int) $fraction;
+
+        return $sign * $cents;
+    }
+
+    /**
+     * Format integer cents as a two-decimal monetary string.
+     */
+    protected function formatMoney(int $cents): string
+    {
+        $absolute = abs($cents);
+
+        $whole = intdiv($absolute, 100);
+
+        $fraction = str_pad(
+            (string) ($absolute % 100),
+            2,
+            '0',
+            STR_PAD_LEFT
+        );
+
+        return ($cents < 0 ? '-' : '')
+            . $whole
+            . '.'
+            . $fraction;
     }
 }

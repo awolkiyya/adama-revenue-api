@@ -385,7 +385,7 @@ class InvoiceService
     |
     |--------------------------------------------------------------------------
     */
-
+    
     public function findForDetails(
         string $id
     ): ?Invoice {
@@ -396,39 +396,59 @@ class InvoiceService
                 | INVOICE SOURCE / OWNER
                 |--------------------------------------------------------------------------
                 */
-
+    
                 'citizen',
                 'assessment',
                 'administrativeUnit',
-
+    
                 /*
                 |--------------------------------------------------------------------------
                 | INVOICE ITEMS
                 |--------------------------------------------------------------------------
                 */
-
+    
                 'items.service',
                 'items.assessmentService',
                 'items.paymentSchedule',
-
+    
                 /*
                 |--------------------------------------------------------------------------
-                | PAYMENTS
+                | PAYMENT HISTORY
+                |--------------------------------------------------------------------------
+                |
+                | Load actual payment records and their relationships.
+                | The Invoice model defines payments() as a HasMany.
+                |
+                */
+    
+                'payments.processedBy',
+                'payments.verifiedBy',
+    
+                /*
+                |--------------------------------------------------------------------------
+                | PAYMENT METHOD DETAILS
                 |--------------------------------------------------------------------------
                 */
-
-                // 'payments.processedBy',
-                // 'payments.verifiedBy',
-                // 'payments.cashDetails',
-                // 'payments.cashDetails.receivedBy',
-                // 'payments.files',
-
+    
+                'payments.cashDetails',
+                'payments.bankTransferDetails',
+                'payments.onlineDetails',
+    
+                /*
+                |--------------------------------------------------------------------------
+                | PAYMENT FILES AND RECEIPTS
+                |--------------------------------------------------------------------------
+                */
+    
+                'payments.files',
+                'payments.receipt',
+    
                 /*
                 |--------------------------------------------------------------------------
                 | AUDIT
                 |--------------------------------------------------------------------------
                 */
-
+    
                 'creator',
                 'issuer',
                 'cancelledBy',
@@ -436,6 +456,8 @@ class InvoiceService
             ])
             ->find($id);
     }
+    
+    
 
     /*
     |--------------------------------------------------------------------------
@@ -760,7 +782,6 @@ class InvoiceService
                 $invoiceNumber =
                     $this->documentSequenceService->generate(
                         sequenceType: 'invoice',
-                        prefix: 'INV',
                     );
 
                 /*
@@ -1590,7 +1611,6 @@ class InvoiceService
                 $invoiceNumber =
                     $this->documentSequenceService->generate(
                         sequenceType: 'invoice',
-                        prefix: 'INV',
                     );
 
                 /*

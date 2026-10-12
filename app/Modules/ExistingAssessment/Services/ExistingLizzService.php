@@ -136,8 +136,8 @@ class ExistingLizzService
 
                 $assessmentNumber =
                     $this->documentSequenceService->generate(
-                        'assessment',
-                        'ASM'
+                        sequenceType: 'assessment',
+
                     );
 
                 /*

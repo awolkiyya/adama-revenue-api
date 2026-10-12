@@ -5,24 +5,6 @@ namespace App\Modules\Invoice\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
-/**
- * Invoice detail API resource.
- *
- * Endpoint:
- * GET /api/v1/invoices/{id}
- *
- * This resource intentionally provides a complete read model for
- * an individual invoice.
- *
- * The resource does not perform business calculations.
- * All financial values are read from the persisted invoice/payment
- * records maintained by the backend.
- *
- * Important:
- * - whenLoaded() is used only on this JsonResource.
- * - Nested Eloquent models use relationLoaded() to prevent
- *   accidental lazy loading and N+1 queries.
- */
 class InvoiceDetailResource extends JsonResource
 {
     /**
@@ -31,7 +13,6 @@ class InvoiceDetailResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-
             /*
             |--------------------------------------------------------------------------
             | BASIC INFORMATION
@@ -39,25 +20,15 @@ class InvoiceDetailResource extends JsonResource
             */
 
             'id' => $this->id,
-
             'invoice_number' => $this->invoice_number,
-
             'source_type' => $this->source_type,
-
             'status' => $this->status,
-
             'currency' => $this->currency,
-
 
             /*
             |--------------------------------------------------------------------------
             | CITIZEN / TAXPAYER
             |--------------------------------------------------------------------------
-            |
-            | citizen is expected to be eager-loaded by the invoice detail
-            | service. The relationship may still be null only if the
-            | underlying record is unavailable.
-            |
             */
 
             'citizen' => $this->whenLoaded(
@@ -69,31 +40,18 @@ class InvoiceDetailResource extends JsonResource
 
                     return [
                         'id' => $this->citizen->id,
-
                         'name' => $this->citizen->name,
-
-                        'citizen_number' =>
-                            $this->citizen->citizen_number,
-
-                        'phone' =>
-                            $this->citizen->phone,
-
-                        'email' =>
-                            $this->citizen->email,
+                        'citizen_number' => $this->citizen->citizen_number,
+                        'phone' => $this->citizen->phone,
+                        'email' => $this->citizen->email,
                     ];
                 }
             ),
-
 
             /*
             |--------------------------------------------------------------------------
             | ASSESSMENT
             |--------------------------------------------------------------------------
-            |
-            | ASSESSMENT invoices normally have an assessment.
-            |
-            | DIRECT_COLLECTION invoices normally have no assessment.
-            |
             */
 
             'assessment' => $this->whenLoaded(
@@ -105,16 +63,11 @@ class InvoiceDetailResource extends JsonResource
 
                     return [
                         'id' => $this->assessment->id,
-
-                        'assessment_number' =>
-                            $this->assessment->assessment_number,
-
-                        'status' =>
-                            $this->assessment->status,
+                        'assessment_number' => $this->assessment->assessment_number,
+                        'status' => $this->assessment->status,
                     ];
                 }
             ),
-
 
             /*
             |--------------------------------------------------------------------------
@@ -130,58 +83,31 @@ class InvoiceDetailResource extends JsonResource
                     }
 
                     return [
-                        'id' =>
-                            $this->administrativeUnit->id,
-
-                        'name' =>
-                            $this->administrativeUnit->name,
-
-                        'code' =>
-                            $this->administrativeUnit->code,
+                        'id' => $this->administrativeUnit->id,
+                        'name' => $this->administrativeUnit->name,
+                        'code' => $this->administrativeUnit->code,
                     ];
                 }
             ),
-
 
             /*
             |--------------------------------------------------------------------------
             | FINANCIAL INFORMATION
             |--------------------------------------------------------------------------
             |
-            | These values are authoritative persisted invoice values.
-            |
-            | The frontend MUST NOT independently recalculate:
-            |
-            | total_amount
-            | paid_amount
-            | balance_due
+            | These are persisted invoice values. Do not recalculate them here.
             |
             */
 
             'financial' => [
-
-                'subtotal' =>
-                    $this->subtotal,
-
-                'discount_amount' =>
-                    $this->discount_amount,
-
-                'penalty_amount' =>
-                    $this->penalty_amount,
-
-                'interest_amount' =>
-                    $this->interest_amount,
-
-                'total_amount' =>
-                    $this->total_amount,
-
-                'paid_amount' =>
-                    $this->paid_amount,
-
-                'balance_due' =>
-                    $this->balance_due,
+                'subtotal' => $this->subtotal,
+                'discount_amount' => $this->discount_amount,
+                'penalty_amount' => $this->penalty_amount,
+                'interest_amount' => $this->interest_amount,
+                'total_amount' => $this->total_amount,
+                'paid_amount' => $this->paid_amount,
+                'balance_due' => $this->balance_due,
             ],
-
 
             /*
             |--------------------------------------------------------------------------
@@ -190,118 +116,44 @@ class InvoiceDetailResource extends JsonResource
             */
 
             'dates' => [
-
-                'issued_at' =>
-                    $this->issued_at,
-
-                'due_date' =>
-                    $this->due_date,
-
-                'paid_at' =>
-                    $this->paid_at,
-
-                'cancelled_at' =>
-                    $this->cancelled_at,
-
-                'voided_at' =>
-                    $this->voided_at,
+                'issued_at' => $this->issued_at,
+                'due_date' => $this->due_date,
+                'paid_at' => $this->paid_at,
+                'cancelled_at' => $this->cancelled_at,
+                'voided_at' => $this->voided_at,
             ],
-
 
             /*
             |--------------------------------------------------------------------------
             | INVOICE ITEMS
             |--------------------------------------------------------------------------
-            |
-            | Each item represents an immutable financial line captured
-            | when the invoice was generated.
-            |
-            | IMPORTANT:
-            | $item is an InvoiceItem Eloquent model.
-            | Therefore we DO NOT call:
-            |
-            | $item->whenLoaded(...)
-            |
-            | Instead we use relationLoaded() before accessing nested
-            | relationships.
-            |
             */
 
             'items' => $this->whenLoaded(
                 'items',
                 function () {
-                    return $this->items->map(
-                        function ($item): array {
+                    return $this->items
+                        ->map(function ($item): array {
                             return [
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | ITEM IDENTITY
-                                |--------------------------------------------------------------------------
-                                */
-
-                                'id' =>
-                                    $item->id,
-
-                                'line_number' =>
-                                    $item->line_number,
+                                'id' => $item->id,
+                                'line_number' => $item->line_number,
 
                                 'assessment_service_id' =>
                                     $item->assessment_service_id,
 
-                                'service_id' =>
-                                    $item->service_id,
+                                'service_id' => $item->service_id,
 
+                                'description' => $item->description,
+                                'quantity' => $item->quantity,
+                                'unit' => $item->unit,
+                                'unit_price' => $item->unit_price,
 
-                                /*
-                                |--------------------------------------------------------------------------
-                                | ITEM DESCRIPTION
-                                |--------------------------------------------------------------------------
-                                */
-
-                                'description' =>
-                                    $item->description,
-
-                                'quantity' =>
-                                    $item->quantity,
-
-                                'unit' =>
-                                    $item->unit,
-
-                                'unit_price' =>
-                                    $item->unit_price,
-
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | ITEM FINANCIAL VALUES
-                                |--------------------------------------------------------------------------
-                                */
-
-                                'amount' =>
-                                    $item->amount,
-
-                                'discount_amount' =>
-                                    $item->discount_amount,
-
-                                'penalty_amount' =>
-                                    $item->penalty_amount,
-
-                                'interest_amount' =>
-                                    $item->interest_amount,
-
-                                'total_amount' =>
-                                    $item->total_amount,
-
-                                'currency' =>
-                                    $item->currency,
-
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | TARIFF / CALCULATION REFERENCES
-                                |--------------------------------------------------------------------------
-                                */
+                                'amount' => $item->amount,
+                                'discount_amount' => $item->discount_amount,
+                                'penalty_amount' => $item->penalty_amount,
+                                'interest_amount' => $item->interest_amount,
+                                'total_amount' => $item->total_amount,
+                                'currency' => $item->currency,
 
                                 'tariff_version_id' =>
                                     $item->tariff_version_id,
@@ -309,172 +161,120 @@ class InvoiceDetailResource extends JsonResource
                                 'tariff_rule_id' =>
                                     $item->tariff_rule_id,
 
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | CALCULATION SNAPSHOTS
-                                |--------------------------------------------------------------------------
-                                |
-                                | These snapshots are preserved for:
-                                |
-                                | - auditability
-                                | - dispute investigation
-                                | - historical calculation review
-                                | - reproducing how the amount was determined
-                                |
-                                */
-
-                                'input_snapshot' =>
-                                    $item->input_snapshot,
-
+                                'input_snapshot' => $item->input_snapshot,
                                 'calculation_snapshot' =>
                                     $item->calculation_snapshot,
 
-
                                 /*
-                                |--------------------------------------------------------------------------
-                                | REVENUE SERVICE
-                                |--------------------------------------------------------------------------
-                                |
-                                | Only access the relationship when it was explicitly
-                                | eager-loaded. This prevents accidental lazy loading.
-                                |
+                                | Revenue service
                                 */
 
-                                'service' =>
-                                    $item->relationLoaded('service')
+                                'service' => $item->relationLoaded('service')
+                                    ? (
+                                        $item->service
+                                            ? [
+                                                'id' => $item->service->id,
+                                                'name' => $item->service->name,
+                                                'code' => $item->service->code,
+                                            ]
+                                            : null
+                                    )
+                                    : null,
+
+                                /*
+                                | Assessment service
+                                */
+
+                                'assessment_service' =>
+                                    $item->relationLoaded('assessmentService')
                                         ? (
-                                            $item->service
+                                            $item->assessmentService
                                                 ? [
-                                                    'id' =>
-                                                        $item->service->id,
-
-                                                    'name' =>
-                                                        $item->service->name,
-
-                                                    'code' =>
-                                                        $item->service->code
-                                                            ?? null,
+                                                    'id' => $item->assessmentService->id,
+                                                    'computed_amount' =>
+                                                        $item->assessmentService->computed_amount,
                                                 ]
                                                 : null
                                         )
                                         : null,
 
-
                                 /*
-                                |--------------------------------------------------------------------------
-                                | ASSESSMENT SERVICE
-                                |--------------------------------------------------------------------------
+                                | Payment schedule
                                 */
 
-                                'assessment_service' =>
-                                    $item->relationLoaded(
-                                        'assessmentService'
-                                    )
+                                'payment_schedule' =>
+                                    $item->relationLoaded('paymentSchedule')
                                         ? (
-                                            $item->assessmentService
+                                            $item->paymentSchedule
                                                 ? [
-                                                    'id' =>
-                                                        $item
-                                                            ->assessmentService
-                                                            ->id,
-
-                                                    'computed_amount' =>
-                                                        $item
-                                                            ->assessmentService
-                                                            ->computed_amount,
+                                                    'id' => $item->paymentSchedule->id,
                                                 ]
                                                 : null
                                         )
                                         : null,
                             ];
-                        }
-                    )->values()->all();
+                        })
+                        ->values()
+                        ->all();
                 }
             ),
-
 
             /*
             |--------------------------------------------------------------------------
             | PAYMENT HISTORY
             |--------------------------------------------------------------------------
             |
-            | A single invoice can have multiple payments.
-            |
-            | This supports:
-            |
-            | - full payment
-            | - partial payment
-            | - failed payment
-            | - cancelled payment
-            | - refunded payment
-            | - payment verification
-            | - payment evidence
-            | - official receipts
+            | Only real payment records associated with this invoice are returned.
+            | The InvoiceService must eager-load the payments relationship.
             |
             */
 
             'payments' => $this->whenLoaded(
                 'payments',
                 function () {
-                    return $this->payments->map(
-                        function ($payment): array {
+                    return $this->payments
+                        ->map(function ($payment): array {
+                            /*
+                            | Convert backed enums to their stored values.
+                            */
+
+                            $paymentMethod = $payment->payment_method;
+                            $paymentProvider = $payment->payment_provider;
+                            $paymentStatus = $payment->status;
+
                             return [
-
                                 /*
-                                |--------------------------------------------------------------------------
-                                | PAYMENT IDENTITY
-                                |--------------------------------------------------------------------------
+                                | Payment identity
                                 */
 
-                                'id' =>
-                                    $payment->id,
-
-                                'payment_number' =>
-                                    $payment->payment_number,
-
+                                'id' => $payment->id,
+                                'payment_number' => $payment->payment_number,
 
                                 /*
-                                |--------------------------------------------------------------------------
-                                | FINANCIAL INFORMATION
-                                |--------------------------------------------------------------------------
+                                | Financial information
                                 */
 
-                                'amount' =>
-                                    $payment->amount,
-
-                                'currency' =>
-                                    $payment->currency,
-
+                                'amount' => $payment->amount,
+                                'currency' => $payment->currency,
 
                                 /*
-                                |--------------------------------------------------------------------------
-                                | PAYMENT CLASSIFICATION
-                                |--------------------------------------------------------------------------
+                                | Classification
                                 */
 
-                                'payment_method' =>
-                                    $payment->payment_method,
+                                'payment_method' => $paymentMethod instanceof \BackedEnum
+                                    ? $paymentMethod->value
+                                    : $paymentMethod,
 
-                                'payment_provider' =>
-                                    $payment->payment_provider,
+                                'payment_provider' => $paymentProvider instanceof \BackedEnum
+                                    ? $paymentProvider->value
+                                    : $paymentProvider,
 
-                                'status' =>
-                                    $payment->status,
-
+                                'status' => $paymentStatus instanceof \BackedEnum
+                                    ? $paymentStatus->value
+                                    : $paymentStatus,
 
                                 /*
-                                |--------------------------------------------------------------------------
-                                | TRANSACTION REFERENCES
-                                |--------------------------------------------------------------------------
-                                |
-                                | transaction_reference:
-                                | Internal system/application reference.
-                                |
-                                | provider_reference:
-                                | Reference returned by the external payment
-                                | provider when applicable.
-                                |
+                                | Transaction references
                                 */
 
                                 'transaction_reference' =>
@@ -483,50 +283,37 @@ class InvoiceDetailResource extends JsonResource
                                 'provider_reference' =>
                                     $payment->provider_reference,
 
-
                                 /*
-                                |--------------------------------------------------------------------------
-                                | PAYMENT DATES
-                                |--------------------------------------------------------------------------
+                                | Dates
+                                |
+                                | The provided Payment model does not establish
+                                | a payment_date column. Return null when absent.
                                 */
 
                                 'payment_date' =>
-                                    $payment->payment_date,
+                                    $payment->getAttribute('payment_date'),
 
-                                'verified_at' =>
-                                    $payment->verified_at,
-
+                                'created_at' => $payment->created_at,
+                                'verified_at' => $payment->verified_at,
 
                                 /*
-                                |--------------------------------------------------------------------------
-                                | RECEIVING OFFICER
-                                |--------------------------------------------------------------------------
+                                | Receiving / processing officer
                                 */
 
                                 'received_by' =>
-                                    $payment->relationLoaded('receivedBy')
+                                    $payment->relationLoaded('processedBy')
                                         ? (
-                                            $payment->receivedBy
+                                            $payment->processedBy
                                                 ? [
-                                                    'id' =>
-                                                        $payment
-                                                            ->receivedBy
-                                                            ->id,
-
-                                                    'name' =>
-                                                        $payment
-                                                            ->receivedBy
-                                                            ->name,
+                                                    'id' => $payment->processedBy->id,
+                                                    'name' => $payment->processedBy->name,
                                                 ]
                                                 : null
                                         )
                                         : null,
 
-
                                 /*
-                                |--------------------------------------------------------------------------
-                                | VERIFYING OFFICER
-                                |--------------------------------------------------------------------------
+                                | Verifying officer
                                 */
 
                                 'verified_by' =>
@@ -534,161 +321,116 @@ class InvoiceDetailResource extends JsonResource
                                         ? (
                                             $payment->verifiedBy
                                                 ? [
-                                                    'id' =>
-                                                        $payment
-                                                            ->verifiedBy
-                                                            ->id,
-
-                                                    'name' =>
-                                                        $payment
-                                                            ->verifiedBy
-                                                            ->name,
+                                                    'id' => $payment->verifiedBy->id,
+                                                    'name' => $payment->verifiedBy->name,
                                                 ]
                                                 : null
                                         )
                                         : null,
 
-
                                 /*
-                                |--------------------------------------------------------------------------
-                                | FAILURE INFORMATION
-                                |--------------------------------------------------------------------------
+                                | Failure information
                                 */
 
-                                'failure_reason' =>
-                                    $payment->failure_reason,
-
+                                'failure_reason' => $payment->failure_reason,
 
                                 /*
-                                |--------------------------------------------------------------------------
-                                | PAYMENT EVIDENCE
-                                |--------------------------------------------------------------------------
+                                | Payment files
                                 |
-                                | Generic files attached to this payment
-                                | through the payment_evidence collection.
-                                |
+                                | These are metadata only. Do not expose private
+                                | storage paths or direct download URLs.
                                 */
 
                                 'evidence' =>
-                                    $payment->relationLoaded(
-                                        'paymentEvidence'
-                                    )
-                                        ? $payment
-                                            ->paymentEvidence
-                                            ->map(
-                                                function ($file): array {
-                                                    return [
-                                                        'id' =>
-                                                            $file->id,
-
-                                                        'uuid' =>
-                                                            $file->uuid,
-
-                                                        'original_name' =>
-                                                            $file->original_name,
-
-                                                        'mime_type' =>
-                                                            $file->mime_type,
-
-                                                        'size_bytes' =>
-                                                            $file->size_bytes,
-
-                                                        'status' =>
-                                                            $file->status,
-
-                                                        'visibility' =>
-                                                            $file->visibility,
-
-                                                        'uploaded_at' =>
-                                                            $file->uploaded_at,
-                                                    ];
-                                                }
-                                            )
+                                    $payment->relationLoaded('files')
+                                        ? $payment->files
+                                            ->map(function ($file): array {
+                                                return [
+                                                    'id' => $file->id,
+                                                    'uuid' => $file->uuid,
+                                                    'original_name' => $file->original_name,
+                                                    'mime_type' => $file->mime_type,
+                                                    'size_bytes' => $file->size_bytes,
+                                                    'status' => $file->status,
+                                                    'visibility' => $file->visibility,
+                                                    'uploaded_at' => $file->uploaded_at,
+                                                ];
+                                            })
                                             ->values()
                                             ->all()
                                         : [],
-
 
                                 /*
-                                |--------------------------------------------------------------------------
-                                | PAYMENT RECEIPTS
-                                |--------------------------------------------------------------------------
+                                | Official receipt
                                 |
-                                | Official receipts generated for the payment.
-                                |
+                                | Payment::receipt() is HasOne, so this is
+                                | a single object or null, not a collection.
                                 */
 
-                                'receipts' =>
-                                    $payment->relationLoaded(
-                                        'receipts'
-                                    )
-                                        ? $payment
-                                            ->receipts
-                                            ->map(
-                                                function ($file): array {
-                                                    return [
-                                                        'id' =>
-                                                            $file->id,
+                                'receipt' =>
+                                    $payment->relationLoaded('receipt')
+                                        ? (
+                                            $payment->receipt
+                                                ? [
+                                                    'id' => $payment->receipt->id,
+                                                ]
+                                                : null
+                                        )
+                                        : null,
 
-                                                        'uuid' =>
-                                                            $file->uuid,
+                                /*
+                                | Method-specific details
+                                */
 
-                                                        'original_name' =>
-                                                            $file->original_name,
+                                'cash_details' =>
+                                    $payment->relationLoaded('cashDetails')
+                                        ? (
+                                            $payment->cashDetails
+                                                ? [
+                                                    'id' => $payment->cashDetails->id,
+                                                ]
+                                                : null
+                                        )
+                                        : null,
 
-                                                        'mime_type' =>
-                                                            $file->mime_type,
+                                'bank_transfer_details' =>
+                                    $payment->relationLoaded('bankTransferDetails')
+                                        ? (
+                                            $payment->bankTransferDetails
+                                                ? [
+                                                    'id' => $payment->bankTransferDetails->id,
+                                                ]
+                                                : null
+                                        )
+                                        : null,
 
-                                                        'size_bytes' =>
-                                                            $file->size_bytes,
-
-                                                        'status' =>
-                                                            $file->status,
-
-                                                        'visibility' =>
-                                                            $file->visibility,
-
-                                                        'uploaded_at' =>
-                                                            $file->uploaded_at,
-                                                    ];
-                                                }
-                                            )
-                                            ->values()
-                                            ->all()
-                                        : [],
+                                'online_details' =>
+                                    $payment->relationLoaded('onlineDetails')
+                                        ? (
+                                            $payment->onlineDetails
+                                                ? [
+                                                    'id' => $payment->onlineDetails->id,
+                                                ]
+                                                : null
+                                        )
+                                        : null,
                             ];
-                        }
-                    )->values()->all();
+                        })
+                        ->values()
+                        ->all();
                 }
             ),
-
 
             /*
             |--------------------------------------------------------------------------
             | SOURCE INFORMATION
             |--------------------------------------------------------------------------
-            |
-            | source_metadata contains contextual information captured
-            | when the invoice was generated.
-            |
-            | This is particularly useful for:
-            |
-            | - DIRECT_COLLECTION
-            | - ASSESSMENT
-            | - calculation snapshots
-            | - source-specific metadata
-            |
             */
 
             'source' => [
-
-                'type' =>
-                    $this->source_type,
-
-                'metadata' =>
-                    $this->source_metadata,
+                'type' => $this->source_type,
+                'metadata' => $this->source_metadata,
             ],
-
 
             /*
             |--------------------------------------------------------------------------
@@ -697,62 +439,37 @@ class InvoiceDetailResource extends JsonResource
             */
 
             'audit' => [
-
-                'created_at' =>
-                    $this->created_at,
-
-                'updated_at' =>
-                    $this->updated_at,
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | CREATED BY
-                |--------------------------------------------------------------------------
-                */
+                'created_at' => $this->created_at,
+                'updated_at' => $this->updated_at,
 
                 'created_by' => $this->whenLoaded(
-                    'createdBy',
+                    'creator',
                     function () {
-                        if (!$this->createdBy) {
+                        if (!$this->creator) {
                             return null;
                         }
 
                         return [
-                            'id' =>
-                                $this->createdBy->id,
-
-                            'name' =>
-                                $this->createdBy->name,
+                            'id' => $this->creator->id,
+                            'name' => $this->creator->name,
                         ];
                     }
                 ),
 
-
-                /*
-                |--------------------------------------------------------------------------
-                | ISSUED BY
-                |--------------------------------------------------------------------------
-                */
-
                 'issued_by' => $this->whenLoaded(
-                    'issuedBy',
+                    'issuer',
                     function () {
-                        if (!$this->issuedBy) {
+                        if (!$this->issuer) {
                             return null;
                         }
 
                         return [
-                            'id' =>
-                                $this->issuedBy->id,
-
-                            'name' =>
-                                $this->issuedBy->name,
+                            'id' => $this->issuer->id,
+                            'name' => $this->issuer->name,
                         ];
                     }
                 ),
             ],
-
 
             /*
             |--------------------------------------------------------------------------
@@ -761,12 +478,8 @@ class InvoiceDetailResource extends JsonResource
             */
 
             'cancellation' => [
-
-                'cancelled_at' =>
-                    $this->cancelled_at,
-
-                'reason' =>
-                    $this->cancellation_reason,
+                'cancelled_at' => $this->cancelled_at,
+                'reason' => $this->cancellation_reason,
 
                 'cancelled_by' => $this->whenLoaded(
                     'cancelledBy',
@@ -776,16 +489,12 @@ class InvoiceDetailResource extends JsonResource
                         }
 
                         return [
-                            'id' =>
-                                $this->cancelledBy->id,
-
-                            'name' =>
-                                $this->cancelledBy->name,
+                            'id' => $this->cancelledBy->id,
+                            'name' => $this->cancelledBy->name,
                         ];
                     }
                 ),
             ],
-
 
             /*
             |--------------------------------------------------------------------------
@@ -794,12 +503,8 @@ class InvoiceDetailResource extends JsonResource
             */
 
             'void' => [
-
-                'voided_at' =>
-                    $this->voided_at,
-
-                'reason' =>
-                    $this->void_reason,
+                'voided_at' => $this->voided_at,
+                'reason' => $this->void_reason,
 
                 'voided_by' => $this->whenLoaded(
                     'voidedBy',
@@ -809,16 +514,12 @@ class InvoiceDetailResource extends JsonResource
                         }
 
                         return [
-                            'id' =>
-                                $this->voidedBy->id,
-
-                            'name' =>
-                                $this->voidedBy->name,
+                            'id' => $this->voidedBy->id,
+                            'name' => $this->voidedBy->name,
                         ];
                     }
                 ),
             ],
-
 
             /*
             |--------------------------------------------------------------------------
@@ -826,8 +527,8 @@ class InvoiceDetailResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'notes' =>
-                $this->notes,
+            'notes' => $this->notes,
         ];
     }
 }
+

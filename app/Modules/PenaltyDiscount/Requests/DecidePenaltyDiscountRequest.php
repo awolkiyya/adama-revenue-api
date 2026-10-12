@@ -1,6 +1,8 @@
 <?php
 
-namespace App\Modules\PenaltyDiscountRequests;
+namespace App\Modules\PenaltyDiscount\Requests;
+
+
 
 use App\Models\PenaltyDiscountRequest as PenaltyDiscountRequestModel;
 use Illuminate\Foundation\Http\FormRequest;

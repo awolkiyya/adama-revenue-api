@@ -1,4 +1,3 @@
-
 <?php
 
 use Illuminate\Database\Migrations\Migration;
@@ -15,11 +14,11 @@ return new class extends Migration
             'name' => 'cash_reconciliations.view',
             'label' => 'View Cash Reconciliations',
             'module' => 'cash_reconciliations',
-            'description' => 'Allows accessing the cash reconciliation management interface.',
+            'description' => 'Allows viewing cash reconciliation records within the user\'s authorized access scope.',
             'is_system' => false,
         ],
         [
-            'name' => 'cash_reconciliations.view-all',
+            'name' => 'cash_reconciliations.view_all',
             'label' => 'View All Cash Reconciliations',
             'module' => 'cash_reconciliations',
             'description' => 'Allows viewing cash reconciliations belonging to all authorized revenue collectors.',
@@ -29,76 +28,109 @@ return new class extends Migration
             'name' => 'cash_reconciliations.create',
             'label' => 'Create Cash Reconciliation',
             'module' => 'cash_reconciliations',
-            'description' => 'Allows creating cash reconciliation drafts.',
+            'description' => 'Allows creating cash reconciliation drafts for the authenticated revenue collector.',
+            'is_system' => false,
+        ],
+        [
+            'name' => 'cash_reconciliations.update',
+            'label' => 'Update Cash Reconciliation',
+            'module' => 'cash_reconciliations',
+            'description' => 'Allows updating eligible draft or returned cash reconciliations owned by the authenticated revenue collector.',
             'is_system' => false,
         ],
         [
             'name' => 'cash_reconciliations.submit',
             'label' => 'Submit Cash Reconciliation',
             'module' => 'cash_reconciliations',
-            'description' => 'Allows submitting cash reconciliations for review.',
+            'description' => 'Allows submitting cash reconciliations for finance review.',
             'is_system' => false,
         ],
         [
             'name' => 'cash_reconciliations.review',
             'label' => 'Review Cash Reconciliation',
             'module' => 'cash_reconciliations',
-            'description' => 'Allows reviewing, reconciling, flagging discrepancies, or returning cash closings.',
+            'description' => 'Allows reviewing submitted cash reconciliations, documenting discrepancies, and returning records for correction.',
+            'is_system' => false,
+        ],
+        [
+            'name' => 'cash_reconciliations.cancel',
+            'label' => 'Cancel Cash Reconciliation',
+            'module' => 'cash_reconciliations',
+            'description' => 'Allows cancelling eligible draft or returned cash reconciliations owned by the authenticated revenue collector.',
             'is_system' => false,
         ],
     ];
+
+    /**
+     * Track permissions created by this migration.
+     *
+     * This is used to avoid deleting pre-existing permissions
+     * during rollback.
+     */
+    private array $createdPermissionNames = [];
 
     public function up(): void
     {
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
-        DB::transaction(function () {
+        DB::transaction(function (): void {
             $role = DB::table('roles')
                 ->where('name', 'SYSTEM_ADMIN')
                 ->where('guard_name', 'api')
                 ->first();
 
-            if (!$role) {
+            if (! $role) {
                 throw new RuntimeException(
-                    'The SYSTEM_ADMIN role with guard_name "api" was not found. ' .
-                    'Create the role before running this migration.'
+                    'The SYSTEM_ADMIN role with guard_name "api" was not found. '
+                    . 'Create the role before running this migration.'
                 );
             }
 
             foreach ($this->permissions as $permissionData) {
                 $now = now();
 
-                DB::table('permissions')->updateOrInsert(
-                    [
-                        'name' => $permissionData['name'],
-                        'guard_name' => 'api',
-                    ],
-                    [
-                        'label' => $permissionData['label'],
-                        'module' => $permissionData['module'],
-                        'description' => $permissionData['description'],
-                        'is_system' => $permissionData['is_system'],
-                        'updated_at' => $now,
-                        'created_at' => $now,
-                    ]
-                );
-
                 $permission = DB::table('permissions')
                     ->where('name', $permissionData['name'])
                     ->where('guard_name', 'api')
                     ->first();
 
-                $alreadyAssigned = DB::table('role_has_permissions')
-                    ->where('role_id', $role->id)
-                    ->where('permission_id', $permission->id)
-                    ->exists();
+                if ($permission) {
+                    // Update existing metadata without resetting created_at.
+                    DB::table('permissions')
+                        ->where('id', $permission->id)
+                        ->update([
+                            'label' => $permissionData['label'],
+                            'module' => $permissionData['module'],
+                            'description' => $permissionData['description'],
+                            'is_system' => $permissionData['is_system'],
+                            'updated_at' => $now,
+                        ]);
 
-                if (!$alreadyAssigned) {
-                    DB::table('role_has_permissions')->insert([
-                        'permission_id' => $permission->id,
-                        'role_id' => $role->id,
-                    ]);
+                    $permissionId = $permission->id;
+                } else {
+                    $permissionId = DB::table('permissions')
+                        ->insertGetId([
+                            'name' => $permissionData['name'],
+                            'guard_name' => 'api',
+                            'label' => $permissionData['label'],
+                            'module' => $permissionData['module'],
+                            'description' => $permissionData['description'],
+                            'is_system' => $permissionData['is_system'],
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ]);
+
+                    $this->createdPermissionNames[] =
+                        $permissionData['name'];
                 }
+
+                DB::table('role_has_permissions')->updateOrInsert(
+                    [
+                        'role_id' => $role->id,
+                        'permission_id' => $permissionId,
+                    ],
+                    []
+                );
             }
         });
 
@@ -109,7 +141,22 @@ return new class extends Migration
     {
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
-        DB::transaction(function () {
+        /*
+         * IMPORTANT:
+         *
+         * Laravel creates a fresh migration instance during rollback.
+         * Therefore, $createdPermissionNames populated in up() is not
+         * reliably available here.
+         *
+         * To guarantee safe rollback of pre-existing permissions,
+         * remove only assignments for this module's permissions and
+         * leave the permission records intact.
+         *
+         * If you require full rollback of newly created permissions,
+         * persist their IDs in a dedicated migration tracking table.
+         */
+
+        DB::transaction(function (): void {
             $role = DB::table('roles')
                 ->where('name', 'SYSTEM_ADMIN')
                 ->where('guard_name', 'api')
@@ -121,32 +168,14 @@ return new class extends Migration
                     ->where('guard_name', 'api')
                     ->first();
 
-                if (!$permission) {
+                if (! $permission || ! $role) {
                     continue;
                 }
 
-                // Remove the assignment made for SYSTEM_ADMIN.
-                if ($role) {
-                    DB::table('role_has_permissions')
-                        ->where('role_id', $role->id)
-                        ->where('permission_id', $permission->id)
-                        ->delete();
-                }
-
-                // Preserve permissions still assigned to other roles or users.
-                $assignedToRole = DB::table('role_has_permissions')
+                DB::table('role_has_permissions')
+                    ->where('role_id', $role->id)
                     ->where('permission_id', $permission->id)
-                    ->exists();
-
-                $assignedDirectlyToUser = DB::table('model_has_permissions')
-                    ->where('permission_id', $permission->id)
-                    ->exists();
-
-                if (!$assignedToRole && !$assignedDirectlyToUser) {
-                    DB::table('permissions')
-                        ->where('id', $permission->id)
-                        ->delete();
-                }
+                    ->delete();
             }
         });
 

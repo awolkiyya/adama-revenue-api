@@ -33,8 +33,12 @@ class CashReconciliation extends Model
     | Mass Assignment Protection
     |--------------------------------------------------------------------------
     |
-    | Financial amounts and review fields should be assigned explicitly
-    | by trusted backend services, not accepted blindly from requests.
+    | Financial totals, reviewer information, timestamps, and status changes
+    | should be controlled by the backend service.
+    |
+    | These fields remain fillable for compatibility with trusted service
+    | operations. Never pass unvalidated request data directly into create()
+    | or update() without explicitly controlling the permitted fields.
     |
     */
 
@@ -64,9 +68,11 @@ class CashReconciliation extends Model
         return [
             'period_start' => 'datetime',
             'period_end' => 'datetime',
+
             'expected_amount' => 'decimal:2',
             'actual_amount' => 'decimal:2',
             'difference_amount' => 'decimal:2',
+
             'submitted_at' => 'datetime',
             'reviewed_at' => 'datetime',
         ];
@@ -87,7 +93,7 @@ class CashReconciliation extends Model
     }
 
     /**
-     * Finance officer who reviewed the reconciliation.
+     * Finance officer who reviewed this reconciliation.
      */
     public function reviewer(): BelongsTo
     {
@@ -101,16 +107,78 @@ class CashReconciliation extends Model
     */
 
     /**
+     * Determine whether actual cash has been recorded.
+     */
+    public function hasActualAmount(): bool
+    {
+        return $this->actual_amount !== null;
+    }
+
+    /**
      * Determine whether the reconciliation has a cash discrepancy.
+     *
+     * A positive difference means an overage.
+     * A negative difference means a shortage.
+     * A zero difference means the amounts balance.
+     *
+     * A discrepancy cannot be determined until an actual amount and
+     * calculated difference have both been recorded.
      */
     public function hasDiscrepancy(): bool
     {
-        return $this->actual_amount !== null
-            && bccomp(
-                (string) $this->difference_amount,
-                '0',
-                2
-            ) !== 0;
+        if (
+            $this->actual_amount === null
+            || $this->difference_amount === null
+        ) {
+            return false;
+        }
+
+        return (float) $this->difference_amount !== 0.0;
+    }
+
+    /**
+     * Determine whether the reconciliation is balanced.
+     */
+    public function isBalanced(): bool
+    {
+        if (
+            $this->actual_amount === null
+            || $this->difference_amount === null
+        ) {
+            return false;
+        }
+
+        return (float) $this->difference_amount === 0.0;
+    }
+
+    /**
+     * Determine whether the reconciliation has a cash shortage.
+     */
+    public function hasShortage(): bool
+    {
+        if (
+            $this->actual_amount === null
+            || $this->difference_amount === null
+        ) {
+            return false;
+        }
+
+        return (float) $this->difference_amount < 0;
+    }
+
+    /**
+     * Determine whether the reconciliation has a cash overage.
+     */
+    public function hasOverage(): bool
+    {
+        if (
+            $this->actual_amount === null
+            || $this->difference_amount === null
+        ) {
+            return false;
+        }
+
+        return (float) $this->difference_amount > 0;
     }
 
     /**
@@ -122,10 +190,75 @@ class CashReconciliation extends Model
     }
 
     /**
-     * Determine whether the reconciliation has been approved.
+     * Determine whether the reconciliation has been reconciled.
      */
     public function isReconciled(): bool
     {
         return $this->status === self::STATUS_RECONCILED;
+    }
+
+    /**
+     * Determine whether the reconciliation has a recorded discrepancy
+     * requiring resolution.
+     */
+    public function isDiscrepancy(): bool
+    {
+        return $this->status === self::STATUS_DISCREPANCY;
+    }
+
+    /**
+     * Determine whether the reconciliation was returned for correction.
+     */
+    public function isReturned(): bool
+    {
+        return $this->status === self::STATUS_RETURNED;
+    }
+
+    /**
+     * Determine whether the reconciliation is editable by its collector.
+     */
+    public function isEditable(): bool
+    {
+        return in_array(
+            $this->status,
+            [
+                self::STATUS_DRAFT,
+                self::STATUS_RETURNED,
+            ],
+            true
+        );
+    }
+
+    /**
+     * Determine whether the reconciliation has been submitted.
+     */
+    public function isSubmitted(): bool
+    {
+        return $this->submitted_at !== null;
+    }
+
+    /**
+     * Get the difference classification.
+     *
+     * Returns BALANCED, SHORTAGE, OVERAGE, or NOT_RECORDED.
+     */
+    public function getDifferenceTypeAttribute(): string
+    {
+        if (
+            $this->actual_amount === null
+            || $this->difference_amount === null
+        ) {
+            return 'NOT_RECORDED';
+        }
+
+        if ((float) $this->difference_amount < 0) {
+            return 'SHORTAGE';
+        }
+
+        if ((float) $this->difference_amount > 0) {
+            return 'OVERAGE';
+        }
+
+        return 'BALANCED';
     }
 }

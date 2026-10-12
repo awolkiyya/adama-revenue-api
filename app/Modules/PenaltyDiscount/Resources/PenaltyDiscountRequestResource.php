@@ -39,7 +39,7 @@ class PenaltyDiscountRequestResource extends JsonResource
                         'status' => $this->invoice->status,
                         'subtotal' => $this->invoice->subtotal,
                         'penalty_amount' => $this->invoice->penalty_amount,
-                        'penalty_discount_amount' => $this->invoice->penalty_discount_amount,
+                        'penalty_discount_amount' => $this->invoice->discount_amount,
                         'interest_amount' => $this->invoice->interest_amount,
                         'total_amount' => $this->invoice->total_amount,
                         'paid_amount' => $this->invoice->paid_amount,

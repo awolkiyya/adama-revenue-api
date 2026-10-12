@@ -549,123 +549,247 @@ class PenaltyDiscountRequestService
         });
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | APPLY
-    |--------------------------------------------------------------------------
-    */
+   
+/*
+|--------------------------------------------------------------------------
+| APPLY
+|--------------------------------------------------------------------------
+*/
 
-    /**
-     * Apply an approved discount to the invoice.
-     */
-    public function apply(
-        PenaltyDiscountRequest|string $request,
-        string $appliedBy,
-    ): PenaltyDiscountRequest {
-        return DB::transaction(function () use ($request, $appliedBy) {
-            $requestModel = $this->lockRequest($request);
+/**
+ * Apply an approved penalty discount to the invoice.
+ *
+ * The invoice's discount_amount is the authoritative cumulative discount
+ * field. It includes general discounts and approved penalty discounts.
+ *
+ * The invoice and request are locked in one database transaction to prevent
+ * duplicate application and concurrent financial updates.
+ */
+public function apply(
+    PenaltyDiscountRequest|string $request,
+    string $appliedBy,
+): PenaltyDiscountRequest {
+    return DB::transaction(function () use ($request, $appliedBy) {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Lock and validate the request
+        |--------------------------------------------------------------------------
+        */
 
-            if (
-                $requestModel->status
-                !== PenaltyDiscountRequest::STATUS_APPROVED
-            ) {
-                $this->validationError(
-                    'status',
-                    'Only APPROVED requests can be applied.'
-                );
-            }
+        $requestModel = $this->lockRequest($request);
 
-            if ($requestModel->isApplied()) {
-                $this->validationError(
-                    'status',
-                    'This discount request has already been applied.'
-                );
-            }
-
-            $approvedAmount = $this->normalizeAmount(
-                (float) $requestModel->approved_amount
+        if (
+            $requestModel->status !== PenaltyDiscountRequest::STATUS_APPROVED
+        ) {
+            $this->validationError(
+                'status',
+                'Only APPROVED requests can be applied.'
             );
+        }
 
-            $this->validatePositiveAmount(
-                $approvedAmount,
+        if ($requestModel->isApplied() || $requestModel->applied_to_invoice) {
+            $this->validationError(
+                'status',
+                'This discount request has already been applied.'
+            );
+        }
+
+        if (empty($appliedBy)) {
+            $this->validationError(
+                'applied_by',
+                'The user applying the discount is required.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Validate the approved amount
+        |--------------------------------------------------------------------------
+        */
+
+        if ($requestModel->approved_amount === null) {
+            $this->validationError(
                 'approved_amount',
-                'Approved discount amount'
+                'An approved discount amount is required.'
             );
+        }
 
-            $invoice = Invoice::query()
-                ->whereKey($requestModel->invoice_id)
-                ->lockForUpdate()
-                ->first();
+        $approvedAmount = $this->normalizeAmount(
+            (float) $requestModel->approved_amount
+        );
 
-            if (! $invoice) {
-                $this->validationError(
-                    'invoice',
-                    'The invoice associated with this request was not found.'
-                );
-            }
+        $this->validatePositiveAmount(
+            $approvedAmount,
+            'approved_amount',
+            'Approved discount amount'
+        );
 
-            $this->ensureInvoiceEligible($invoice);
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Lock the invoice
+        |--------------------------------------------------------------------------
+        */
 
-            $this->ensureAmountWithinRemainingPenalty(
-                $invoice,
-                $approvedAmount,
-                'approved_amount'
+        $invoice = Invoice::query()
+            ->whereKey($requestModel->invoice_id)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $invoice) {
+            $this->validationError(
+                'invoice',
+                'The invoice associated with this request was not found.'
             );
+        }
 
-            $currentDiscount = $this->currentPenaltyDiscount($invoice);
+        /*
+        |--------------------------------------------------------------------------
+        | 4. Validate invoice eligibility and penalty limit
+        |--------------------------------------------------------------------------
+        */
 
-            $newPenaltyDiscount = round(
-                $currentDiscount + $approvedAmount,
-                2
+        $this->ensureInvoiceEligible($invoice);
+
+        $this->ensureAmountWithinRemainingPenalty(
+            $invoice,
+            $approvedAmount,
+            'approved_amount'
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. Calculate the cumulative invoice discount
+        |--------------------------------------------------------------------------
+        |
+        | discount_amount is the single authoritative discount field.
+        | Do not use penalty_discount_amount.
+        |
+        */
+
+        $currentDiscount = round(
+            max(0, (float) ($invoice->discount_amount ?? 0)),
+            2
+        );
+
+        $newDiscountAmount = round(
+            $currentDiscount + $approvedAmount,
+            2
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. Recalculate invoice financial totals
+        |--------------------------------------------------------------------------
+        |
+        | total = subtotal - discount + penalty + interest
+        |
+        */
+
+        $subtotal = round(
+            max(0, (float) $this->currentSubtotal($invoice)),
+            2
+        );
+
+        $penalty = round(
+            max(0, (float) $this->currentPenalty($invoice)),
+            2
+        );
+
+        $interest = round(
+            max(0, (float) $this->currentInterest($invoice)),
+            2
+        );
+
+        if ($newDiscountAmount > ($subtotal + $penalty + $interest)) {
+            $this->validationError(
+                'approved_amount',
+                'The discount cannot exceed the invoice amount before discounts.'
             );
+        }
 
-            $newTotalAmount = round(
-                $this->currentSubtotal($invoice)
-                + $this->currentPenalty($invoice)
-                - $newPenaltyDiscount
-                + $this->currentInterest($invoice),
-                2
-            );
+        $newTotalAmount = round(
+            max(
+                0,
+                $subtotal
+                - $newDiscountAmount
+                + $penalty
+                + $interest
+            ),
+            2
+        );
 
-            $newTotalAmount = max(0, $newTotalAmount);
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Reconcile payments and outstanding balance
+        |--------------------------------------------------------------------------
+        */
 
-            $paidAmount = round(
-                max(0, (float) $invoice->paid_amount),
-                2
-            );
+        $paidAmount = round(
+            max(0, (float) ($invoice->paid_amount ?? 0)),
+            2
+        );
 
-            $this->ensureNoOverpayment($invoice, $newTotalAmount);
+        $this->ensureNoOverpayment($invoice, $newTotalAmount);
 
-            $balanceDue = round(
-                max(0, $newTotalAmount - $paidAmount),
-                2
-            );
+        $balanceDue = round(
+            max(0, $newTotalAmount - $paidAmount),
+            2
+        );
 
-            $invoiceStatus = $this->resolveInvoiceStatus(
-                $invoice,
-                $paidAmount,
-                $balanceDue
-            );
+        $invoiceStatus = $this->resolveInvoiceStatus(
+            $invoice,
+            $paidAmount,
+            $balanceDue
+        );
 
-            $invoice->update([
-                'penalty_discount_amount' => $newPenaltyDiscount,
-                'total_amount' => $newTotalAmount,
-                'balance_due' => $balanceDue,
-                'status' => $invoiceStatus,
-                'paid_at' => $balanceDue <= 0
-                    ? ($invoice->paid_at ?? now())
-                    : null,
-            ]);
+        /*
+        |--------------------------------------------------------------------------
+        | 8. Persist invoice financial changes
+        |--------------------------------------------------------------------------
+        |
+        | Explicit assignments avoid relying on mass-assignment configuration.
+        |
+        */
 
-            $requestModel->update([
-                'status' => PenaltyDiscountRequest::STATUS_APPLIED,
-                'applied_to_invoice' => true,
-                'applied_at' => now(),
-            ]);
+        $invoice->discount_amount = $newDiscountAmount;
+        $invoice->total_amount = $newTotalAmount;
+        $invoice->balance_due = $balanceDue;
+        $invoice->status = $invoiceStatus;
 
-            return $this->freshRequest($requestModel);
-        });
-    }
+        /*
+         * Do not clear an existing paid_at timestamp just because the
+         * invoice's status or balance is recalculated.
+         */
+        if ($balanceDue <= 0 && $paidAmount > 0) {
+            $invoice->paid_at = $invoice->paid_at ?? now();
+        }
+
+        $invoice->save();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 9. Mark the request as applied
+        |--------------------------------------------------------------------------
+        |
+        | This update happens in the same transaction as the invoice update.
+        | If either save fails, both changes are rolled back.
+        |
+        */
+
+        $requestModel->status = PenaltyDiscountRequest::STATUS_APPLIED;
+        $requestModel->applied_to_invoice = true;
+        $requestModel->applied_at = now();
+        $requestModel->save();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 10. Return the refreshed request with its invoice
+        |--------------------------------------------------------------------------
+        */
+
+        return $this->freshRequest($requestModel);
+    }, 3);
+}
 
     /*
     |--------------------------------------------------------------------------

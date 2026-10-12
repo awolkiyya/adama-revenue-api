@@ -1,109 +1,119 @@
 <?php
 
 use App\Modules\Agent\Controllers\AgentInvoiceController;
+use App\Modules\Agent\Controllers\AgentPaymentController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
 | AGENT PORTAL
 |--------------------------------------------------------------------------
-| Portal access is permission-based.
+|
+| auth:sanctum is applied by routes/Api/v1/api.php.
 |
 | agent.portal_access
-|     → Determines whether the authenticated user may enter
-|       the Agent portal.
+|     Determines whether the authenticated user can access the portal.
 |
 | Feature permissions
-|     → Determine what the user may do inside the Agent portal.
+|     Control individual operations inside the portal.
 |
-| Roles only bundle permissions.
-| They are NOT used as the authorization boundary.
+| Roles bundle permissions; permissions remain the authorization
+| boundary.
 |
-| NOTE:
-| auth:sanctum is already applied by routes/Api/v1/api.php,
-| so it is not repeated here.
-|--------------------------------------------------------------------------
 */
 
 Route::middleware('permission:agent.portal_access')
     ->prefix('agent')
-    ->group(function () {
+    ->name('agent.')
+    ->group(function (): void {
 
         // ========================================================
         // DASHBOARD
         // ========================================================
 
-        // Route::get('/dashboard', ...);
+        Route::get('/payments/dashboard', [
+                AgentPaymentController::class,
+                'dashboard',
+            ])
+            ->name('payments.dashboard');
 
 
         // ========================================================
         // TAXPAYERS
         // ========================================================
 
-        // Route::middleware('permission:citizens.view')
-        //     ->get('/taxpayers', ...);
+        // Register taxpayer routes here when implemented.
+        // Example permission: citizens.view
 
 
         // ========================================================
         // INVOICES
         // ========================================================
-        //
-        // Agents can view invoices that are available for payment.
-        // Invoices are NOT assigned to individual agents.
-        //
-        // The authenticated agent becomes associated with the
-        // transaction only when the payment is created.
-        //
 
-        Route::middleware('permission:invoices.view')
-            ->get('/invoices/pending', [
+        Route::get('/invoices/pending', [
                 AgentInvoiceController::class,
                 'pending',
             ])
-            ->name('agent.invoices.pending');
-
-
-        // ========================================================
-        // PAYMENTS
-        // ========================================================
-        //
-        // Payment creation will record the authenticated agent
-        // as the person who processed the payment.
-        //
-
-        // Route::middleware('permission:payments.create')
-        //     ->post('/payments', [
-        //         AgentPaymentController::class,
-        //         'store',
-        //     ])
-        //     ->name('agent.payments.store');
+            ->name('invoices.pending');
 
 
         // ========================================================
         // PAYMENT HISTORY
         // ========================================================
-        //
-        // Shows payments processed by the authenticated agent.
-        //
 
-        // Route::middleware('permission:payments.view')
-        //     ->get('/payments', [
+        Route::get('/payments', [
+                AgentPaymentController::class,
+                'index',
+            ])
+            ->name('payments.index');
+
+
+        // ========================================================
+        // PAYMENT SUMMARY
+        // ========================================================
+
+        Route::get('/payments/summary', [
+                AgentPaymentController::class,
+                'summary',
+            ])
+            ->name('payments.summary');
+
+
+        // ========================================================
+        // TODAY'S PAYMENT SUMMARY
+        // ========================================================
+
+        Route::get('/payments/today-summary', [
+                AgentPaymentController::class,
+                'todaySummary',
+            ])
+            ->name('payments.today-summary');
+
+
+        // ========================================================
+        // PAYMENT CREATION
+        // ========================================================
+
+        // Register when the agent payment creation action exists.
+        //
+        // Route::middleware('permission:payments.create')
+        //     ->post('/payments', [
         //         AgentPaymentController::class,
-        //         'index',
+        //         'store',
         //     ])
-        //     ->name('agent.payments.index');
+        //     ->name('payments.store');
 
 
         // ========================================================
         // RECEIPTS
         // ========================================================
-        //
-        // Receipts generated from payments processed by the agent.
-        //
 
+        // Register when AgentReceiptController is implemented.
+        //
         // Route::middleware('permission:payments.view')
         //     ->get('/receipts/{payment}', [
         //         AgentReceiptController::class,
         //         'show',
         //     ])
-        //     ->name('agent.receipts.show');
+        //     ->name('receipts.show');
     });

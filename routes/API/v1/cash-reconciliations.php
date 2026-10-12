@@ -3,112 +3,69 @@
 use Illuminate\Support\Facades\Route;
 use App\Modules\CashReconciliation\Controllers\CashReconciliationController;
 
-
-// ============================================================
-// CASH RECONCILIATION
-// AUTHENTICATED ROUTES
-// ============================================================
-//
-// Revenue Collector:
-// - Create a closing draft
-// - View their own reconciliations
-// - Update a draft or returned closing
-// - Submit the physical cash count
-// - Cancel a draft or returned closing
-//
-// Finance Officer:
-// - View reconciliations permitted by their permissions
-// - Review submitted closings
-// - Record review decisions and notes
-//
-// Authorization is permission-driven, not role-driven.
-// The controller, Form Requests, and service enforce access
-// and workflow rules.
-// ============================================================
-
+/*
+|--------------------------------------------------------------------------
+| Cash Reconciliation Routes
+|--------------------------------------------------------------------------
+|
+| Permission-driven access:
+| - Revenue collectors manage their own cash closings.
+| - Authorized finance officers review submitted closings.
+| - Users with view_all permission can view all reconciliations.
+|
+| Ensure this route group is registered inside the authenticated
+| API route group, or retain the auth:sanctum middleware below.
+|
+*/
 
 Route::prefix('cash-reconciliations')
     ->name('cash-reconciliations.')
     ->group(function () {
 
-        // ====================================================
-        // LIST RECONCILIATIONS
-        // GET /api/v1/cash-reconciliations
-        // ====================================================
-
+        // List reconciliations
         Route::get('/', [
             CashReconciliationController::class,
             'index',
         ])->name('index');
 
-
-        // ====================================================
-        // CREATE DRAFT
-        // POST /api/v1/cash-reconciliations
-        // ====================================================
-
+        // Create a draft
         Route::post('/', [
             CashReconciliationController::class,
             'store',
         ])->name('store');
 
-
-        // ====================================================
-        // VIEW RECONCILIATION
-        // GET /api/v1/cash-reconciliations/{cashReconciliation}
-        // ====================================================
-
+        // View a reconciliation
         Route::get('/{cashReconciliation}', [
             CashReconciliationController::class,
             'show',
         ])->whereNumber('cashReconciliation')
             ->name('show');
 
-
-        // ====================================================
-        // UPDATE DRAFT OR RETURNED CLOSING
-        // PUT/PATCH /api/v1/cash-reconciliations/{id}
-        // ====================================================
-
+        // Update a draft or returned reconciliation
         Route::match(['put', 'patch'], '/{cashReconciliation}', [
             CashReconciliationController::class,
             'update',
         ])->whereNumber('cashReconciliation')
             ->name('update');
 
-
-        // ====================================================
-        // SUBMIT CASH CLOSING
-        // POST /api/v1/cash-reconciliations/{id}/submit
-        // ====================================================
-
+        // Submit a cash closing for review
         Route::post('/{cashReconciliation}/submit', [
             CashReconciliationController::class,
             'submit',
         ])->whereNumber('cashReconciliation')
             ->name('submit');
 
-
-        // ====================================================
-        // FINANCE REVIEW
-        // POST /api/v1/cash-reconciliations/{id}/review
-        // ====================================================
-
+        // Review a submitted cash closing
         Route::post('/{cashReconciliation}/review', [
             CashReconciliationController::class,
             'review',
         ])->whereNumber('cashReconciliation')
             ->name('review');
 
-
-        // ====================================================
-        // CANCEL DRAFT OR RETURNED CLOSING
-        // POST /api/v1/cash-reconciliations/{id}/cancel
-        // ====================================================
-
+        // Cancel a draft or returned reconciliation
         Route::post('/{cashReconciliation}/cancel', [
             CashReconciliationController::class,
             'cancel',
         ])->whereNumber('cashReconciliation')
             ->name('cancel');
-    });
+});
