@@ -310,9 +310,12 @@ Route::prefix('v1')->group(function () {
         require base_path(
             'routes/Api/v1/payment-reports.php'
         );
+        
+        // Dashboard
 
-
-       
+        require base_path(
+            'routes/Api/v1/dashboard.php'
+        );
 
         // ====================================================
         // PRIVATE FILE ACCESS
