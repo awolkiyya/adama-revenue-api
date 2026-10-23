@@ -3,13 +3,13 @@
 namespace App\Modules\Administrative\Controllers;
 
 use App\Http\Controllers\Controller;
-use App\Modules\Administrative\Services\SectorService;
+use App\Models\Sector;
 use App\Modules\Administrative\Resources\SectorResource;
+use App\Modules\Administrative\Services\SectorService;
 use App\Services\ApiResponse;
 use App\Services\SystemLogService;
 use App\Supports\SystemLogModule;
 use Illuminate\Http\Request;
-use App\Models\Sector;
 
 class SectorController extends Controller
 {
@@ -25,10 +25,7 @@ class SectorController extends Controller
      */
     public function index(Request $request)
     {
-        $this->authorize(
-            'viewAny',
-            Sector::class
-        );
+        $this->authorize('viewAny', Sector::class);
 
         $filters = $request->only([
             'search',
@@ -47,7 +44,6 @@ class SectorController extends Controller
         );
     }
 
-
     /**
      * =========================================================
      * CREATE SECTOR
@@ -55,10 +51,7 @@ class SectorController extends Controller
      */
     public function store(Request $request)
     {
-        $this->authorize(
-            'create',
-            Sector::class
-        );
+        $this->authorize('create', Sector::class);
 
         $validated = $request->validate([
             'name' => [
@@ -85,11 +78,14 @@ class SectorController extends Controller
                 'uuid',
                 'exists:clusters,id',
             ],
+
+            'is_active' => [
+                'sometimes',
+                'boolean',
+            ],
         ]);
 
-        $sector = $this->service->create(
-            $validated
-        );
+        $sector = $this->service->create($validated);
 
         /*
         |--------------------------------------------------------------------------
@@ -113,7 +109,6 @@ class SectorController extends Controller
         );
     }
 
-
     /**
      * =========================================================
      * UPDATE SECTOR
@@ -123,10 +118,7 @@ class SectorController extends Controller
         Request $request,
         Sector $sector
     ) {
-        $this->authorize(
-            'update',
-            $sector
-        );
+        $this->authorize('update', $sector);
 
         /*
         |--------------------------------------------------------------------------
@@ -161,6 +153,11 @@ class SectorController extends Controller
                 'uuid',
                 'exists:clusters,id',
             ],
+
+            'is_active' => [
+                'sometimes',
+                'boolean',
+            ],
         ]);
 
         $sector = $this->service->update(
@@ -188,67 +185,4 @@ class SectorController extends Controller
         );
     }
 
-
-    /**
-     * =========================================================
-     * DELETE SECTOR
-     * =========================================================
-     */
-    public function destroy(
-        Sector $sector
-    ) {
-        /*
-        |--------------------------------------------------------------------------
-        | Authorization
-        |--------------------------------------------------------------------------
-        */
-
-        $this->authorize(
-            'delete',
-            $sector
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Capture old values BEFORE deletion
-        |--------------------------------------------------------------------------
-        |
-        | This is important because after deletion the model may
-        | no longer represent the persisted record.
-        |
-        */
-
-        $oldValues = $sector->getAttributes();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Delete
-        |--------------------------------------------------------------------------
-        */
-
-        $this->service->delete(
-            $sector
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | AUDIT LOG
-        |--------------------------------------------------------------------------
-        |
-        | Log only after successful deletion.
-        |
-        */
-
-        $this->systemLog->deleted(
-            resource: $sector,
-            module: SystemLogModule::SECTORS,
-            oldValues: $oldValues,
-            description: 'Sector deleted successfully',
-        );
-
-        return ApiResponse::success(
-            null,
-            'Sector deleted successfully'
-        );
-    }
 }

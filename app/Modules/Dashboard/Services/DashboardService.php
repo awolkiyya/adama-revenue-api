@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Modules\Dashboard\Services;
 
+use App\Models\User;
 use Carbon\CarbonImmutable;
 use InvalidArgumentException;
 
@@ -18,11 +19,12 @@ final class DashboardService
     }
 
     /**
-     * Build the dashboard summary.
+     * Build a dashboard summary scoped to the authenticated user.
      *
      * @return array<string, mixed>
      */
     public function summarize(
+        User $user,
         ?string $from = null,
         ?string $to = null,
     ): array {
@@ -30,23 +32,27 @@ final class DashboardService
 
         return [
             'revenue' => $this->revenueSummaryService->summarize(
+                $user,
                 $from,
                 $to,
             ),
 
-            'systemStatistics' => $this->systemStatisticsService->summarize(),
+            'systemStatistics' => $this->systemStatisticsService->summarize(
+                $user,
+            ),
 
-            'workQueue' => $this->dashboardWorkQueueService->summarize(),
+            'workQueue' => $this->dashboardWorkQueueService->summarize(
+                $user,
+            ),
 
-            'recentActivity' => $this->dashboardRecentActivityService->summarize(),
+            'recentActivity' => $this->dashboardRecentActivityService->summarize(
+                $user,
+            ),
         ];
     }
 
     /**
      * Resolve a complete reporting period.
-     *
-     * If no dates are supplied, default to the current calendar month.
-     * If only one date is supplied, reject the request.
      *
      * @return array{0: string, 1: string}
      */

@@ -14,6 +14,10 @@ use App\Modules\Dashboard\Controllers\DashboardController;
 */
 
 Route::prefix('dashboard')
+    ->middleware([
+        'permission:dashboard.view',
+        'permission:analytics.view',
+    ])
     ->group(function () {
 
         /*
@@ -30,5 +34,4 @@ Route::prefix('dashboard')
             DashboardController::class,
             'summary',
         ])->name('dashboard.summary');
-
-    });
+});

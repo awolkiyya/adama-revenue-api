@@ -1,20 +1,21 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Dashboard\Services;
 
-use Illuminate\Support\Facades\DB;
+use App\Models\Assessment;
+use App\Models\Citizen;
+use App\Models\Invoice;
+use App\Models\User;
+use App\Services\Authorization\AdministrativeScopeService;
+use Illuminate\Database\Eloquent\Builder;
 
-class SystemStatisticsService
+final class SystemStatisticsService
 {
-    private const REVENUE_COLLECTOR_ROLE = 'AGENT';
+    private const REVENUE_COLLECTOR_ROLE = 'REVENUE_COLLECTOR';
 
     private const API_GUARD = 'api';
-
-    private const USER_MODEL = 'App\\Models\\User';
-
-    private const INVOICE_SOURCE_ASSESSMENT = 'ASSESSMENT';
-
-    private const INVOICE_SOURCE_DIRECT = 'DIRECT_COLLECTION';
 
     private const COUNTABLE_INVOICE_STATUSES = [
         'ISSUED',
@@ -23,10 +24,16 @@ class SystemStatisticsService
         'OVERDUE',
     ];
 
+    public function __construct(
+        private readonly AdministrativeScopeService $administrativeScope,
+    ) {}
+
     /**
-     * Return system-wide record counts.
+     * Return record counts restricted to the user's accessible
+     * administrative units.
      *
-     * These figures are independent of the revenue reporting period.
+     * System administrators retain global access through
+     * AdministrativeScopeService.
      *
      * @return array{
      *     totalUsers: int,
@@ -37,114 +44,125 @@ class SystemStatisticsService
      *     totalDirectCollectionInvoices: int
      * }
      */
-    public function summarize(): array
+    public function summarize(User $user): array
     {
         return [
-            'totalUsers' => $this->countUsers(),
+            'totalUsers' => $this->countUsers($user),
 
-            // Taxpayer records are stored in the citizens table.
-            'totalTaxpayers' => $this->countRecords(
-                'citizens',
-                hasSoftDeletes: true,
-            ),
+            'totalTaxpayers' => $this->countTaxpayers($user),
 
-            'totalAgents' => $this->countRevenueCollectors(),
+            'totalAgents' => $this->countRevenueCollectors($user),
 
-            'totalAssessments' => $this->countRecords(
-                'assessments',
-                hasSoftDeletes: true,
-            ),
+            'totalAssessments' => $this->countAssessments($user),
 
             'totalAssessmentInvoices' => $this->countInvoices(
-                self::INVOICE_SOURCE_ASSESSMENT,
+                user: $user,
+                sourceType: 'ASSESSMENT',
             ),
 
             'totalDirectCollectionInvoices' => $this->countInvoices(
-                self::INVOICE_SOURCE_DIRECT,
+                user: $user,
+                sourceType: 'DIRECT_COLLECTION',
             ),
         ];
     }
 
     /**
-     * Count users.
+     * Count users assigned to accessible administrative units.
      *
-     * The users table does not have a deleted_at column.
+     * The users table does not use soft deletes.
      */
-    private function countUsers(): int
+    private function countUsers(User $user): int
     {
-        return (int) DB::table('users')->count();
+        $query = User::query();
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'users.administrative_unit_id',
+        );
+
+        return $query->count();
     }
 
     /**
-     * Count records, optionally excluding soft-deleted rows.
-     *
-     * Table names are internal constants supplied by this service,
-     * never directly from a request.
+     * Count citizens within accessible administrative units.
      */
-    private function countRecords(
-        string $table,
-        bool $hasSoftDeletes,
+    private function countTaxpayers(User $user): int
+    {
+        $query = Citizen::query();
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'citizens.administrative_unit_id',
+        );
+
+        return $query->count();
+    }
+
+    /**
+     * Count revenue collectors assigned to accessible administrative
+     * units and the API guard.
+     */
+    private function countRevenueCollectors(User $user): int
+    {
+        $query = User::query()
+            ->whereHas(
+                'roles',
+                function (Builder $roleQuery): void {
+                    $roleQuery
+                        ->where('roles.name', self::REVENUE_COLLECTOR_ROLE)
+                        ->where('roles.guard_name', self::API_GUARD);
+                },
+            );
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'users.administrative_unit_id',
+        );
+
+        return $query->count();
+    }
+
+    /**
+     * Count assessments within accessible administrative units.
+     */
+    private function countAssessments(User $user): int
+    {
+        $query = Assessment::query();
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'assessments.administrative_unit_id',
+        );
+
+        return $query->count();
+    }
+
+    /**
+     * Count eligible invoices of a given source type within
+     * accessible administrative units.
+     */
+    private function countInvoices(
+        User $user,
+        string $sourceType,
     ): int {
-        $query = DB::table($table);
-
-        if ($hasSoftDeletes) {
-            $query->whereNull($table . '.deleted_at');
-        }
-
-        return (int) $query->count();
-    }
-
-    /**
-     * Count users assigned the REVENUE_COLLECTOR role.
-     *
-     * Uses the application's UUID-based Spatie pivot column,
-     * model_uuid, and the API permission guard.
-     */
-    private function countRevenueCollectors(): int
-    {
-        return (int) DB::table('users')
-            ->whereExists(function ($query): void {
-                $query
-                    ->selectRaw('1')
-                    ->from('model_has_roles')
-                    ->join(
-                        'roles',
-                        'roles.id',
-                        '=',
-                        'model_has_roles.role_id',
-                    )
-                    ->whereColumn(
-                        'model_has_roles.model_uuid',
-                        'users.id',
-                    )
-                    ->where(
-                        'model_has_roles.model_type',
-                        self::USER_MODEL,
-                    )
-                    ->where(
-                        'roles.name',
-                        self::REVENUE_COLLECTOR_ROLE,
-                    )
-                    ->where(
-                        'roles.guard_name',
-                        self::API_GUARD,
-                    );
-            })
-            ->count('users.id');
-    }
-
-    /**
-     * Count issued invoices, excluding draft, cancelled, and void invoices.
-     */
-    private function countInvoices(string $sourceType): int
-    {
-        return (int) DB::table('invoices')
-            ->whereNull('invoices.deleted_at')
+        $query = Invoice::query()
             ->where('invoices.source_type', $sourceType)
             ->whereIn(
                 'invoices.status',
                 self::COUNTABLE_INVOICE_STATUSES,
-            )
-            ->count();
+            );
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'invoices.administrative_unit_id',
+        );
+
+        return $query->count();
     }
 }

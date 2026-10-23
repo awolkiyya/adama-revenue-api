@@ -71,159 +71,6 @@ class PermissionSeeder extends Seeder
 
             /*
             |--------------------------------------------------------------------------
-            | User Management
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'users.view',
-                'label' => 'View Users',
-                'module' => 'users',
-                'description' => 'Allows viewing system users.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.create',
-                'label' => 'Create User',
-                'module' => 'users',
-                'description' => 'Allows creating new system users.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.update',
-                'label' => 'Update User',
-                'module' => 'users',
-                'description' => 'Allows updating eligible user information.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.update_password',
-                'label' => 'Update User Password',
-                'module' => 'users',
-                'description' => 'Allows changing the password of eligible user accounts.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.delete',
-                'label' => 'Delete User',
-                'module' => 'users',
-                'description' => 'Allows deleting eligible user accounts according to system policy.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.activate',
-                'label' => 'Activate User',
-                'module' => 'users',
-                'description' => 'Allows activating a deactivated user account.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.deactivate',
-                'label' => 'Deactivate User',
-                'module' => 'users',
-                'description' => 'Allows deactivating an eligible user account.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.assign_roles',
-                'label' => 'Assign User Roles',
-                'module' => 'users',
-                'description' => 'Allows assigning eligible roles to users.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'users.view_history',
-                'label' => 'View User History',
-                'module' => 'users',
-                'description' => 'Allows viewing user account activity and history.',
-                'is_system' => true,
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Role Management
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'roles.view',
-                'label' => 'View Roles',
-                'module' => 'roles',
-                'description' => 'Allows viewing roles and their assigned permissions.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'roles.create',
-                'label' => 'Create Role',
-                'module' => 'roles',
-                'description' => 'Allows creating non-system roles.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'roles.update',
-                'label' => 'Update Role',
-                'module' => 'roles',
-                'description' => 'Allows updating eligible non-system roles.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'roles.delete',
-                'label' => 'Delete Role',
-                'module' => 'roles',
-                'description' => 'Allows deleting eligible non-system roles.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'roles.assign_permissions',
-                'label' => 'Assign Role Permissions',
-                'module' => 'roles',
-                'description' => 'Allows assigning existing permissions to eligible roles.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'roles.revoke_permissions',
-                'label' => 'Revoke Role Permissions',
-                'module' => 'roles',
-                'description' => 'Allows revoking permissions from eligible roles.',
-                'is_system' => true,
-            ],
-
-            [
-                'name' => 'roles.view_history',
-                'label' => 'View Role History',
-                'module' => 'roles',
-                'description' => 'Allows viewing role and permission assignment history.',
-                'is_system' => true,
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Permission Catalog
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'permissions.view',
-                'label' => 'View Permissions',
-                'module' => 'permissions',
-                'description' => 'Allows viewing the backend-defined permission catalog.',
-                'is_system' => true,
-            ],
-            /*
-            |--------------------------------------------------------------------------
             | Administrative Units
             |--------------------------------------------------------------------------
             */
@@ -313,6 +160,163 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows deleting sectors according to system policy.',
                 'is_system' => true,
             ],
+
+
+              /*
+            |--------------------------------------------------------------------------
+            | Role Management
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'roles.view',
+                'label' => 'View Roles',
+                'module' => 'roles',
+                'description' => 'Allows viewing roles and their assigned permissions.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'roles.create',
+                'label' => 'Create Role',
+                'module' => 'roles',
+                'description' => 'Allows creating non-system roles.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'roles.update',
+                'label' => 'Update Role',
+                'module' => 'roles',
+                'description' => 'Allows updating eligible non-system roles.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'roles.delete',
+                'label' => 'Delete Role',
+                'module' => 'roles',
+                'description' => 'Allows deleting eligible non-system roles.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'roles.assign_permissions',
+                'label' => 'Assign Role Permissions',
+                'module' => 'roles',
+                'description' => 'Allows assigning existing permissions to eligible roles.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'roles.revoke_permissions',
+                'label' => 'Revoke Role Permissions',
+                'module' => 'roles',
+                'description' => 'Allows revoking permissions from eligible roles.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'roles.view_history',
+                'label' => 'View Role History',
+                'module' => 'roles',
+                'description' => 'Allows viewing role and permission assignment history.',
+                'is_system' => true,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Permission Catalog
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'permissions.view',
+                'label' => 'View Permissions',
+                'module' => 'permissions',
+                'description' => 'Allows viewing the backend-defined permission catalog.',
+                'is_system' => true,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | User Management
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'users.view',
+                'label' => 'View Users',
+                'module' => 'users',
+                'description' => 'Allows viewing system users.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.create',
+                'label' => 'Create User',
+                'module' => 'users',
+                'description' => 'Allows creating new system users.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.update',
+                'label' => 'Update User',
+                'module' => 'users',
+                'description' => 'Allows updating eligible user information.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.update_password',
+                'label' => 'Update User Password',
+                'module' => 'users',
+                'description' => 'Allows changing the password of eligible user accounts.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.delete',
+                'label' => 'Delete User',
+                'module' => 'users',
+                'description' => 'Allows deleting eligible user accounts according to system policy.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.activate',
+                'label' => 'Activate User',
+                'module' => 'users',
+                'description' => 'Allows activating a deactivated user account.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.deactivate',
+                'label' => 'Deactivate User',
+                'module' => 'users',
+                'description' => 'Allows deactivating an eligible user account.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.assign_roles',
+                'label' => 'Assign User Roles',
+                'module' => 'users',
+                'description' => 'Allows assigning eligible roles to users.',
+                'is_system' => true,
+            ],
+
+            [
+                'name' => 'users.view_history',
+                'label' => 'View User History',
+                'module' => 'users',
+                'description' => 'Allows viewing user account activity and history.',
+                'is_system' => true,
+            ],
+
+
 
             /*
             |--------------------------------------------------------------------------

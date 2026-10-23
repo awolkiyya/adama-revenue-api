@@ -1,18 +1,25 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Dashboard\Controllers;
 
 use App\Http\Controllers\Controller;
-use App\Services\ApiResponse;
+use App\Models\User;
 use App\Modules\Dashboard\Requests\DashboardSummaryRequest;
 use App\Modules\Dashboard\Resources\DashboardSummaryResource;
 use App\Modules\Dashboard\Services\DashboardService;
+use App\Services\ApiResponse;
+use App\Services\SystemLogService;
 use Illuminate\Http\JsonResponse;
 
-class DashboardController extends Controller
+final class DashboardController extends Controller
 {
+    private const MODULE = 'Dashboard';
+
     public function __construct(
         private readonly DashboardService $dashboardService,
+        private readonly SystemLogService $systemLogService,
     ) {
     }
 
@@ -24,21 +31,39 @@ class DashboardController extends Controller
     public function summary(
         DashboardSummaryRequest $request,
     ): JsonResponse {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401);
+
         $validated = $request->validated();
 
+        $from = isset($validated['from'])
+            ? (string) $validated['from']
+            : null;
+
+        $to = isset($validated['to'])
+            ? (string) $validated['to']
+            : null;
+
         $summary = $this->dashboardService->summarize(
-            isset($validated['from'])
-                ? (string) $validated['from']
-                : null,
-            isset($validated['to'])
-                ? (string) $validated['to']
-                : null,
+            user: $user,
+            from: $from,
+            to: $to,
         );
 
-        $resource = new DashboardSummaryResource($summary);
+        $this->systemLogService->log(
+            action: 'VIEW',
+            module: self::MODULE,
+            description: 'Accessed dashboard summary.',
+            metadata: [
+                'from' => $from,
+                'to' => $to,
+            ],
+            actor: $user,
+        );
 
         return ApiResponse::success(
-            data: $resource,
+            data: new DashboardSummaryResource($summary),
             message: 'Dashboard summary retrieved successfully.',
         );
     }

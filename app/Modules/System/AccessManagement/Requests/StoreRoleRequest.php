@@ -7,22 +7,27 @@ use Illuminate\Validation\Rule;
 
 class StoreRoleRequest extends FormRequest
 {
+    public function authorize(): bool
+    {
+        return $this->user()?->can('roles.create') ?? false;
+    }
+
     public function rules(): array
     {
         return [
             'name' => [
                 'required',
                 'string',
-                'max:100',
+                'min:2',
+                'max:255',
+                'regex:/^[A-Za-z0-9][A-Za-z0-9_\- ]*$/',
                 Rule::unique('roles', 'name')
-                    ->where('guard_name', 'api')
-                    ->whereNull('deleted_at'),
-            ],
-
-            'description' => [
-                'nullable',
-                'string',
-                'max:1000',
+                    ->where(
+                        fn ($query) => $query->where(
+                            'guard_name',
+                            'api'
+                        )
+                    ),
             ],
 
             'permissions' => [
@@ -31,9 +36,24 @@ class StoreRoleRequest extends FormRequest
             ],
 
             'permissions.*' => [
-                Rule::exists('permissions', 'name')
-                    ->where('guard_name', 'api'),
+                'required',
+                'string',
+                'distinct',
             ],
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'name.regex' =>
+                'The role name may contain letters, numbers, spaces, hyphens, and underscores.',
+
+            'permissions.array' =>
+                'Permissions must be provided as an array.',
+
+            'permissions.*.distinct' =>
+                'Duplicate permissions are not allowed.',
         ];
     }
 }

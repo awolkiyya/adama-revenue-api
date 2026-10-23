@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Modules\Dashboard\Services;
 
+use App\Models\User;
+use App\Services\Authorization\AdministrativeScopeService;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Throwable;
+use App\Models\Invoice;
 
 final class RevenueSummaryService
 {
@@ -33,6 +36,10 @@ final class RevenueSummaryService
      */
     private const AMOUNT_TOLERANCE = '0.0001';
 
+    public function __construct(
+        private readonly AdministrativeScopeService $administrativeScope,
+    ) {}
+
     /**
      * Return revenue totals, period-over-period trends, daily chart
      * data, and outstanding invoice reconciliation diagnostics.
@@ -42,6 +49,9 @@ final class RevenueSummaryService
      * Revenue is based on completed, verified payments and the source
      * type of each associated invoice.
      *
+     * All invoice-related calculations are restricted to the
+     * authenticated user's accessible administrative units.
+     *
      * Outstanding balances use the stored invoice balance_due.
      * Diagnostic calculations never modify invoice records.
      *
@@ -50,8 +60,11 @@ final class RevenueSummaryService
      * @throws InvalidArgumentException
      * @throws Throwable
      */
-    public function summarize(string $from, string $to): array
-    {
+    public function summarize(
+        User $user,
+        string $from,
+        string $to,
+    ): array {
         $startedAt = hrtime(true);
 
         $context = [
@@ -91,23 +104,26 @@ final class RevenueSummaryService
             );
 
             $current = $this->collectionTotals(
+                $user,
                 $fromDate,
                 $toDate,
                 'current',
             );
 
             $previous = $this->collectionTotals(
+                $user,
                 $previousFrom,
                 $previousTo,
                 'previous',
             );
 
             $chartSeries = $this->collectionChartSeries(
+                $user,
                 $fromDate,
                 $toDate,
             );
 
-            $outstanding = $this->outstandingSummary();
+            $outstanding = $this->outstandingSummary($user);
 
             $combinedTrend = $this->calculateTrend(
                 $previous['combined'],
@@ -191,6 +207,31 @@ final class RevenueSummaryService
         }
     }
 
+   /**
+     * Build an invoice-ID subquery restricted to the user's
+     * accessible administrative units.
+     *
+     * Uses Eloquent Builder because AdministrativeScopeService
+     * requires Illuminate\Database\Eloquent\Builder.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private function scopedInvoiceIds(
+        User $user,
+    ): \Illuminate\Database\Eloquent\Builder {
+        $query = Invoice::query()
+            ->select('invoices.id')
+            ->whereNull('invoices.deleted_at');
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'invoices.administrative_unit_id',
+        );
+
+        return $query;
+    }
+
     /**
      * Calculate collected revenue by invoice source for a date range.
      *
@@ -201,6 +242,7 @@ final class RevenueSummaryService
      * }
      */
     private function collectionTotals(
+        User $user,
         CarbonImmutable $from,
         CarbonImmutable $to,
         string $periodType,
@@ -224,7 +266,10 @@ final class RevenueSummaryService
                     '=',
                     'payments.invoice_id',
                 )
-                ->whereNull('invoices.deleted_at')
+                ->whereIn(
+                    'invoices.id',
+                    $this->scopedInvoiceIds($user),
+                )
                 ->where(
                     'payments.status',
                     self::COMPLETED_PAYMENT,
@@ -312,6 +357,7 @@ final class RevenueSummaryService
      * }>
      */
     private function collectionChartSeries(
+        User $user,
         CarbonImmutable $from,
         CarbonImmutable $to,
     ): array {
@@ -333,7 +379,10 @@ final class RevenueSummaryService
                     '=',
                     'payments.invoice_id',
                 )
-                ->whereNull('invoices.deleted_at')
+                ->whereIn(
+                    'invoices.id',
+                    $this->scopedInvoiceIds($user),
+                )
                 ->where(
                     'payments.status',
                     self::COMPLETED_PAYMENT,
@@ -446,7 +495,7 @@ final class RevenueSummaryService
      *
      * @return array<string, int|float>
      */
-    private function outstandingSummary(): array
+    private function outstandingSummary(User $user): array
     {
         $startedAt = hrtime(true);
 
@@ -480,10 +529,13 @@ final class RevenueSummaryService
             $tolerance = self::AMOUNT_TOLERANCE;
 
             $row = DB::table('invoices')
-                ->whereNull('deleted_at')
-                ->where('currency', self::CURRENCY_ETB)
-                ->whereIn('status', self::OUTSTANDING_STATUSES)
-                ->where('balance_due', '>', 0)
+                ->whereIn(
+                    'invoices.id',
+                    $this->scopedInvoiceIds($user),
+                )
+                ->where('invoices.currency', self::CURRENCY_ETB)
+                ->whereIn('invoices.status', self::OUTSTANDING_STATUSES)
+                ->where('invoices.balance_due', '>', 0)
                 ->selectRaw("
                     COUNT(*) AS invoice_count,
                     COALESCE(SUM(subtotal), 0) AS subtotal,

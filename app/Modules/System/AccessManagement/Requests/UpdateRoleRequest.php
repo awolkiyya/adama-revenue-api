@@ -2,47 +2,39 @@
 
 namespace App\Modules\System\AccessManagement\Requests;
 
-use App\Models\Role;
-use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 class UpdateRoleRequest extends FormRequest
 {
-    /**
-     * Authorization is handled by RolePolicy in the controller.
-     *
-     * Example:
-     *
-     *     $this->authorize('update', $role);
-     */
     public function authorize(): bool
     {
-        return true;
+        return $this->user()?->can('roles.update') ?? false;
     }
 
     public function rules(): array
     {
-        /** @var Role|null $role */
         $role = $this->route('role');
+
+        $roleId = $role instanceof \Spatie\Permission\Models\Role
+            ? $role->id
+            : $role;
 
         return [
             'name' => [
-                'sometimes',
                 'required',
                 'string',
-                'max:100',
-
+                'min:2',
+                'max:255',
+                'regex:/^[A-Za-z0-9][A-Za-z0-9_\- ]*$/',
                 Rule::unique('roles', 'name')
-                    ->where('guard_name', 'api')
-                    ->whereNull('deleted_at')
-                    ->ignore($role?->id),
-            ],
-
-            'description' => [
-                'nullable',
-                'string',
-                'max:1000',
+                    ->ignore($roleId)
+                    ->where(
+                        fn ($query) => $query->where(
+                            'guard_name',
+                            'api'
+                        )
+                    ),
             ],
 
             'permissions' => [
@@ -51,36 +43,24 @@ class UpdateRoleRequest extends FormRequest
             ],
 
             'permissions.*' => [
+                'required',
                 'string',
-                Rule::exists('permissions', 'name')
-                    ->where('guard_name', 'api'),
+                'distinct',
             ],
         ];
     }
 
-    /**
-     * System roles are protected from renaming.
-     *
-     * Additional protection should also exist in the
-     * RolePolicy/service layer so this rule cannot be
-     * bypassed outside this request.
-     */
-    public function withValidator(Validator $validator): void
+    public function messages(): array
     {
-        $validator->after(function (Validator $validator) {
-            /** @var Role|null $role */
-            $role = $this->route('role');
+        return [
+            'name.regex' =>
+                'The role name may contain letters, numbers, spaces, hyphens, and underscores.',
 
-            if (
-                $role?->isSystem()
-                && $this->has('name')
-                && $this->input('name') !== $role->name
-            ) {
-                $validator->errors()->add(
-                    'name',
-                    'System roles cannot be renamed.'
-                );
-            }
-        });
+            'permissions.array' =>
+                'Permissions must be provided as an array.',
+
+            'permissions.*.distinct' =>
+                'Duplicate permissions are not allowed.',
+        ];
     }
 }

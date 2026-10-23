@@ -31,37 +31,63 @@ Route::prefix('system')
                 |--------------------------------------------------------------------------
                 */
 
-                Route::apiResource(
-                    'roles',
-                    RoleController::class
-                );
+                Route::prefix('roles')
+                    ->as('roles.')
+                    ->group(function () {
 
-                /*
-                |--------------------------------------------------------------------------
-                | Role Permissions
-                |--------------------------------------------------------------------------
-                */
+                        Route::get(
+                            '/',
+                            [RoleController::class, 'index']
+                        )->name('index');
 
-                Route::post(
-                    'roles/{role}/permissions',
-                    [RoleController::class, 'assignPermissions']
-                )->name('roles.permissions.assign');
+                        Route::post(
+                            '/',
+                            [RoleController::class, 'store']
+                        )->name('store');
 
-                Route::delete(
-                    'roles/{role}/permissions',
-                    [RoleController::class, 'revokePermissions']
-                )->name('roles.permissions.revoke');
+                        Route::get(
+                            '{role}',
+                            [RoleController::class, 'show']
+                        )->name('show');
 
-                /*
-                |--------------------------------------------------------------------------
-                | Role History
-                |--------------------------------------------------------------------------
-                */
+                        Route::match(
+                            ['put', 'patch'],
+                            '{role}',
+                            [RoleController::class, 'update']
+                        )->name('update');
 
-                Route::get(
-                    'roles/{role}/history',
-                    [RoleController::class, 'history']
-                )->name('roles.history');
+                        Route::delete(
+                            '{role}',
+                            [RoleController::class, 'destroy']
+                        )->name('destroy');
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Role Permissions
+                        |--------------------------------------------------------------------------
+                        */
+
+                        Route::post(
+                            '{role}/permissions',
+                            [RoleController::class, 'assignPermissions']
+                        )->name('permissions.assign');
+
+                        Route::delete(
+                            '{role}/permissions',
+                            [RoleController::class, 'revokePermissions']
+                        )->name('permissions.revoke');
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Role History
+                        |--------------------------------------------------------------------------
+                        */
+
+                        Route::get(
+                            '{role}/history',
+                            [RoleController::class, 'history']
+                        )->name('history');
+                    });
 
                 /*
                 |--------------------------------------------------------------------------

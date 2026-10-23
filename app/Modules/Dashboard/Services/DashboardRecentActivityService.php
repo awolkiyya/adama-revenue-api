@@ -4,15 +4,24 @@ declare(strict_types=1);
 
 namespace App\Modules\Dashboard\Services;
 
+use App\Models\Invoice;
+use App\Models\User;
+use App\Services\Authorization\AdministrativeScopeService;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
 final class DashboardRecentActivityService
 {
     private const ACTIVITY_LIMIT = 8;
 
+    public function __construct(
+        private readonly AdministrativeScopeService $administrativeScope,
+    ) {}
+
     /**
-     * Retrieve the latest payment activities for the dashboard.
+     * Retrieve the latest payment activities for the dashboard,
+     * restricted to the user's accessible administrative units.
      *
      * Uses verified_at when available, falling back to created_at.
      * The activity list is independent of the revenue reporting period.
@@ -28,7 +37,7 @@ final class DashboardRecentActivityService
      *     }>
      * }
      */
-    public function summarize(): array
+    public function summarize(User $user): array
     {
         $payments = DB::table('payments')
             ->join(
@@ -38,6 +47,10 @@ final class DashboardRecentActivityService
                 'payments.invoice_id',
             )
             ->whereNull('invoices.deleted_at')
+            ->whereIn(
+                'invoices.id',
+                $this->scopedInvoiceIds($user),
+            )
             ->select([
                 'payments.id',
                 'payments.payment_number',
@@ -68,6 +81,27 @@ final class DashboardRecentActivityService
                 ->values()
                 ->all(),
         ];
+    }
+
+    /**
+     * Build an Eloquent invoice-ID subquery scoped to the user's
+     * accessible administrative units.
+     *
+     * @return Builder<Invoice>
+     */
+    private function scopedInvoiceIds(User $user): Builder
+    {
+        $query = Invoice::query()
+            ->select('invoices.id')
+            ->whereNull('invoices.deleted_at');
+
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'invoices.administrative_unit_id',
+        );
+
+        return $query;
     }
 
     /**
