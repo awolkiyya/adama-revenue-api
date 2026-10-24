@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Citizens\Controllers;
 
 use App\Http\Controllers\Controller;
@@ -26,18 +28,32 @@ class CitizenController extends Controller
      */
     public function index(Request $request)
     {
-        $this->authorize(
-            'viewAny',
-            Citizen::class
-        );
+        $this->authorize('viewAny', Citizen::class);
 
         $citizens = $this->service->paginate(
             $request->all()
         );
 
+        $summary = [
+            'total_citizens' => Citizen::query()->count(),
+
+            'manual_registration' => Citizen::query()
+                ->where('source', 'MANUAL')
+                ->count(),
+
+            'imported_records' => Citizen::query()
+                ->where('source', 'IMPORT')
+                ->count(),
+
+            'external_system' => Citizen::query()
+                ->where('source', 'EXTERNAL')
+                ->count(),
+        ];
+
         return ApiResponse::success(
             CitizenResource::collection($citizens),
-            'Citizens retrieved successfully'
+            'Citizens retrieved successfully',
+            summary: $summary,
         );
     }
 
@@ -46,30 +62,19 @@ class CitizenController extends Controller
      * STORE CITIZEN
      * ============================================================
      */
-    public function store(
-        StoreCitizenRequest $request
-    ) {
-        $this->authorize(
-            'create',
-            Citizen::class
-        );
+    public function store(StoreCitizenRequest $request)
+    {
+        $this->authorize('create', Citizen::class);
 
         $validated = $request->validated();
 
-        $citizen = $this->service->store(
-            $validated
-        );
+        $citizen = $this->service->store($validated);
 
-        /*
-        |--------------------------------------------------------------------------
-        | AUDIT LOG
-        |--------------------------------------------------------------------------
-        */
         $this->systemLogService->created(
             resource: $citizen,
             module: 'Citizens',
             description: 'Citizen created successfully',
-            newValues: $citizen->getAttributes(),
+            newValues: $this->auditAttributes($citizen),
         );
 
         return ApiResponse::created(
@@ -88,13 +93,9 @@ class CitizenController extends Controller
      * SHOW CITIZEN
      * ============================================================
      */
-    public function show(
-        Citizen $citizen
-    ) {
-        $this->authorize(
-            'view',
-            $citizen
-        );
+    public function show(Citizen $citizen)
+    {
+        $this->authorize('view', $citizen);
 
         $citizen->load([
             'administrativeUnit',
@@ -102,11 +103,6 @@ class CitizenController extends Controller
             'updatedBy',
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | AUDIT VIEW
-        |--------------------------------------------------------------------------
-        */
         $this->systemLogService->viewed(
             resource: $citizen,
             module: 'Citizens',
@@ -128,17 +124,10 @@ class CitizenController extends Controller
         UpdateCitizenRequest $request,
         Citizen $citizen
     ) {
-        $this->authorize(
-            'update',
-            $citizen
-        );
+        $this->authorize('update', $citizen);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Capture original values BEFORE update
-        |--------------------------------------------------------------------------
-        */
-        $oldValues = $citizen->getAttributes();
+        // Capture the persisted values before the update.
+        $oldValues = $this->auditAttributes($citizen);
 
         $validated = $request->validated();
 
@@ -147,18 +136,31 @@ class CitizenController extends Controller
             $validated
         );
 
-        /*
-        |--------------------------------------------------------------------------
-        | AUDIT LOG
-        |--------------------------------------------------------------------------
-        */
-        $this->systemLogService->updated(
-            resource: $updated,
-            module: 'Citizens',
-            oldValues: $oldValues,
-            newValues: $updated->getAttributes(),
-            description: 'Citizen updated successfully',
-        );
+        // Capture the persisted values after the update.
+        $newValues = $this->auditAttributes($updated);
+
+        // Include only fields whose values actually changed.
+        $changedOldValues = [];
+        $changedNewValues = [];
+
+        foreach ($newValues as $key => $newValue) {
+            $oldValue = $oldValues[$key] ?? null;
+
+            if ($oldValue !== $newValue) {
+                $changedOldValues[$key] = $oldValue;
+                $changedNewValues[$key] = $newValue;
+            }
+        }
+
+        if ($changedNewValues !== []) {
+            $this->systemLogService->updated(
+                resource: $updated,
+                module: 'Citizens',
+                oldValues: $changedOldValues,
+                newValues: $changedNewValues,
+                description: 'Citizen updated successfully',
+            );
+        }
 
         return ApiResponse::success(
             new CitizenResource(
@@ -173,107 +175,31 @@ class CitizenController extends Controller
 
     /**
      * ============================================================
-     * DELETE CITIZEN
-     * ============================================================
-     */
-    public function destroy(
-        Citizen $citizen
-    ) {
-        $this->authorize(
-            'delete',
-            $citizen
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Capture values BEFORE deletion
-        |--------------------------------------------------------------------------
-        */
-        $oldValues = $citizen->getAttributes();
-
-        $this->service->delete(
-            $citizen
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | AUDIT LOG
-        |--------------------------------------------------------------------------
-        */
-        $this->systemLogService->deleted(
-            resource: $citizen,
-            module: 'Citizens',
-            oldValues: $oldValues,
-            description: 'Citizen deleted successfully',
-        );
-
-        return ApiResponse::success(
-            null,
-            'Citizen deleted successfully'
-        );
-    }
-
-    /**
-     * ============================================================
      * UPDATE CITIZEN STATUS
      * ============================================================
-     *
-     * Activates or deactivates a citizen.
-     *
-     * Policy:
-     *
-     *     updateStatus
-     *
-     * The policy should check:
-     *
-     *     1. citizens.update permission
-     *     2. Citizen organizational scope
      */
-    public function updateStatus(
-        Citizen $citizen
-    ) {
-        $this->authorize(
-            'updateStatus',
-            $citizen
-        );
+    public function updateStatus(Citizen $citizen)
+    {
+        // Do not leave status changes unprotected.
+        $this->authorize('updateStatus', $citizen);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Capture old status
-        |--------------------------------------------------------------------------
-        */
         $oldStatus = (bool) $citizen->is_active;
 
-        /*
-        |--------------------------------------------------------------------------
-        | Toggle status
-        |--------------------------------------------------------------------------
-        */
-        $updated = $this->service->toggleStatus(
-            $citizen
-        );
+        $updated = $this->service->toggleStatus($citizen);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Capture new status
-        |--------------------------------------------------------------------------
-        */
         $newStatus = (bool) $updated->is_active;
 
-        /*
-        |--------------------------------------------------------------------------
-        | AUDIT STATUS CHANGE
-        |--------------------------------------------------------------------------
-        */
-        $this->systemLogService->statusChanged(
-            resource: $updated,
-            module: 'Citizens',
-            oldStatus: $oldStatus,
-            newStatus: $newStatus,
-            description: $newStatus
-                ? 'Citizen activated successfully'
-                : 'Citizen deactivated successfully',
-        );
+        if ($oldStatus !== $newStatus) {
+            $this->systemLogService->statusChanged(
+                resource: $updated,
+                module: 'Citizens',
+                oldStatus: $oldStatus,
+                newStatus: $newStatus,
+                description: $newStatus
+                    ? 'Citizen activated successfully'
+                    : 'Citizen deactivated successfully',
+            );
+        }
 
         return ApiResponse::success(
             new CitizenResource(
@@ -285,5 +211,32 @@ class CitizenController extends Controller
             'Citizen status updated successfully'
         );
     }
-}
 
+    /**
+     * ============================================================
+     * AUDIT ATTRIBUTE WHITELIST
+     * ============================================================
+     *
+     * Record only fields suitable for the citizen audit trail.
+     * Do not log every model attribute by default.
+     */
+    private function auditAttributes(Citizen $citizen): array
+    {
+        $attributes = $citizen->only([
+            'id',
+            'citizen_uid',
+            'national_id',
+            'phone',
+            'gender',
+            'source',
+            'is_active',
+            'administrative_unit_id',
+        ]);
+
+        // Normalize values for reliable comparisons and JSON storage.
+        return array_map(
+            static fn ($value) => $value,
+            $attributes
+        );
+    }
+}

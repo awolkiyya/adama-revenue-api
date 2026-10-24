@@ -1,20 +1,67 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Users\Services;
 
+use App\Models\File;
 use App\Models\User;
-use App\Services\Storage\ImageService;
+use App\Services\Storage\StorageService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Spatie\Permission\Models\Role;
+use Throwable;
 
 class UserService
 {
     public function __construct(
-        protected ImageService $imageService
+        protected StorageService $storageService,
     ) {}
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOGGING HELPERS
+    |--------------------------------------------------------------------------
+    */
+
+    private function logContext(array $extra = []): array
+    {
+        $request = app()->bound('request') ? request() : null;
+
+        return array_merge([
+            'request_id' => $request
+                ? (
+                    $request->attributes->get('request_id')
+                    ?? $request->header('X-Request-ID')
+                )
+                : null,
+            'actor_id' => auth()->id(),
+        ], $extra);
+    }
+
+    private function logFailure(
+        string $operation,
+        Throwable $exception,
+        array $context = [],
+    ): void {
+        Log::error(
+            "UserService operation failed: {$operation}",
+            $this->logContext(array_merge($context, [
+                'exception_class' => get_class($exception),
+                'exception_message' => Str::limit(
+                    $exception->getMessage(),
+                    300,
+                ),
+                'exception_file' => $exception->getFile(),
+                'exception_line' => $exception->getLine(),
+            ])),
+        );
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -22,148 +69,100 @@ class UserService
     |--------------------------------------------------------------------------
     */
 
-    public function query()
+    public function query(): Builder
     {
-        $query = User::with([
-            'roles',
-            'permissions',
-            'avatar',
-            'sector',
-            'administrativeUnit',
-        ])
-            ->where('user_type', 'employee')
-            ->where('id', '!=', auth()->id())
-            ->latest();
+        $filters = [
+            'search_applied' => filled(request()->get('search')),
+            'role' => request()->get('role'),
+            'level' => request()->get('level'),
+            'is_active' => request()->has('is_active')
+                ? request()->boolean('is_active')
+                : null,
+            'sector_filter_applied' => filled(request()->get('sector_id')),
+            'parent_unit_filter_applied' => filled(
+                request()->get('parent_admin_unit_id'),
+            ),
+        ];
 
-        /*
-        |--------------------------------------------------------------------------
-        | SEARCH
-        |--------------------------------------------------------------------------
-        */
+        Log::debug(
+            'UserService query started',
+            $this->logContext(['filters' => $filters]),
+        );
 
-        if ($search = request()->get('search')) {
-
-            $query->where(function ($q) use ($search) {
-
-                $q->where(
-                    'name',
-                    'like',
-                    "%{$search}%"
-                )
-                    ->orWhere(
-                        'email',
-                        'like',
-                        "%{$search}%"
-                    )
-                    ->orWhere(
-                        'phone',
-                        'like',
-                        "%{$search}%"
-                    );
-            });
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | ROLE FILTER
-        |--------------------------------------------------------------------------
-        |
-        | The list endpoint may receive either:
-        |
-        | role=SYSTEM_ADMIN
-        |
-        | or another role name.
-        |
-        | Spatie's role() scope works with the role name.
-        |
-        */
-
-        if ($role = request()->get('role')) {
-
-            if ($role !== 'ALL') {
-
-                $query->role($role);
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | LEVEL FILTER
-        |--------------------------------------------------------------------------
-        */
-
-        if ($level = request()->get('level')) {
-
-            if ($level !== 'ALL') {
-
-                $query->whereHas(
+        try {
+            $query = User::query()
+                ->with([
+                    'roles',
+                    'permissions',
+                    'avatar',
+                    'sector',
                     'administrativeUnit',
-                    function ($q) use ($level) {
+                ])
+                ->where('user_type', 'employee')
+                ->where('id', '!=', auth()->id())
+                ->latest();
 
-                        $q->where(
-                            'level',
-                            $level
-                        );
-                    }
-                );
+            if ($search = request()->get('search')) {
+                $query->where(function (Builder $q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%")
+                        ->orWhere('phone', 'like', "%{$search}%");
+                });
             }
-        }
 
-        /*
-        |--------------------------------------------------------------------------
-        | ACTIVE FILTER
-        |--------------------------------------------------------------------------
-        */
+            if ($role = request()->get('role')) {
+                if ($role !== 'ALL') {
+                    $query->role($role);
+                }
+            }
 
-        if (!is_null(
-            request()->get('is_active')
-        )) {
-
-            $query->where(
-                'is_active',
-                request()->boolean('is_active')
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | SECTOR FILTER
-        |--------------------------------------------------------------------------
-        */
-
-        if ($sectorId = request()->get('sector_id')) {
-
-            $query->where(
-                'sector_id',
-                $sectorId
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | PARENT ADMINISTRATIVE UNIT FILTER
-        |--------------------------------------------------------------------------
-        */
-
-        if ($parentAdminUnitId = request()->get(
-            'parent_admin_unit_id'
-        )) {
-
-            $query->whereHas(
-                'administrativeUnit',
-                function ($q) use (
-                    $parentAdminUnitId
-                ) {
-
-                    $q->where(
-                        'parent_id',
-                        $parentAdminUnitId
+            if ($level = request()->get('level')) {
+                if ($level !== 'ALL') {
+                    $query->whereHas(
+                        'administrativeUnit',
+                        fn (Builder $q) => $q->where('level', $level),
                     );
                 }
-            );
-        }
+            }
 
-        return $query;
+            if (request()->has('is_active')) {
+                $query->where(
+                    'is_active',
+                    request()->boolean('is_active'),
+                );
+            }
+
+            if ($sectorId = request()->get('sector_id')) {
+                $query->where('sector_id', $sectorId);
+            }
+
+            if ($parentAdminUnitId = request()->get('parent_admin_unit_id')) {
+                $query->whereHas(
+                    'administrativeUnit',
+                    fn (Builder $q) => $q->where(
+                        'parent_id',
+                        $parentAdminUnitId,
+                    ),
+                );
+            }
+
+            Log::debug(
+                'UserService query builder created',
+                $this->logContext([
+                    'user_type' => 'employee',
+                    'current_user_excluded' => true,
+                    'filters_applied' => $filters,
+                ]),
+            );
+
+            return $query;
+        } catch (Throwable $exception) {
+            $this->logFailure('query', $exception, [
+                'filters' => $filters,
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
@@ -174,139 +173,120 @@ class UserService
 
     public function create(array $data): User
     {
-        return DB::transaction(function () use ($data) {
+        $operationId = (string) Str::uuid();
+        $roleId = $data['role_id'] ?? null;
 
-            /*
-            |--------------------------------------------------------------------------
-            | RESOLVE ROLE BY ROLE ID
-            |--------------------------------------------------------------------------
-            |
-            | Frontend sends:
-            |
-            | role_id: 2
-            |
-            | We resolve the actual Spatie Role here.
-            |
-            */
+        Log::info(
+            'User creation started',
+            $this->logContext([
+                'operation_id' => $operationId,
+                'submitted_fields' => array_keys($data),
+                'avatar_submitted' => (
+                    $data['avatar'] ?? null
+                ) instanceof UploadedFile,
+                'requested_role_id' => $roleId,
+            ]),
+        );
 
-            $roleId = $data['role_id'] ?? null;
+        try {
+            $user = DB::transaction(function () use (
+                $data,
+                $operationId,
+                $roleId,
+            ): User {
+                $role = $this->resolveRole($roleId);
 
-            $role = $this->resolveRole(
-                $roleId
-            );
+                if ($role) {
+                    $data['label'] = Str::of($role->name)
+                        ->replace('_', ' ')
+                        ->title()
+                        ->toString();
+                }
 
-            /*
-            |--------------------------------------------------------------------------
-            | PASSWORD
-            |--------------------------------------------------------------------------
-            */
+                if (!empty($data['password'])) {
+                    $data['password'] = Hash::make($data['password']);
+                }
 
-            if (!empty($data['password'])) {
-
-                $data['password'] = Hash::make(
-                    $data['password']
+                $uploadedAvatar = $this->uploadAvatar(
+                    $data,
+                    $operationId,
                 );
-            }
 
-            /*
-            |--------------------------------------------------------------------------
-            | USER LABEL
-            |--------------------------------------------------------------------------
-            |
-            | Example:
-            |
-            | SYSTEM_ADMIN
-            |      ↓
-            | System Admin
-            |
-            */
+                unset($data['role_id'], $data['avatar']);
 
-            if ($role) {
+                $user = User::create($data);
 
-                $data['label'] = Str::of(
-                    $role->name
-                )
-                    ->replace('_', ' ')
-                    ->title()
-                    ->toString();
-            }
+                Log::info(
+                    'User database record created',
+                    $this->logContext([
+                        'operation_id' => $operationId,
+                        'user_id' => $user->getKey(),
+                    ]),
+                );
 
-            /*
-            |--------------------------------------------------------------------------
-            | AVATAR
-            |--------------------------------------------------------------------------
-            */
+                if ($uploadedAvatar) {
+                    $this->storageService->attachToModel(
+                        $uploadedAvatar,
+                        $user,
+                    );
 
-            $this->handleAvatarUpload(
-                $data
-            );
+                    Log::info(
+                        'Avatar attached to new user',
+                        $this->logContext([
+                            'operation_id' => $operationId,
+                            'user_id' => $user->getKey(),
+                            'avatar_id' => $uploadedAvatar->getKey(),
+                            'collection' => $uploadedAvatar->collection,
+                            'fileable_id' => $uploadedAvatar->fileable_id,
+                            'fileable_type' => $uploadedAvatar->fileable_type,
+                        ]),
+                    );
+                }
 
-            /*
-            |--------------------------------------------------------------------------
-            | REMOVE RAW AVATAR
-            |--------------------------------------------------------------------------
-            */
+                if ($role) {
+                    $user->syncRoles([$role]);
+                } else {
+                    Log::warning(
+                        'User created without a resolved role',
+                        $this->logContext([
+                            'operation_id' => $operationId,
+                            'user_id' => $user->getKey(),
+                            'requested_role_id' => $roleId,
+                        ]),
+                    );
+                }
 
-            unset(
-                $data['avatar']
-            );
+                return $user;
+            });
 
-            /*
-            |--------------------------------------------------------------------------
-            | REMOVE ROLE_ID
-            |--------------------------------------------------------------------------
-            |
-            | IMPORTANT:
-            |
-            | role_id is NOT stored in users table.
-            |
-            | Spatie stores the relationship in:
-            |
-            | model_has_roles
-            |
-            */
-
-            unset(
-                $data['role_id']
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | CREATE USER
-            |--------------------------------------------------------------------------
-            */
-
-            $user = User::create(
-                $data
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | ASSIGN ROLE
-            |--------------------------------------------------------------------------
-            */
-
-            if ($role) {
-
-                $user->syncRoles([
-                    $role,
-                ]);
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | RETURN USER
-            |--------------------------------------------------------------------------
-            */
-
-            return $user->load([
+            $user->load([
                 'roles',
                 'permissions',
                 'avatar',
                 'sector',
                 'administrativeUnit',
             ]);
-        });
+
+            Log::info(
+                'User creation completed',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'user_id' => $user->getKey(),
+                    'avatar_loaded' => $user->avatar !== null,
+                    'avatar_id' => $user->avatar?->getKey(),
+                    'role_names' => $user->roles->pluck('name')->values()->all(),
+                ]),
+            );
+
+            return $user;
+        } catch (Throwable $exception) {
+            $this->logFailure('create', $exception, [
+                'operation_id' => $operationId,
+                'requested_role_id' => $roleId,
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
@@ -315,155 +295,159 @@ class UserService
     |--------------------------------------------------------------------------
     */
 
-    public function update(
-        User $user,
-        array $data
-    ): User {
+    public function update(User $user, array $data): User
+    {
+        $operationId = (string) Str::uuid();
+        $userId = $user->getKey();
 
-        return DB::transaction(
-            function () use (
+        $roleId = array_key_exists('role_id', $data)
+            ? $data['role_id']
+            : $user->roles()->first()?->getKey();
+
+        Log::info(
+            'User update started',
+            $this->logContext([
+                'operation_id' => $operationId,
+                'target_user_id' => $userId,
+                'submitted_fields' => array_keys($data),
+                'avatar_submitted' => (
+                    $data['avatar'] ?? null
+                ) instanceof UploadedFile,
+                'requested_role_id' => $roleId,
+                'existing_avatar_id' => $user->avatar?->getKey(),
+            ]),
+        );
+
+        $oldAvatar = null;
+        $newAvatar = null;
+
+        try {
+            $user = DB::transaction(function () use (
                 $user,
-                $data
-            ) {
-
-                /*
-                |--------------------------------------------------------------------------
-                | RESOLVE ROLE
-                |--------------------------------------------------------------------------
-                |
-                | If role_id was supplied, use the new role.
-                |
-                | If role_id was not supplied, preserve
-                | the user's current role.
-                |
-                */
-
-                $roleId =
-                    array_key_exists(
-                        'role_id',
-                        $data
-                    )
-                        ? $data['role_id']
-                        : $user->roles->first()?->id;
-
-                $role =
-                    $this->resolveRole(
-                        $roleId
-                    );
-
-                /*
-                |--------------------------------------------------------------------------
-                | UPDATE LABEL
-                |--------------------------------------------------------------------------
-                */
+                $data,
+                $operationId,
+                $roleId,
+                &$oldAvatar,
+                &$newAvatar,
+            ): User {
+                $role = $this->resolveRole($roleId);
 
                 if ($role) {
-
-                    $data['label'] = Str::of(
-                        $role->name
-                    )
+                    $data['label'] = Str::of($role->name)
                         ->replace('_', ' ')
                         ->title()
                         ->toString();
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | PASSWORD
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    isset($data['password']) &&
-                    $data['password'] !== ''
-                ) {
-
-                    $data['password'] =
-                        Hash::make(
-                            $data['password']
-                        );
+                if (isset($data['password']) && $data['password'] !== '') {
+                    $data['password'] = Hash::make($data['password']);
                 } else {
+                    unset($data['password']);
+                }
 
-                    unset(
-                        $data['password']
+                $avatarFile = $data['avatar'] ?? null;
+
+                unset($data['avatar'], $data['role_id']);
+
+                if ($avatarFile instanceof UploadedFile) {
+                    $oldAvatar = $user->avatar()->first();
+
+                    $newAvatar = $this->uploadAvatarFile(
+                        $avatarFile,
+                        $operationId,
+                    );
+
+                    if ($oldAvatar) {
+                        $this->storageService->detach($oldAvatar);
+
+                        Log::info(
+                            'Previous avatar detached',
+                            $this->logContext([
+                                'operation_id' => $operationId,
+                                'user_id' => $user->getKey(),
+                                'old_avatar_id' => $oldAvatar->getKey(),
+                            ]),
+                        );
+                    }
+
+                    $this->storageService->attachToModel(
+                        $newAvatar,
+                        $user,
+                    );
+
+                    Log::info(
+                        'New avatar attached during user update',
+                        $this->logContext([
+                            'operation_id' => $operationId,
+                            'user_id' => $user->getKey(),
+                            'new_avatar_id' => $newAvatar->getKey(),
+                            'collection' => $newAvatar->collection,
+                            'fileable_id' => $newAvatar->fileable_id,
+                            'fileable_type' => $newAvatar->fileable_type,
+                        ]),
                     );
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | AVATAR
-                |--------------------------------------------------------------------------
-                */
-
-                $this->handleAvatarUpload(
-                    $data,
-                    $user
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | REMOVE RAW AVATAR
-                |--------------------------------------------------------------------------
-                */
-
-                unset(
-                    $data['avatar']
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | REMOVE ROLE_ID
-                |--------------------------------------------------------------------------
-                |
-                | Again, role_id does not belong
-                | in the users table.
-                |
-                */
-
-                unset(
-                    $data['role_id']
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | UPDATE USER
-                |--------------------------------------------------------------------------
-                */
-
-                $user->update(
-                    $data
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | SYNC ROLE
-                |--------------------------------------------------------------------------
-                */
+                $user->update($data);
 
                 if ($role) {
-
-                    $user->syncRoles([
-                        $role,
-                    ]);
+                    $user->syncRoles([$role]);
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | RETURN UPDATED USER
-                |--------------------------------------------------------------------------
-                */
+                return $user;
+            });
 
-                return $user
-                    ->refresh()
-                    ->load([
-                        'roles',
-                        'permissions',
-                        'avatar',
-                        'sector',
-                        'administrativeUnit',
-                    ]);
+            // Delete the old physical file only after the database commits.
+            if (
+                $oldAvatar
+                && $newAvatar
+                && (string) $oldAvatar->getKey()
+                    !== (string) $newAvatar->getKey()
+            ) {
+                try {
+                    $this->storageService->delete($oldAvatar);
+                } catch (Throwable $cleanupException) {
+                    $this->logFailure(
+                        'deletePreviousAvatar',
+                        $cleanupException,
+                        [
+                            'operation_id' => $operationId,
+                            'user_id' => $userId,
+                            'old_avatar_id' => $oldAvatar->getKey(),
+                        ],
+                    );
+                }
             }
-        );
+
+            $user->refresh()->load([
+                'roles',
+                'permissions',
+                'avatar',
+                'sector',
+                'administrativeUnit',
+            ]);
+
+            Log::info(
+                'User update completed',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'user_id' => $user->getKey(),
+                    'avatar_loaded' => $user->avatar !== null,
+                    'avatar_id' => $user->avatar?->getKey(),
+                    'role_names' => $user->roles->pluck('name')->values()->all(),
+                ]),
+            );
+
+            return $user;
+        } catch (Throwable $exception) {
+            $this->logFailure('update', $exception, [
+                'operation_id' => $operationId,
+                'target_user_id' => $userId,
+                'requested_role_id' => $roleId,
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
@@ -472,35 +456,60 @@ class UserService
     |--------------------------------------------------------------------------
     */
 
-    public function delete(
-        User $user
-    ): bool {
+    public function delete(User $user): bool
+    {
+        $operationId = (string) Str::uuid();
+        $userId = $user->getKey();
 
-        return DB::transaction(
-            function () use ($user) {
+        Log::info(
+            'User deletion started',
+            $this->logContext([
+                'operation_id' => $operationId,
+                'target_user_id' => $userId,
+            ]),
+        );
 
-                /*
-                |--------------------------------------------------------------------------
-                | DELETE AVATAR
-                |--------------------------------------------------------------------------
-                */
+        try {
+            $avatar = $user->avatar()->first();
 
-                if ($user->avatar_file_id) {
+            $deleted = DB::transaction(
+                fn (): bool => (bool) $user->delete(),
+            );
 
-                    $this->imageService->deleteById(
-                        $user->avatar_file_id
+            if ($deleted && $avatar) {
+                try {
+                    $this->storageService->delete($avatar);
+                } catch (Throwable $cleanupException) {
+                    $this->logFailure(
+                        'deleteUserAvatar',
+                        $cleanupException,
+                        [
+                            'operation_id' => $operationId,
+                            'user_id' => $userId,
+                            'avatar_id' => $avatar->getKey(),
+                        ],
                     );
                 }
-
-                /*
-                |--------------------------------------------------------------------------
-                | DELETE USER
-                |--------------------------------------------------------------------------
-                */
-
-                return $user->delete();
             }
-        );
+
+            Log::info(
+                'User deletion completed',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'user_id' => $userId,
+                    'deleted' => $deleted,
+                ]),
+            );
+
+            return $deleted;
+        } catch (Throwable $exception) {
+            $this->logFailure('delete', $exception, [
+                'operation_id' => $operationId,
+                'target_user_id' => $userId,
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
@@ -509,16 +518,37 @@ class UserService
     |--------------------------------------------------------------------------
     */
 
-    public function updatePassword(
-        User $user,
-        array $data
-    ): bool {
+    public function updatePassword(User $user, array $data): bool
+    {
+        $operationId = (string) Str::uuid();
 
-        return $user->update([
-            'password' => Hash::make(
-                $data['password']
-            ),
-        ]);
+        try {
+            if (empty($data['password'])) {
+                throw new RuntimeException('A password is required.');
+            }
+
+            $updated = $user->update([
+                'password' => Hash::make($data['password']),
+            ]);
+
+            Log::info(
+                'User password update completed',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'target_user_id' => $user->getKey(),
+                    'updated' => $updated,
+                ]),
+            );
+
+            return $updated;
+        } catch (Throwable $exception) {
+            $this->logFailure('updatePassword', $exception, [
+                'operation_id' => $operationId,
+                'target_user_id' => $user->getKey(),
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
@@ -527,196 +557,211 @@ class UserService
     |--------------------------------------------------------------------------
     */
 
-    public function toggleStatus(
-        User $user
-    ): User {
+    public function toggleStatus(User $user): User
+    {
+        $operationId = (string) Str::uuid();
+        $oldStatus = (bool) $user->is_active;
 
-        $user->update([
-            'is_active' => !$user->is_active,
-        ]);
+        try {
+            $user->update([
+                'is_active' => !$oldStatus,
+            ]);
 
-        return $user->refresh();
+            $user->refresh();
+
+            Log::info(
+                'User status toggle completed',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'target_user_id' => $user->getKey(),
+                    'old_status' => $oldStatus,
+                    'new_status' => (bool) $user->is_active,
+                ]),
+            );
+
+            return $user;
+        } catch (Throwable $exception) {
+            $this->logFailure('toggleStatus', $exception, [
+                'operation_id' => $operationId,
+                'target_user_id' => $user->getKey(),
+                'old_status' => $oldStatus,
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
     |--------------------------------------------------------------------------
     | RESOLVE ROLE
     |--------------------------------------------------------------------------
-    |
-    | Frontend:
-    |
-    | role_id = 2
-    |
-    | Backend:
-    |
-    | Role::where('id', 2)
-    |
-    | IMPORTANT:
-    |
-    | The role ID is an integer/bigint.
-    |
     */
 
-    private function resolveRole(
-        mixed $roleId
-    ): ?Role {
-
-        if (
-            is_null($roleId) ||
-            $roleId === ''
-        ) {
+    private function resolveRole(mixed $roleId): ?Role
+    {
+        if ($roleId === null || $roleId === '') {
             return null;
         }
 
-        return Role::query()
-            ->whereKey(
-                (int) $roleId
-            )
-            ->where(
-                'guard_name',
-                'api'
-            )
-            ->first();
+        try {
+            $role = Role::query()
+                ->whereKey($roleId)
+                ->where('guard_name', 'api')
+                ->first();
+
+            if (!$role) {
+                Log::warning(
+                    'Requested API role was not found',
+                    $this->logContext([
+                        'requested_role_id' => $roleId,
+                        'expected_guard' => 'api',
+                    ]),
+                );
+            }
+
+            return $role;
+        } catch (Throwable $exception) {
+            $this->logFailure('resolveRole', $exception, [
+                'requested_role_id' => $roleId,
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | HANDLE AVATAR UPLOAD
+    | UPLOAD AVATAR
     |--------------------------------------------------------------------------
     */
 
-    private function handleAvatarUpload(
+    private function uploadAvatar(
         array &$data,
-        ?User $user = null
-    ): void {
+        string $operationId,
+    ): ?File {
+        $file = $data['avatar'] ?? null;
 
-        /*
-        |--------------------------------------------------------------------------
-        | NO FILE
-        |--------------------------------------------------------------------------
-        */
+        unset($data['avatar']);
 
-        if (
-            empty($data['avatar']) ||
-            !(
-                $data['avatar']
-                instanceof UploadedFile
-            )
-        ) {
+        if (!$file instanceof UploadedFile) {
+            Log::debug(
+                'Avatar upload skipped',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'avatar_submitted' => false,
+                ]),
+            );
 
-            return;
+            return null;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | UPLOAD NEW IMAGE
-        |--------------------------------------------------------------------------
-        */
+        return $this->uploadAvatarFile($file, $operationId);
+    }
 
-        $uploaded =
-            $this->imageService
-                ->uploadProfileImage(
-                    file: $data['avatar'],
-                    uploadedBy: auth()->id()
-                );
+    private function uploadAvatarFile(
+        UploadedFile $file,
+        string $operationId,
+    ): File {
+        Log::info(
+            'Avatar file received by UserService',
+            $this->logContext([
+                'operation_id' => $operationId,
+                'extension' => $file->getClientOriginalExtension(),
+                'mime_type' => $file->getMimeType(),
+                'size_bytes' => $file->getSize(),
+                'is_valid' => $file->isValid(),
+                'upload_error_code' => $file->getError(),
+            ]),
+        );
 
-        if (!$uploaded) {
-            return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | UPDATE EXISTING USER AVATAR
-        |--------------------------------------------------------------------------
-        */
-
-        if ($user) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | DELETE OLD AVATAR
-            |--------------------------------------------------------------------------
-            */
-
-            $oldAvatar =
-                $user->avatar;
-
-            if ($oldAvatar) {
-
-                $this->imageService->delete(
-                    $oldAvatar
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | ATTACH NEW AVATAR
-            |--------------------------------------------------------------------------
-            */
-
-            $user->avatar()->save(
-                $uploaded
+        if (!$file->isValid()) {
+            throw new RuntimeException(
+                'The uploaded avatar file is invalid.',
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | REMOVE RAW UPLOAD DATA
-        |--------------------------------------------------------------------------
-        */
+        try {
+            $checksum = hash_file('sha256', $file->getRealPath());
 
-        unset(
-            $data['avatar']
-        );
+            Log::debug(
+                'Calling StorageService::upload for avatar',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'folder' => 'avatars',
+                    'collection' => 'AVATAR',
+                    'visibility' => 'PRIVATE',
+                    'size_bytes' => $file->getSize(),
+                ]),
+            );
+
+            $avatar = $this->storageService->upload(
+                uploadedFile: $file,
+                folder: 'avatars',
+                uploadedBy: auth()->id()
+                    ? (string) auth()->id()
+                    : null,
+                category: 'AVATAR',
+                visibility: 'private',
+            );
+
+            /*
+             * StorageService is shared by other modules. Normalize the
+             * returned record here for the File model's actual schema,
+             * without changing upload behavior for other file categories.
+             */
+            $avatar->forceFill([
+                'collection' => 'AVATAR',
+                'size_bytes' => $file->getSize(),
+                'checksum' => $checksum !== false ? $checksum : null,
+                'visibility' => 'PRIVATE',
+            ])->save();
+
+            $avatar->refresh();
+
+            Log::info(
+                'StorageService avatar upload completed',
+                $this->logContext([
+                    'operation_id' => $operationId,
+                    'file_id' => $avatar->getKey(),
+                    'file_uuid' => $avatar->uuid,
+                    'collection' => $avatar->collection,
+                    'size_bytes' => $avatar->size_bytes,
+                    'visibility' => $avatar->visibility,
+                    'status' => $avatar->status,
+                    'disk' => $avatar->disk,
+                    'path' => $avatar->path,
+                    'fileable_id' => $avatar->fileable_id,
+                    'fileable_type' => $avatar->fileable_type,
+                ]),
+            );
+
+            return $avatar;
+        } catch (Throwable $exception) {
+            $this->logFailure('uploadAvatarFile', $exception, [
+                'operation_id' => $operationId,
+                'size_bytes' => $file->getSize(),
+            ]);
+
+            throw $exception;
+        }
     }
 
     /*
     |--------------------------------------------------------------------------
     | RESOLVE LOCATION HIERARCHY
     |--------------------------------------------------------------------------
-    |
-    | Kept as a separate helper if another part
-    | of the module uses it.
-    |
-    | NOTE:
-    |
-    | This method no longer reads $data['role'].
-    | It uses role_id and resolves the role safely.
-    |
     */
 
     private function resolveLocationHierarchy(
         array $data,
-        User $user
+        User $user,
     ): array {
+        $roleId = array_key_exists('role_id', $data)
+            ? $data['role_id']
+            : $user->roles()->first()?->getKey();
 
-        /*
-        |--------------------------------------------------------------------------
-        | RESOLVE ROLE ID
-        |--------------------------------------------------------------------------
-        */
-
-        $roleId =
-            array_key_exists(
-                'role_id',
-                $data
-            )
-                ? $data['role_id']
-                : $user->roles->first()?->id;
-
-        $role =
-            $this->resolveRole(
-                $roleId
-            );
-
-        $roleName =
-            $role?->name;
-
-        /*
-        |--------------------------------------------------------------------------
-        | CITY-ONLY ROLES
-        |--------------------------------------------------------------------------
-        */
+        $role = $this->resolveRole($roleId);
+        $roleName = $role?->name;
 
         $cityOnlyRoles = [
             'SYSTEM_ADMIN',
@@ -725,61 +770,20 @@ class UserService
         ];
 
         if (
-            $roleName &&
-            in_array(
-                $roleName,
-                $cityOnlyRoles,
-                true
-            )
+            $roleName
+            && in_array($roleName, $cityOnlyRoles, true)
         ) {
-
             $data['subcity_id'] = null;
-
             $data['wereda_id'] = null;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | REQUEST VALUES ONLY
-        |--------------------------------------------------------------------------
-        */
-
-        $cityId =
-            $data['city_id'] ?? null;
-
-        $subcityId =
-            $data['subcity_id'] ?? null;
-
-        $weredaId =
-            $data['wereda_id'] ?? null;
-
-        /*
-        |--------------------------------------------------------------------------
-        | WEREDA
-        |--------------------------------------------------------------------------
-        */
-
-        if (empty($weredaId)) {
-
+        if (empty($data['wereda_id'] ?? null)) {
             $data['wereda_id'] = null;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | SUBCITY
-        |--------------------------------------------------------------------------
-        */
-
-        if (empty($subcityId)) {
-
+        if (empty($data['subcity_id'] ?? null)) {
             $data['subcity_id'] = null;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | NO DATABASE FALLBACK
-        |--------------------------------------------------------------------------
-        */
 
         return $data;
     }

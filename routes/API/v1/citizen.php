@@ -49,7 +49,7 @@ Route::prefix('citizens')
 
         Route::patch('/{citizen}/status', [
             CitizenController::class,
-            'toggleStatus'
+            'updateStatus'
         ]);
 
 
@@ -77,11 +77,6 @@ Route::prefix('citizens')
         Route::put('/{citizen}', [
             CitizenController::class,
             'update'
-        ]);
-
-        Route::delete('/{citizen}', [
-            CitizenController::class,
-            'destroy'
         ]);
 
     });

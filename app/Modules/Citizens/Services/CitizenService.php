@@ -1,9 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Citizens\Services;
 
-use App\Models\Citizen;
 use App\Models\AdministrativeUnit;
+use App\Models\Citizen;
+use App\Services\DocumentSequenceService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -11,237 +14,211 @@ use Illuminate\Support\Str;
 
 class CitizenService
 {
-    /**
-     * ============================================================
-     * GET PAGINATED CITIZENS
-     * ============================================================
-     */
-    public function paginate(array $filters = []): LengthAwarePaginator
-    {
-        return Citizen::query()
+    public function __construct(
+        private readonly DocumentSequenceService $documentSequenceService,
+    ) {}
 
-            ->with([
-                'administrativeUnit',
-                'createdBy',
-                'updatedBy',
-            ])
+   /**
+ * Get paginated citizens with search and filters.
+ *
+ * Supported filters:
+ * - search
+ * - status: ACTIVE | INACTIVE
+ * - is_active: true | false | 1 | 0
+ * - gender: MALE | FEMALE
+ * - source: MANUAL | other supported sources
+ * - per_page
+ */
+public function paginate(array $filters = []): LengthAwarePaginator
+{
+    return Citizen::query()
+        ->with([
+            'administrativeUnit',
+            'createdBy',
+            'updatedBy',
+        ])
 
-            ->when(
-                isset($filters['search']),
-                function ($query) use ($filters) {
+        /*
+         * Search
+         */
+        ->when(
+            isset($filters['search']) && trim($filters['search']) !== '',
+            function ($query) use ($filters) {
+                $search = trim($filters['search']);
 
-                    $search = $filters['search'];
+                $query->where(function ($q) use ($search) {
+                    $q->where('full_name', 'ILIKE', "%{$search}%")
+                        ->orWhere('national_id', 'ILIKE', "%{$search}%")
+                        ->orWhere('phone', 'ILIKE', "%{$search}%")
+                        ->orWhere('email', 'ILIKE', "%{$search}%")
+                        ->orWhere('citizen_uid', 'ILIKE', "%{$search}%");
+                });
+            }
+        )
 
-                    $query->where(function ($q) use ($search) {
+        /*
+         * Status
+         *
+         * Supports ACTIVE / INACTIVE and the legacy is_active filter.
+         * The status filter takes precedence if both are supplied.
+         */
+        ->when(
+            isset($filters['status']) && $filters['status'] !== '',
+            function ($query) use ($filters) {
+                $status = strtoupper(trim((string) $filters['status']));
 
-                        $q->where(
-                            'full_name',
-                            'ILIKE',
-                            "%{$search}%"
-                        )
-
-                        ->orWhere(
-                            'national_id',
-                            'ILIKE',
-                            "%{$search}%"
-                        )
-
-                        ->orWhere(
-                            'phone',
-                            'ILIKE',
-                            "%{$search}%"
-                        )
-
-                        ->orWhere(
-                            'email',
-                            'ILIKE',
-                            "%{$search}%"
-                        );
-
-                    });
+                if ($status === 'ACTIVE') {
+                    $query->where('is_active', true);
+                } elseif ($status === 'INACTIVE') {
+                    $query->where('is_active', false);
                 }
+            },
+            function ($query) use ($filters) {
+                if (array_key_exists('is_active', $filters)) {
+                    $isActive = filter_var(
+                        $filters['is_active'],
+                        FILTER_VALIDATE_BOOLEAN,
+                        FILTER_NULL_ON_FAILURE
+                    );
+
+                    if ($isActive !== null) {
+                        $query->where('is_active', $isActive);
+                    }
+                }
+            }
+        )
+
+        /*
+         * Gender
+         */
+        ->when(
+            isset($filters['gender']) && $filters['gender'] !== '',
+            fn ($query) => $query->where(
+                'gender',
+                strtoupper(trim((string) $filters['gender']))
             )
+        )
 
-            ->when(
-                isset($filters['source']),
-                fn ($query) =>
-                    $query->where(
-                        'source',
-                        $filters['source']
-                    )
+        /*
+         * Registration source
+         */
+        ->when(
+            isset($filters['source']) && $filters['source'] !== '',
+            fn ($query) => $query->where(
+                'source',
+                strtoupper(trim((string) $filters['source']))
             )
+        )
 
-            ->when(
-                isset($filters['is_active']),
-                fn ($query) =>
-                    $query->where(
-                        'is_active',
-                        $filters['is_active']
-                    )
-            )
+        /*
+         * Latest records first
+         */
+        ->latest()
 
-            ->latest()
-
-            ->paginate(
-                $filters['per_page'] ?? 15
-            );
-    }
+        /*
+         * Pagination
+         */
+        ->paginate(
+            max(1, min((int) ($filters['per_page'] ?? 15), 100))
+        );
+}
 
     /**
-     * ============================================================
-     * CREATE CITIZEN
-     * ============================================================
+     * Create a citizen.
      */
-    public function store(
-        array $data
-    ): Citizen {
-
+    public function store(array $data): Citizen
+    {
         return DB::transaction(function () use ($data) {
-
-            $administrativeUnit =
-                AdministrativeUnit::findOrFail(
-                    $data['administrative_unit_id']
-                );
+            $administrativeUnit = AdministrativeUnit::findOrFail(
+                $data['administrative_unit_id']
+            );
 
             /*
-            |--------------------------------------------------------------------------
-            | Generate UUID
-            |--------------------------------------------------------------------------
-            */
-
-            $data['id'] =
-                (string) Str::uuid();
+             * Generate the citizen UUID.
+             */
+            $data['id'] = (string) Str::uuid();
 
             /*
-            |--------------------------------------------------------------------------
-            | Generate citizen reference number
-            |--------------------------------------------------------------------------
-            */
-
-            $data['citizen_uid'] =
-                $this->generateCitizenUid();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Generate readable address
-            |--------------------------------------------------------------------------
-            */
-
-            $data['address'] =
-                $this->buildAddress(
-                    $administrativeUnit
-                );
+             * Generate the citizen reference number using
+             * the centralized document sequence service.
+             *
+             * Example: CIT-2019-000001
+             * The year uses the Ethiopian calendar by default.
+             */
+            $data['citizen_uid'] = $this->documentSequenceService->generate(
+                'citizen'
+            );
 
             /*
-            |--------------------------------------------------------------------------
-            | Audit
-            |--------------------------------------------------------------------------
-            */
-
-            $data['created_by'] =
-                Auth::id();
-
-            $data['registered_at'] =
-                now();
+             * Generate the readable administrative address.
+             */
+            $data['address'] = $this->buildAddress(
+                $administrativeUnit
+            );
 
             /*
-            |--------------------------------------------------------------------------
-            | Source
-            |--------------------------------------------------------------------------
-            */
-
-            $data['source'] =
-                'MANUAL';
+             * Audit information.
+             */
+            $data['created_by'] = Auth::id();
+            $data['registered_at'] = now();
 
             /*
-            |--------------------------------------------------------------------------
-            | Default Status
-            |--------------------------------------------------------------------------
-            |
-            | A newly registered citizen is active by default.
-            |
-            */
+             * Registration source.
+             */
+            $data['source'] = 'MANUAL';
 
-            $data['is_active'] =
-                $data['is_active'] ?? true;
+            /*
+             * Newly registered citizens are active by default.
+             */
+            $data['is_active'] = $data['is_active'] ?? true;
 
             return Citizen::create($data);
         });
     }
 
     /**
-     * ============================================================
-     * UPDATE CITIZEN
-     * ============================================================
+     * Update a citizen.
      */
     public function update(
         Citizen $citizen,
         array $data
     ): Citizen {
-
-        return DB::transaction(function () use (
-            $citizen,
-            $data
-        ) {
-
+        return DB::transaction(function () use ($citizen, $data) {
             /*
-            |--------------------------------------------------------------------------
-            | Update address if administrative unit changed
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                isset(
+             * Rebuild the address when the administrative unit changes.
+             */
+            if (isset($data['administrative_unit_id'])) {
+                $unit = AdministrativeUnit::findOrFail(
                     $data['administrative_unit_id']
-                )
-            ) {
+                );
 
-                $unit =
-                    AdministrativeUnit::findOrFail(
-                        $data['administrative_unit_id']
-                    );
-
-                $data['address'] =
-                    $this->buildAddress(
-                        $unit
-                    );
+                $data['address'] = $this->buildAddress($unit);
             }
 
             /*
-            |--------------------------------------------------------------------------
-            | Audit
-            |--------------------------------------------------------------------------
-            */
+             * Audit information.
+             */
+            $data['updated_by'] = Auth::id();
 
-            $data['updated_by'] =
-                Auth::id();
+            $citizen->update($data);
 
-            $citizen->update(
-                $data
-            );
-
-            return $citizen->fresh();
+            return $citizen->fresh([
+                'administrativeUnit',
+                'createdBy',
+                'updatedBy',
+            ]);
         });
     }
 
     /**
-     * ============================================================
-     * TOGGLE CITIZEN STATUS
-     * ============================================================
+     * Toggle citizen status.
      *
-     * Changes:
-     *
-     *      active   -> inactive
-     *      inactive -> active
-     *
-     * Also records the authenticated user as updated_by.
+     * Active citizens become inactive, and inactive citizens
+     * become active.
      */
-    public function toggleStatus(
-        Citizen $citizen
-    ): Citizen {
-
+    public function toggleStatus(Citizen $citizen): Citizen
+    {
         return DB::transaction(function () use ($citizen) {
-
             $citizen->update([
                 'is_active' => ! $citizen->is_active,
                 'updated_by' => Auth::id(),
@@ -256,72 +233,29 @@ class CitizenService
     }
 
     /**
-     * ============================================================
-     * DELETE CITIZEN
-     * ============================================================
+     * Delete a citizen.
      */
-    public function delete(
-        Citizen $citizen
-    ): bool {
-
+    public function delete(Citizen $citizen): bool
+    {
         return $citizen->delete();
     }
 
     /**
-     * ============================================================
-     * GENERATE CITIZEN REFERENCE NUMBER
-     * ============================================================
+     * Build a readable address from the administrative hierarchy.
      *
      * Example:
-     *
-     *      CIT-2026-000001
-     */
-    private function generateCitizenUid(): string
-    {
-        $year = now()->year;
-
-        $count =
-            Citizen::whereYear(
-                'created_at',
-                $year
-            )->count();
-
-        return sprintf(
-            'CIT-%s-%06d',
-            $year,
-            $count + 1
-        );
-    }
-
-    /**
-     * ============================================================
-     * BUILD ADDRESS
-     * ============================================================
-     *
-     * Example:
-     *
-     *      Adama,
-     *      Kutaa Magaalaa Abbaa Gadaa,
-     *      Aanaa Badhaatuu
+     * Adama, Kutaa Magaalaa Abbaa Gadaa, Aanaa Badhaatuu
      */
     private function buildAddress(
         AdministrativeUnit $unit
     ): string {
-
         $path = [];
 
-        while ($unit) {
-
-            $path[] =
-                $unit->name;
-
-            $unit =
-                $unit->parent;
+        while ($unit !== null) {
+            $path[] = $unit->name;
+            $unit = $unit->parent;
         }
 
-        return implode(
-            ', ',
-            array_reverse($path)
-        );
+        return implode(', ', array_reverse($path));
     }
 }

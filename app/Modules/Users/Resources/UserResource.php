@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Users\Resources;
 
 use Illuminate\Http\Request;
@@ -17,61 +19,53 @@ class UserResource extends JsonResource
             'name' => $this->name,
             'email' => $this->email,
             'phone' => $this->phone,
-
             'label' => $this->label,
 
             /**
-             * Account type
+             * ACCOUNT TYPE
              *
              * employee
              * citizen
              */
             'user_type' => $this->user_type,
 
-
-            /**
+           /**
              * AVATAR
-             */
-            'avatar' => $this->avatar_file_id
-                ? "/private-file/{$this->avatar_file_id}"
-                : "",
+             *
+             * The private-file route uses UUID-based route-model binding.
+            */
+            'avatar' => $this->whenLoaded(
+                'avatar',
+                fn () => $this->avatar
+                    ? "/private-file/{$this->avatar->uuid}/url"
+                    : null,
+            ),
 
             /**
-             * STATUS
+             * ACCOUNT STATUS
              */
             'is_active' => (bool) $this->is_active,
 
             /**
-             * ACCESS
-             */
-             /**
-             * Employee authorization
+             * EMPLOYEE AUTHORIZATION
              *
-             * Spatie uses roles relationship,
-             * but API returns only first role.
+             * Spatie manages the roles relationship.
+             * The API returns only the first role.
              */
             'role' => $this->when(
                 $this->user_type === 'employee'
-                && $this->relationLoaded('roles'),
-                function () {
-
+                    && $this->relationLoaded('roles'),
+                function (): ?array {
                     $role = $this->roles->first();
 
-                    if (!$role) {
+                    if (! $role) {
                         return null;
                     }
 
                     return [
-
-                        'id' =>
-                            $role->id,
-
-                        'name' =>
-                            $role->name,
-
-                        'label' =>
-                            $this->label,
-
+                        'id' => $role->id,
+                        'name' => $role->name,
+                        'label' => $this->label,
                     ];
                 }
             ),
@@ -84,30 +78,39 @@ class UserResource extends JsonResource
             /**
              * ORGANIZATIONAL SCOPE
              */
-            'sector' => $this->whenLoaded('sector', fn () => [
-                'id' => $this->sector->id,
-                'name' => $this->sector->name,
-            ]),
+            'sector' => $this->whenLoaded(
+                'sector',
+                fn () => $this->sector
+                    ? [
+                        'id' => $this->sector->id,
+                        'name' => $this->sector->name,
+                    ]
+                    : null,
+            ),
 
-            'administrative_unit' => $this->whenLoaded('administrativeUnit', fn () => [
-                'id' => $this->administrativeUnit->id,
-                'name' => $this->administrativeUnit->name,
-                'level' => $this->administrativeUnit->level,
-                'parent_id' => $this->administrativeUnit->parent_id,
-            ]),
+            'administrative_unit' => $this->whenLoaded(
+                'administrativeUnit',
+                fn () => $this->administrativeUnit
+                    ? [
+                        'id' => $this->administrativeUnit->id,
+                        'name' => $this->administrativeUnit->name,
+                        'level' => $this->administrativeUnit->level,
+                        'parent_id' => $this->administrativeUnit->parent_id,
+                    ]
+                    : null,
+            ),
 
-             /**
-             * Account status
+            /**
+             * PHONE VERIFICATION
              */
-            'is_phone_verified' =>
-                $this->is_phone_verified,
+            'is_phone_verified' => $this->is_phone_verified,
 
             /**
              * TIMESTAMPS
              */
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
-            'email_verified_at'=> $this->email_verified_at?->toISOString(),
+            'email_verified_at' => $this->email_verified_at?->toISOString(),
         ];
     }
 }

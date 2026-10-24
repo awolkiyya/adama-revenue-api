@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Citizens\Controllers;
 
 use App\Http\Controllers\Controller;
@@ -12,122 +14,73 @@ use App\Supports\SystemLogAction;
 use App\Supports\SystemLogModule;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class CitizenImportController extends Controller
 {
     public function __construct(
-        private CitizenImportService $service,
-        private SystemLogService $systemLogService,
+        private readonly CitizenImportService $service,
+        private readonly SystemLogService $systemLogService,
     ) {}
 
     /**
-     * ============================================================
-     * DOWNLOAD IMPORT TEMPLATE
-     * ============================================================
+     * Download the citizen import template.
      */
-    public function template()
+    public function template(): Response|\Symfony\Component\HttpFoundation\BinaryFileResponse|\Symfony\Component\HttpFoundation\StreamedResponse
     {
+        $this->authorize('import', Citizen::class);
+
         return $this->service->downloadTemplate();
     }
 
     /**
-     * ============================================================
-     * IMPORT CITIZENS
-     * ============================================================
+     * Import citizens from an uploaded file.
      */
-    public function import(
-        CitizenImportRequest $request
-    ): JsonResponse {
+    public function import(CitizenImportRequest $request): JsonResponse
+    {
+        $file = $request->file('file');
 
         try {
+            $this->authorize('import', Citizen::class);
 
-            /*
-            |--------------------------------------------------------------------------
-            | AUTHORIZATION
-            |--------------------------------------------------------------------------
-            */
+            if (!$file instanceof UploadedFile) {
+                return ApiResponse::error(
+                    'A valid import file is required.',
+                    422,
+                );
+            }
 
-            $this->authorize(
-                'import',
-                Citizen::class
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | FILE
-            |--------------------------------------------------------------------------
-            */
-
-            $file = $request->file('file');
-
-            /*
-            |--------------------------------------------------------------------------
-            | IMPORT
-            |--------------------------------------------------------------------------
-            */
-
-            $result = $this->service->import(
-                $file
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | AUDIT LOG
-            |--------------------------------------------------------------------------
-            |
-            | IMPORT is a system action.
-            |
-            | There is no single Citizen model representing the
-            | entire import operation, therefore use log()
-            | instead of created().
-            |
-            */
+            $result = $this->service->import($file);
 
             $this->systemLogService->log(
                 action: SystemLogAction::IMPORT,
                 module: SystemLogModule::CITIZENS,
-                description: 'Citizens imported successfully',
+                description: 'Citizen import completed',
                 metadata: [
                     'operation' => 'CITIZEN_IMPORT',
-
-                    'file_name' =>
-                        $file->getClientOriginalName(),
-
-                    'file_size' =>
-                        $file->getSize(),
-
-                    'imported' =>
-                        $result['imported'] ?? 0,
-
-                    'failed' =>
-                        $result['failed'] ?? 0,
+                    'file_name' => $this->safeFileName($file),
+                    'file_size' => $file->getSize(),
+                    'imported' => (int) ($result['imported'] ?? 0),
+                    'failed' => (int) ($result['failed'] ?? 0),
                 ],
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | RESPONSE
-            |--------------------------------------------------------------------------
-            */
-
             return ApiResponse::success(
                 $result,
-                'Citizens imported successfully.'
+                'Citizens imported successfully.',
             );
-
         } catch (AuthorizationException $e) {
-
             return ApiResponse::forbidden(
-                'You are not authorized to import citizens.'
+                'You are not authorized to import citizens.',
             );
-
-        } catch (\Throwable $e) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | AUDIT IMPORT FAILURE
-            |--------------------------------------------------------------------------
-            */
+        } catch (Throwable $e) {
+            Log::error('Citizen import failed.', [
+                'exception' => $e::class,
+            ]);
 
             $this->systemLogService->log(
                 action: SystemLogAction::IMPORT,
@@ -135,25 +88,31 @@ class CitizenImportController extends Controller
                 description: 'Citizen import failed',
                 metadata: [
                     'operation' => 'CITIZEN_IMPORT',
-
-                    'file_name' =>
-                        $request->hasFile('file')
-                            ? $request->file('file')
-                                ->getClientOriginalName()
-                            : null,
-
-                    'exception' =>
-                        get_class($e),
-
-                    'message' =>
-                        $e->getMessage(),
+                    'file_name' => $file instanceof UploadedFile
+                        ? $this->safeFileName($file)
+                        : null,
+                    'file_size' => $file instanceof UploadedFile
+                        ? $file->getSize()
+                        : null,
+                    'exception' => $e::class,
                 ],
             );
 
             return ApiResponse::serverError(
                 'Citizen import failed.',
-                $e
             );
         }
+    }
+
+    /**
+     * Return a safe filename for audit metadata.
+     */
+    private function safeFileName(UploadedFile $file): string
+    {
+        return mb_substr(
+            basename($file->getClientOriginalName()),
+            0,
+            255,
+        );
     }
 }

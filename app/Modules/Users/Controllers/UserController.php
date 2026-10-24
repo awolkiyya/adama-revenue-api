@@ -86,6 +86,7 @@ class UserController extends Controller
         $user->load([
             'avatar',
             'roles',
+            'sector',
             'administrativeUnit',
         ]);
 

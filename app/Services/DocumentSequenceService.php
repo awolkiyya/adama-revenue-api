@@ -1,9 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use Andegna\DateTimeFactory;
 use App\Models\Assessment;
+use App\Models\Citizen;
 use App\Models\DocumentSequence;
 use App\Models\Invoice;
 use App\Models\LeaseAmendment;
@@ -19,26 +22,35 @@ class DocumentSequenceService
 
     protected const MAX_SEQUENCE_VALUE = 999999;
 
+    /**
+     * Supported document types and their prefixes.
+     *
+     * Each document type has an independent sequence per year.
+     */
     protected const DOCUMENT_PREFIXES = [
         'assessment' => 'ASM',
         'invoice' => 'INV',
         'payment' => 'PAY',
         'receipt' => 'RCP',
         'lease_amendment' => 'LAM',
+        'citizen' => 'CIT',
     ];
 
     /**
      * Generate the next document number.
      *
-     * The sequence is independent for each sequence type and year.
+     * Ethiopian calendar is used by default.
      *
      * Examples:
      * ASM-2019-000001
      * INV-2019-000001
      * PAY-2019-000001
+     * RCP-2019-000001
      * LAM-2019-000001
+     * CIT-2019-000001
      *
-     * Ethiopian calendar is used by default.
+     * @throws InvalidArgumentException
+     * @throws RuntimeException
      */
     public function generate(
         string $sequenceType,
@@ -77,7 +89,8 @@ class DocumentSequenceService
             /*
              * 1. Initialize the sequence row if it does not exist.
              *
-             * Requires a unique constraint on (sequence_type, year).
+             * The database must have a unique constraint on
+             * (sequence_type, year).
              */
             DocumentSequence::query()->insertOrIgnore([
                 'sequence_type' => $sequenceType,
@@ -121,10 +134,10 @@ class DocumentSequenceService
             }
 
             /*
-             * 3. Synchronize with existing document numbers.
+             * 3. Synchronize the counter with existing document numbers.
              *
              * This supports installations that already have
-             * assessments, invoices, payments, or amendments.
+             * assessments, invoices, payments, amendments, or citizens.
              */
             $existingMaximum = $this->getExistingMaximumValue(
                 $sequenceType,
@@ -144,7 +157,7 @@ class DocumentSequenceService
             }
 
             /*
-             * 4. Generate the next number.
+             * 4. Ensure the sequence has not reached its maximum.
              */
             if ($currentValue >= self::MAX_SEQUENCE_VALUE) {
                 throw new RuntimeException(
@@ -157,12 +170,18 @@ class DocumentSequenceService
                 );
             }
 
+            /*
+             * 5. Increment and persist the sequence.
+             */
             $nextValue = $currentValue + 1;
 
             $sequence->forceFill([
                 'current_value' => $nextValue,
             ])->save();
 
+            /*
+             * 6. Return the formatted document number.
+             */
             return sprintf(
                 '%s-%d-%0' . self::SEQUENCE_DIGITS . 'd',
                 $prefix,
@@ -201,8 +220,12 @@ class DocumentSequenceService
                 $year
             ),
 
-            // Implement when a Receipt model/table is available.
             'receipt' => $this->getExistingReceiptMaximum(
+                $prefix,
+                $year
+            ),
+
+            'citizen' => $this->getExistingCitizenMaximum(
                 $prefix,
                 $year
             ),
@@ -211,6 +234,9 @@ class DocumentSequenceService
         };
     }
 
+    /**
+     * Get the highest existing assessment number.
+     */
     protected function getExistingAssessmentMaximum(
         string $prefix,
         int $year
@@ -231,6 +257,9 @@ class DocumentSequenceService
             : null;
     }
 
+    /**
+     * Get the highest existing invoice number.
+     */
     protected function getExistingInvoiceMaximum(
         string $prefix,
         int $year
@@ -251,6 +280,9 @@ class DocumentSequenceService
             : null;
     }
 
+    /**
+     * Get the highest existing payment number.
+     */
     protected function getExistingPaymentMaximum(
         string $prefix,
         int $year
@@ -295,8 +327,31 @@ class DocumentSequenceService
     }
 
     /**
-     * Receipt sequence synchronization can be implemented
-     * when the Receipt model and table are available.
+     * Get the highest existing citizen reference number.
+     */
+    protected function getExistingCitizenMaximum(
+        string $prefix,
+        int $year
+    ): ?int {
+        $documentPrefix = sprintf('%s-%d-', $prefix, $year);
+
+        $number = Citizen::query()
+            ->where('citizen_uid', 'like', $documentPrefix . '%')
+            ->orderByDesc('citizen_uid')
+            ->value('citizen_uid');
+
+        return $number !== null
+            ? $this->extractSequenceValue(
+                $number,
+                $documentPrefix,
+                'citizen'
+            )
+            : null;
+    }
+
+    /**
+     * Receipt synchronization can be implemented when a Receipt
+     * model and its document-number column are available.
      */
     protected function getExistingReceiptMaximum(
         string $prefix,
@@ -306,7 +361,7 @@ class DocumentSequenceService
     }
 
     /**
-     * Extract and validate the numeric sequence.
+     * Extract and validate the numeric sequence from a document number.
      */
     protected function extractSequenceValue(
         string $documentNumber,
