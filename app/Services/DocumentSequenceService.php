@@ -11,6 +11,7 @@ use App\Models\DocumentSequence;
 use App\Models\Invoice;
 use App\Models\LeaseAmendment;
 use App\Models\Payment;
+use App\Models\TariffRule;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -34,6 +35,7 @@ class DocumentSequenceService
         'receipt' => 'RCP',
         'lease_amendment' => 'LAM',
         'citizen' => 'CIT',
+        'tariff_rule' => 'TR',
     ];
 
     /**
@@ -48,6 +50,7 @@ class DocumentSequenceService
      * RCP-2019-000001
      * LAM-2019-000001
      * CIT-2019-000001
+     * TR-2019-000001
      *
      * @throws InvalidArgumentException
      * @throws RuntimeException
@@ -87,7 +90,7 @@ class DocumentSequenceService
             $year
         ): string {
             /*
-             * 1. Initialize the sequence row if it does not exist.
+             * Initialize the sequence row if it does not exist.
              *
              * The database must have a unique constraint on
              * (sequence_type, year).
@@ -101,8 +104,8 @@ class DocumentSequenceService
             ]);
 
             /*
-             * 2. Lock the sequence row to prevent concurrent
-             * requests from allocating the same number.
+             * Lock the sequence row so concurrent requests cannot
+             * allocate the same sequence value.
              */
             $sequence = DocumentSequence::query()
                 ->where('sequence_type', $sequenceType)
@@ -134,10 +137,7 @@ class DocumentSequenceService
             }
 
             /*
-             * 3. Synchronize the counter with existing document numbers.
-             *
-             * This supports installations that already have
-             * assessments, invoices, payments, amendments, or citizens.
+             * Synchronize the counter with existing document numbers.
              */
             $existingMaximum = $this->getExistingMaximumValue(
                 $sequenceType,
@@ -156,9 +156,6 @@ class DocumentSequenceService
                 ])->save();
             }
 
-            /*
-             * 4. Ensure the sequence has not reached its maximum.
-             */
             if ($currentValue >= self::MAX_SEQUENCE_VALUE) {
                 throw new RuntimeException(
                     sprintf(
@@ -171,7 +168,7 @@ class DocumentSequenceService
             }
 
             /*
-             * 5. Increment and persist the sequence.
+             * Increment and persist the sequence.
              */
             $nextValue = $currentValue + 1;
 
@@ -179,16 +176,13 @@ class DocumentSequenceService
                 'current_value' => $nextValue,
             ])->save();
 
-            /*
-             * 6. Return the formatted document number.
-             */
             return sprintf(
                 '%s-%d-%0' . self::SEQUENCE_DIGITS . 'd',
                 $prefix,
                 $year,
                 $nextValue
             );
-        });
+        }, 3);
     }
 
     /**
@@ -204,39 +198,34 @@ class DocumentSequenceService
                 $prefix,
                 $year
             ),
-
             'invoice' => $this->getExistingInvoiceMaximum(
                 $prefix,
                 $year
             ),
-
             'payment' => $this->getExistingPaymentMaximum(
                 $prefix,
                 $year
             ),
-
             'lease_amendment' => $this->getExistingLeaseAmendmentMaximum(
                 $prefix,
                 $year
             ),
-
             'receipt' => $this->getExistingReceiptMaximum(
                 $prefix,
                 $year
             ),
-
             'citizen' => $this->getExistingCitizenMaximum(
                 $prefix,
                 $year
             ),
-
+            'tariff_rule' => $this->getExistingTariffRuleMaximum(
+                $prefix,
+                $year
+            ),
             default => null,
         };
     }
 
-    /**
-     * Get the highest existing assessment number.
-     */
     protected function getExistingAssessmentMaximum(
         string $prefix,
         int $year
@@ -257,9 +246,6 @@ class DocumentSequenceService
             : null;
     }
 
-    /**
-     * Get the highest existing invoice number.
-     */
     protected function getExistingInvoiceMaximum(
         string $prefix,
         int $year
@@ -280,9 +266,6 @@ class DocumentSequenceService
             : null;
     }
 
-    /**
-     * Get the highest existing payment number.
-     */
     protected function getExistingPaymentMaximum(
         string $prefix,
         int $year
@@ -303,9 +286,6 @@ class DocumentSequenceService
             : null;
     }
 
-    /**
-     * Get the highest existing lease amendment number.
-     */
     protected function getExistingLeaseAmendmentMaximum(
         string $prefix,
         int $year
@@ -326,9 +306,6 @@ class DocumentSequenceService
             : null;
     }
 
-    /**
-     * Get the highest existing citizen reference number.
-     */
     protected function getExistingCitizenMaximum(
         string $prefix,
         int $year
@@ -350,8 +327,40 @@ class DocumentSequenceService
     }
 
     /**
-     * Receipt synchronization can be implemented when a Receipt
-     * model and its document-number column are available.
+     * Get the highest existing tariff rule number in the new format.
+     *
+     * Existing date-based codes such as TR-20260913-GNMLBL are
+     * intentionally not interpreted as sequence numbers.
+     */
+    protected function getExistingTariffRuleMaximum(
+        string $prefix,
+        int $year
+    ): ?int {
+        $documentPrefix = sprintf('%s-%d-', $prefix, $year);
+
+        $number = TariffRule::query()
+            ->where('code', 'like', $documentPrefix . '%')
+            ->whereRaw(
+                "code ~ ?",
+                [
+                    '^' . preg_quote($documentPrefix, '/') . '[0-9]{6}$',
+                ]
+            )
+            ->orderByRaw('code DESC')
+            ->value('code');
+
+        return $number !== null
+            ? $this->extractSequenceValue(
+                $number,
+                $documentPrefix,
+                'tariff rule'
+            )
+            : null;
+    }
+
+    /**
+     * Receipt synchronization can be implemented when a Receipt model
+     * and its document-number column are available.
      */
     protected function getExistingReceiptMaximum(
         string $prefix,
@@ -413,7 +422,6 @@ class DocumentSequenceService
         return match (strtolower(trim($calendar))) {
             'ethiopian', 'et', 'am' => $this->getEthiopianYear($date),
             'gregorian', 'ge', 'en' => $date->year,
-
             default => throw new InvalidArgumentException(
                 sprintf(
                     'Unsupported calendar [%s]. Supported calendars are Ethiopian and Gregorian.',

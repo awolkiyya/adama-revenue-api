@@ -1,8 +1,11 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Revenue\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Revenue\Requests\DuplicateTariffVersionRequest;
 use App\Modules\Revenue\Requests\StoreTariffVersionRequest;
 use App\Modules\Revenue\Requests\UpdateTariffVersionRequest;
 use App\Modules\Revenue\Resources\TariffVersionResource;
@@ -17,7 +20,6 @@ class TariffVersionController extends Controller
     ) {
     }
 
-
     /**
      * Display paginated tariff versions.
      */
@@ -27,17 +29,12 @@ class TariffVersionController extends Controller
             $request->all()
         );
 
-
         return ApiResponse::success(
-            TariffVersionResource::collection(
-                $tariffVersions
-            ),
+            TariffVersionResource::collection($tariffVersions),
             'Tariff versions retrieved successfully.',
-            summary:$this->service->summary(),
+            summary: $this->service->summary(),
         );
     }
-
-
 
     /**
      * Dashboard summary.
@@ -53,8 +50,6 @@ class TariffVersionController extends Controller
         );
     }
 
-
-
     /**
      * Display a single tariff version.
      */
@@ -62,106 +57,94 @@ class TariffVersionController extends Controller
     {
         $tariffVersion = $this->service->find($id);
 
-
         return ApiResponse::success(
-            new TariffVersionResource(
-                $tariffVersion
-            ),
+            new TariffVersionResource($tariffVersion),
             'Tariff version retrieved successfully.'
         );
     }
 
-
-
     /**
-     * Store new tariff version.
+     * Store a new tariff version.
      */
-    public function store(
-        StoreTariffVersionRequest $request
-    ) {
-
+    public function store(StoreTariffVersionRequest $request)
+    {
         $tariffVersion = $this->service->create(
             $request->validated()
         );
 
-
         return ApiResponse::created(
-            new TariffVersionResource(
-                $tariffVersion
-            ),
+            new TariffVersionResource($tariffVersion),
             'Tariff version created successfully.'
         );
     }
 
+    /**
+     * Duplicate an existing tariff version into a new draft.
+     */
+    public function duplicate(
+        DuplicateTariffVersionRequest $request,
+        string $id
+    ) {
+        $tariffVersion = $this->service->duplicate(
+            $id,
+            $request->validated()
+        );
 
+        return ApiResponse::created(
+            new TariffVersionResource($tariffVersion),
+            'Tariff version duplicated successfully.'
+        );
+    }
 
     /**
-     * Update tariff version.
+     * Update a tariff version.
      */
     public function update(
         UpdateTariffVersionRequest $request,
         string $id
     ) {
-
         $tariffVersion = $this->service->update(
             $id,
             $request->validated()
         );
 
-
         return ApiResponse::updated(
-            new TariffVersionResource(
-                $tariffVersion
-            ),
+            new TariffVersionResource($tariffVersion),
             'Tariff version updated successfully.'
         );
     }
 
-
-
     /**
-     * Activate tariff version.
+     * Activate a tariff version.
      */
     public function activate(string $id)
     {
-
-        $tariffVersion = $this->service->activate(
-            $id
-        );
-
+        $tariffVersion = $this->service->activate($id);
 
         return ApiResponse::updated(
-            new TariffVersionResource(
-                $tariffVersion
-            ),
+            new TariffVersionResource($tariffVersion),
             'Tariff version activated successfully.'
         );
     }
 
-
-
     /**
-     * Soft delete tariff version.
+     * Soft delete a tariff version.
      */
     public function destroy(string $id)
     {
         $this->service->delete($id);
-
 
         return ApiResponse::deleted(
             'Tariff version deleted successfully.'
         );
     }
 
-
-
     /**
-     * Restore deleted tariff version.
+     * Restore a deleted tariff version.
      */
     public function restore(string $id)
     {
         $this->service->restore($id);
-
 
         return ApiResponse::success(
             null,

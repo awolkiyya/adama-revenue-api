@@ -25,7 +25,7 @@ class RevenueServiceResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Revenue Code
+            | Revenue Code ID
             |--------------------------------------------------------------------------
             */
 
@@ -72,28 +72,18 @@ class RevenueServiceResource extends JsonResource
             | Revenue Code
             |--------------------------------------------------------------------------
             |
-            | Includes the parent RevenueCode.
-            |
-            | RevenueService
-            |      ↓
-            | RevenueCode
-            |      ↓
-            | RevenueCategory
-            |
-            | IMPORTANT:
-            | We intentionally do NOT return the full
-            | RevenueCodeResource here to prevent recursion.
+            | Includes the parent RevenueCode and its category.
+            | We intentionally avoid returning RevenueCodeResource here
+            | to prevent recursive resource serialization.
             |
             */
 
             'revenueCode' => $this->whenLoaded(
                 'revenueCode',
                 function () {
-
                     $code = $this->revenueCode;
 
                     return [
-
                         /*
                         |--------------------------------------------------------------------------
                         | Code Identity
@@ -126,88 +116,81 @@ class RevenueServiceResource extends JsonResource
                         |--------------------------------------------------------------------------
                         | Revenue Category
                         |--------------------------------------------------------------------------
-                        |
-                        | RevenueCode
-                        |      ↓
-                        | RevenueCategory
-                        |
                         */
 
                         'category' => $code->relationLoaded('category')
                             && $code->category
-                            ? [
+                                ? [
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Category Identity
+                                    |--------------------------------------------------------------------------
+                                    */
 
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Category Identity
-                                |--------------------------------------------------------------------------
-                                */
-
-                                'id' => (string) $code->category->id,
-
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Revenue Domain
-                                |--------------------------------------------------------------------------
-                                */
-
-                                'revenueDomain' =>
-                                    $code->category->revenue_domain,
+                                    'id' => (string) $code->category->id,
 
 
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Category Information
-                                |--------------------------------------------------------------------------
-                                */
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Revenue Domain
+                                    |--------------------------------------------------------------------------
+                                    */
 
-                                'name' =>
-                                    $code->category->name,
-
-                                'description' =>
-                                    $code->category->description,
+                                    'revenueDomain' =>
+                                        $code->category->revenue_domain,
 
 
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Revenue Code Range
-                                |--------------------------------------------------------------------------
-                                */
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Category Information
+                                    |--------------------------------------------------------------------------
+                                    */
 
-                                'startCode' =>
-                                    $code->category->start_code,
+                                    'name' =>
+                                        $code->category->name,
 
-                                'endCode' =>
-                                    $code->category->end_code,
-
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Ordering
-                                |--------------------------------------------------------------------------
-                                */
-
-                                'sortOrder' =>
-                                    $code->category->sort_order,
+                                    'description' =>
+                                        $code->category->description,
 
 
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Status
-                                |--------------------------------------------------------------------------
-                                */
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Revenue Code Range
+                                    |--------------------------------------------------------------------------
+                                    */
 
-                                'isActive' =>
-                                    (bool) $code->category->is_active,
+                                    'startCode' =>
+                                        $code->category->start_code,
 
-                                'status' =>
-                                    $code->category->is_active
-                                        ? 'ACTIVE'
-                                        : 'INACTIVE',
+                                    'endCode' =>
+                                        $code->category->end_code,
 
-                            ]
-                            : null,
+
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Ordering
+                                    |--------------------------------------------------------------------------
+                                    */
+
+                                    'sortOrder' =>
+                                        $code->category->sort_order,
+
+
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Status
+                                    |--------------------------------------------------------------------------
+                                    */
+
+                                    'isActive' =>
+                                        (bool) $code->category->is_active,
+
+                                    'status' =>
+                                        $code->category->is_active
+                                            ? 'ACTIVE'
+                                            : 'INACTIVE',
+                                ]
+                                : null,
                     ];
                 }
             ),
@@ -218,33 +201,24 @@ class RevenueServiceResource extends JsonResource
             | Configured Revenue Service Fields
             |--------------------------------------------------------------------------
             |
-            | These are NOT BaseFields themselves.
-            |
-            | Each record represents:
-            |
-            | RevenueService
-            |      ↓
-            | RevenueServiceField
-            |      ↓
-            | BaseField
+            | Each record represents a RevenueServiceField configuration
+            | linked to its canonical BaseField.
             |
             */
 
             'fields' => $this->whenLoaded(
                 'fields',
                 function () {
-
                     return $this->fields
                         ->sortBy('sort_order')
                         ->values()
                         ->map(
                             function ($field) {
-
                                 return [
 
                                     /*
                                     |--------------------------------------------------------------------------
-                                    | Revenue Service Field
+                                    | Revenue Service Field Identity
                                     |--------------------------------------------------------------------------
                                     */
 
@@ -297,132 +271,126 @@ class RevenueServiceResource extends JsonResource
                                     'baseField' =>
                                         $field->relationLoaded('baseField')
                                             && $field->baseField
-                                            ? [
+                                                ? [
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | Base Field Identity
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                /*
-                                                |--------------------------------------------------------------------------
-                                                | Base Field Identity
-                                                |--------------------------------------------------------------------------
-                                                */
+                                                    'id' =>
+                                                        (string) $field->baseField->id,
 
-                                                'id' =>
-                                                    (string) $field->baseField->id,
+                                                    'code' =>
+                                                        $field->baseField->code,
 
-                                                'code' =>
-                                                    $field->baseField->code,
+                                                    'name' =>
+                                                        $field->baseField->name,
 
-                                                'name' =>
-                                                    $field->baseField->name,
-
-                                                'description' =>
-                                                    $field->baseField->description,
-
-
-                                                /*
-                                                |--------------------------------------------------------------------------
-                                                | Base Field Configuration
-                                                |--------------------------------------------------------------------------
-                                                */
-
-                                                'measurementUnitId' =>
-                                                    $field->baseField->measurement_unit_id,
-
-                                                'dataType' =>
-                                                    $field->baseField->data_type,
-
-                                                'isActive' =>
-                                                    (bool) $field->baseField->is_active,
-
-                                                'status' =>
-                                                    $field->baseField->is_active
-                                                        ? 'ACTIVE'
-                                                        : 'INACTIVE',
+                                                    'description' =>
+                                                        $field->baseField->description,
 
 
-                                                /*
-                                                |--------------------------------------------------------------------------
-                                                | Measurement Unit
-                                                |--------------------------------------------------------------------------
-                                                */
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | Base Field Configuration
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                'measurementUnit' =>
-                                                    $field->baseField
-                                                        ->relationLoaded(
-                                                            'measurementUnit'
-                                                        )
-                                                        && $field->baseField->measurementUnit
-                                                            ? [
+                                                    'measurementUnitId' =>
+                                                        $field->baseField->measurement_unit_id,
 
-                                                                'id' =>
-                                                                    (string) $field->baseField
-                                                                        ->measurementUnit->id,
+                                                    'dataType' =>
+                                                        $field->baseField->data_type,
 
-                                                                'code' =>
-                                                                    $field->baseField
-                                                                        ->measurementUnit->code,
+                                                    'inputSource' =>
+                                                        $field->baseField->input_source
+                                                            ?? 'MANUAL',
 
-                                                                'name' =>
-                                                                    $field->baseField
-                                                                        ->measurementUnit->name,
+                                                    'isActive' =>
+                                                        (bool) $field->baseField->is_active,
 
-                                                                'symbol' =>
-                                                                    $field->baseField
-                                                                        ->measurementUnit->symbol,
-
-                                                            ]
-                                                            : null,
+                                                    'status' =>
+                                                        $field->baseField->is_active
+                                                            ? 'ACTIVE'
+                                                            : 'INACTIVE',
 
 
-                                                /*
-                                                |--------------------------------------------------------------------------
-                                                | Select / Radio / Checkbox Options
-                                                |--------------------------------------------------------------------------
-                                                */
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | Measurement Unit
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                'options' =>
-                                                    $field->baseField
-                                                        ->relationLoaded('options')
-                                                        ? $field->baseField
-                                                            ->options
-                                                            ->sortBy('sort_order')
-                                                            ->values()
-                                                            ->map(
-                                                                function ($option) {
+                                                    'measurementUnit' =>
+                                                        $field->baseField
+                                                            ->relationLoaded('measurementUnit')
+                                                            && $field->baseField->measurementUnit
+                                                                ? [
+                                                                    'id' =>
+                                                                        (string) $field->baseField
+                                                                            ->measurementUnit->id,
 
-                                                                    return [
+                                                                    'code' =>
+                                                                        $field->baseField
+                                                                            ->measurementUnit->code,
 
-                                                                        'id' =>
-                                                                            (string) $option->id,
+                                                                    'name' =>
+                                                                        $field->baseField
+                                                                            ->measurementUnit->name,
 
-                                                                        'baseFieldId' =>
-                                                                            (string) $option->base_field_id,
+                                                                    'symbol' =>
+                                                                        $field->baseField
+                                                                            ->measurementUnit->symbol,
+                                                                ]
+                                                                : null,
 
-                                                                        'value' =>
-                                                                            $option->value,
 
-                                                                        'label' =>
-                                                                            $option->label,
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | Select / Radio / Checkbox Options
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                                        'sortOrder' =>
-                                                                            $option->sort_order,
+                                                    'options' =>
+                                                        $field->baseField
+                                                            ->relationLoaded('options')
+                                                                ? $field->baseField
+                                                                    ->options
+                                                                    ->sortBy('sort_order')
+                                                                    ->values()
+                                                                    ->map(
+                                                                        function ($option) {
+                                                                            return [
+                                                                                'id' =>
+                                                                                    (string) $option->id,
 
-                                                                        'isActive' =>
-                                                                            (bool) $option->is_active,
+                                                                                'baseFieldId' =>
+                                                                                    (string) $option->base_field_id,
 
-                                                                        'status' =>
-                                                                            $option->is_active
-                                                                                ? 'ACTIVE'
-                                                                                : 'INACTIVE',
+                                                                                'value' =>
+                                                                                    $option->value,
 
-                                                                    ];
-                                                                }
-                                                            )
-                                                            ->all()
-                                                        : [],
+                                                                                'label' =>
+                                                                                    $option->label,
 
-                                            ]
-                                            : null,
+                                                                                'sortOrder' =>
+                                                                                    $option->sort_order,
 
+                                                                                'isActive' =>
+                                                                                    (bool) $option->is_active,
+
+                                                                                'status' =>
+                                                                                    $option->is_active
+                                                                                        ? 'ACTIVE'
+                                                                                        : 'INACTIVE',
+                                                                            ];
+                                                                        }
+                                                                    )
+                                                                    ->all()
+                                                                : [],
+                                                ]
+                                                : null,
                                 ];
                             }
                         )
@@ -462,7 +430,6 @@ class RevenueServiceResource extends JsonResource
 
             'updatedAt' =>
                 $this->updated_at?->toIso8601String(),
-
         ];
     }
 }

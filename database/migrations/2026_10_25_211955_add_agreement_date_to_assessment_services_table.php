@@ -6,22 +6,17 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
-        Schema::create('tariff_factors', function (Blueprint $table) {
-            $table->id();
-            $table->timestamps();
+        Schema::table('assessment_services', function (Blueprint $table) {
+            $table->date('agreement_date')->nullable();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
-        Schema::dropIfExists('tariff_factors');
+        Schema::table('assessment_services', function (Blueprint $table) {
+            $table->dropColumn('agreement_date');
+        });
     }
 };

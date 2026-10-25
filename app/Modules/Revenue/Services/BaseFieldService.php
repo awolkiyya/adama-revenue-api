@@ -1,14 +1,15 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Revenue\Services;
 
+use App\Models\BaseField;
+use App\Models\BaseFieldOption;
 use Exception;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-
-use App\Models\BaseField;
-use App\Models\BaseFieldOption;
 
 class BaseFieldService
 {
@@ -30,113 +31,135 @@ class BaseFieldService
     ];
 
     /**
-     * Get all base fields.
-     */
-    public function getAll(array $filters = []): LengthAwarePaginator
-    {
-        $query = BaseField::query()
-            ->with(self::RELATIONS);
+ * Get all base fields.
+ */
+public function getAll(array $filters = []): LengthAwarePaginator
+{
+    $query = BaseField::query()
+        ->with(self::RELATIONS);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Search
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | IDs Filter
+    |--------------------------------------------------------------------------
+    |
+    | Retrieve specific base fields to resolve saved dropdown selections,
+    | even when those fields are outside the current pagination page.
+    |
+    */
 
-        if (!empty($filters['search'])) {
-            $search = trim($filters['search']);
+    if (!empty($filters['ids']) && is_array($filters['ids'])) {
+        $ids = array_values(array_unique(
+            array_filter(
+                $filters['ids'],
+                fn ($id) => is_string($id) && $id !== ''
+            )
+        ));
 
-            $query->where(function ($q) use ($search) {
-                $q->where('code', 'like', "%{$search}%")
-                    ->orWhere('name', 'like', "%{$search}%")
-                    ->orWhere('description', 'like', "%{$search}%");
-            });
+        if (!empty($ids)) {
+            $query->whereIn('id', $ids);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Measurement Unit Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (!empty($filters['measurement_unit_id'])) {
-            $query->where(
-                'measurement_unit_id',
-                $filters['measurement_unit_id']
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Data Type Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (!empty($filters['data_type'])) {
-            $query->where(
-                'data_type',
-                $filters['data_type']
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Active Status Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (array_key_exists('is_active', $filters)) {
-            $query->where(
-                'is_active',
-                filter_var(
-                    $filters['is_active'],
-                    FILTER_VALIDATE_BOOLEAN
-                )
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Sorting
-        |--------------------------------------------------------------------------
-        */
-
-        $allowedSorts = [
-            'code',
-            'name',
-            'data_type',
-            'sort_order',
-            'created_at',
-        ];
-
-        $sortBy = $filters['sort_by'] ?? 'sort_order';
-
-        if (!in_array($sortBy, $allowedSorts, true)) {
-            $sortBy = 'sort_order';
-        }
-
-        $sortDirection = strtolower(
-            $filters['sort_direction'] ?? 'asc'
-        );
-
-        if (!in_array($sortDirection, ['asc', 'desc'], true)) {
-            $sortDirection = 'asc';
-        }
-
-        $query->orderBy($sortBy, $sortDirection);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Pagination
-        |--------------------------------------------------------------------------
-        */
-
-        $perPage = (int) ($filters['per_page'] ?? 15);
-
-        $perPage = max(1, min($perPage, 100));
-
-        return $query->paginate($perPage);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Search
+    |--------------------------------------------------------------------------
+    */
+
+    if (!empty($filters['search'])) {
+        $search = trim($filters['search']);
+
+        $query->where(function ($q) use ($search) {
+            $q->where('code', 'like', "%{$search}%")
+                ->orWhere('name', 'like', "%{$search}%")
+                ->orWhere('description', 'like', "%{$search}%");
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Measurement Unit Filter
+    |--------------------------------------------------------------------------
+    */
+
+    if (!empty($filters['measurement_unit_id'])) {
+        $query->where(
+            'measurement_unit_id',
+            $filters['measurement_unit_id']
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Data Type Filter
+    |--------------------------------------------------------------------------
+    */
+
+    if (!empty($filters['data_type'])) {
+        $query->where(
+            'data_type',
+            $filters['data_type']
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Active Status Filter
+    |--------------------------------------------------------------------------
+    */
+
+    if (array_key_exists('is_active', $filters)) {
+        $query->where(
+            'is_active',
+            filter_var(
+                $filters['is_active'],
+                FILTER_VALIDATE_BOOLEAN
+            )
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sorting
+    |--------------------------------------------------------------------------
+    */
+
+    $allowedSorts = [
+        'code',
+        'name',
+        'data_type',
+        'sort_order',
+        'created_at',
+    ];
+
+    $sortBy = $filters['sort_by'] ?? 'sort_order';
+
+    if (!in_array($sortBy, $allowedSorts, true)) {
+        $sortBy = 'sort_order';
+    }
+
+    $sortDirection = strtolower(
+        $filters['sort_direction'] ?? 'asc'
+    );
+
+    if (!in_array($sortDirection, ['asc', 'desc'], true)) {
+        $sortDirection = 'asc';
+    }
+
+    $query->orderBy($sortBy, $sortDirection);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination
+    |--------------------------------------------------------------------------
+    */
+
+    $perPage = (int) ($filters['per_page'] ?? 15);
+    $perPage = max(1, min($perPage, 100));
+
+    return $query->paginate($perPage);
+}
 
     /**
      * Find base field by ID.
@@ -155,7 +178,6 @@ class BaseFieldService
     {
         try {
             $baseField = DB::transaction(function () use ($data) {
-
                 /*
                 |--------------------------------------------------------------------------
                 | Create Base Field
@@ -168,6 +190,11 @@ class BaseFieldService
                     'description' => $data['description'] ?? null,
                     'measurement_unit_id' => $data['measurement_unit_id'] ?? null,
                     'data_type' => $data['data_type'],
+
+                    // Persist the selected input source.
+                    'input_source' => $data['input_source']
+                        ?? BaseField::INPUT_SOURCE_MANUAL,
+
                     'is_active' => $data['is_active'] ?? true,
                     'sort_order' => $data['sort_order'] ?? 0,
                 ]);
@@ -195,13 +222,12 @@ class BaseFieldService
                 'base_field_id' => $baseField->id,
                 'code' => $baseField->code,
                 'data_type' => $baseField->data_type,
+                'input_source' => $baseField->input_source,
                 'options_count' => $baseField->options()->count(),
             ]);
 
             return $baseField->load(self::RELATIONS);
-
         } catch (Exception $exception) {
-
             Log::error('Failed to create base field.', [
                 'message' => $exception->getMessage(),
                 'trace' => $exception->getTraceAsString(),
@@ -220,7 +246,6 @@ class BaseFieldService
     ): BaseField {
         try {
             $baseField = DB::transaction(function () use ($id, $data) {
-
                 $baseField = BaseField::findOrFail($id);
 
                 /*
@@ -233,11 +258,17 @@ class BaseFieldService
                     'code' => $data['code'],
                     'name' => $data['name'],
                     'description' => $data['description'] ?? null,
-                    'measurement_unit_id' =>
-                        $data['measurement_unit_id'] ?? null,
+                    'measurement_unit_id' => $data['measurement_unit_id'] ?? null,
                     'data_type' => $data['data_type'],
+
+                    // Preserve the current value when the field is omitted.
+                    'input_source' => $data['input_source']
+                        ?? $baseField->input_source
+                        ?? BaseField::INPUT_SOURCE_MANUAL,
+
                     'is_active' => $data['is_active']
                         ?? $baseField->is_active,
+
                     'sort_order' => $data['sort_order']
                         ?? $baseField->sort_order,
                 ]);
@@ -249,14 +280,11 @@ class BaseFieldService
                 */
 
                 if ($this->supportsOptions($baseField->data_type)) {
-
                     $this->syncOptions(
                         $baseField,
                         $data['options'] ?? []
                     );
-
                 } else {
-
                     /*
                     |--------------------------------------------------------------------------
                     | Remove Old Options
@@ -277,13 +305,12 @@ class BaseFieldService
                 'base_field_id' => $baseField->id,
                 'code' => $baseField->code,
                 'data_type' => $baseField->data_type,
+                'input_source' => $baseField->input_source,
                 'options_count' => $baseField->options()->count(),
             ]);
 
             return $baseField->load(self::RELATIONS);
-
         } catch (Exception $exception) {
-
             Log::error('Failed to update base field.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),
@@ -296,25 +323,20 @@ class BaseFieldService
 
     /**
      * Create options for a base field.
+     *
+     * @param array<int, array<string, mixed>> $options
      */
     private function createOptions(
         BaseField $baseField,
         array $options
     ): void {
         foreach ($options as $index => $option) {
-
             BaseFieldOption::create([
                 'base_field_id' => $baseField->id,
-
                 'value' => $option['value'],
-
                 'label' => $option['label'],
-
-                'sort_order' =>
-                    $option['sort_order'] ?? $index,
-
-                'is_default' =>
-                    $option['is_default'] ?? false,
+                'sort_order' => $option['sort_order'] ?? $index,
+                'is_default' => $option['is_default'] ?? false,
             ]);
         }
     }
@@ -325,6 +347,8 @@ class BaseFieldService
      * Existing options with an ID are updated.
      * New options without an ID are created.
      * Existing options omitted from the request are deleted.
+     *
+     * @param array<int, array<string, mixed>> $options
      */
     private function syncOptions(
         BaseField $baseField,
@@ -366,7 +390,6 @@ class BaseFieldService
         */
 
         foreach ($options as $index => $option) {
-
             $optionId = $option['id'] ?? null;
 
             /*
@@ -376,7 +399,6 @@ class BaseFieldService
             */
 
             if ($optionId !== null) {
-
                 $optionId = (string) $optionId;
 
                 /*
@@ -384,8 +406,7 @@ class BaseFieldService
                 | Security Check
                 |--------------------------------------------------------------------------
                 |
-                | Prevent updating an option belonging to another
-                | BaseField.
+                | Prevent updating an option belonging to another BaseField.
                 |
                 */
 
@@ -402,14 +423,9 @@ class BaseFieldService
 
                 $baseFieldOption->update([
                     'value' => $option['value'],
-
                     'label' => $option['label'],
-
-                    'sort_order' =>
-                        $option['sort_order'] ?? $index,
-
-                    'is_default' =>
-                        $option['is_default'] ?? false,
+                    'sort_order' => $option['sort_order'] ?? $index,
+                    'is_default' => $option['is_default'] ?? false,
                 ]);
 
                 $submittedOptionIds[] = $optionId;
@@ -425,16 +441,10 @@ class BaseFieldService
 
             $newOption = BaseFieldOption::create([
                 'base_field_id' => $baseField->id,
-
                 'value' => $option['value'],
-
                 'label' => $option['label'],
-
-                'sort_order' =>
-                    $option['sort_order'] ?? $index,
-
-                'is_default' =>
-                    $option['is_default'] ?? false,
+                'sort_order' => $option['sort_order'] ?? $index,
+                'is_default' => $option['is_default'] ?? false,
             ]);
 
             $submittedOptionIds[] = (string) $newOption->id;
@@ -489,9 +499,7 @@ class BaseFieldService
             ]);
 
             return $result;
-
         } catch (Exception $exception) {
-
             Log::error('Failed to delete base field.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),
@@ -509,7 +517,6 @@ class BaseFieldService
     {
         try {
             $baseField = DB::transaction(function () use ($id) {
-
                 $baseField = BaseField::withTrashed()
                     ->findOrFail($id);
 
@@ -519,14 +526,12 @@ class BaseFieldService
             });
 
             Log::info('Base field restored successfully.', [
-                'base_field_id' => $id,
+                'base_field_id' => $baseField->id,
                 'code' => $baseField->code,
             ]);
 
             return $baseField->load(self::RELATIONS);
-
         } catch (Exception $exception) {
-
             Log::error('Failed to restore base field.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),
@@ -546,7 +551,6 @@ class BaseFieldService
     ): BaseField {
         try {
             $baseField = DB::transaction(function () use ($id, $status) {
-
                 $baseField = BaseField::findOrFail($id);
 
                 $baseField->update([
@@ -562,9 +566,7 @@ class BaseFieldService
             ]);
 
             return $baseField->load(self::RELATIONS);
-
         } catch (Exception $exception) {
-
             Log::error('Failed to change base field status.', [
                 'base_field_id' => $id,
                 'message' => $exception->getMessage(),

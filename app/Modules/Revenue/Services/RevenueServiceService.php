@@ -13,316 +13,256 @@ use Illuminate\Validation\ValidationException;
 
 class RevenueServiceService
 {
-    /**
-     * Paginated revenue services.
-     *
-     * Supported query params (all optional):
-     *
-     * - search:            string   — matches service name or code
-     * - revenue_domain:    string   — RevenueCategory.revenue_domain
-     * - code:              string   — RevenueCode.code
-     * - collection_mode:   string   — further filters the user's allowed modes
-     * - is_active:         bool     — RevenueService.is_active
-     * - per_page:          int      — page size, defaults to 20
-     *
-     * Workflow access:
-     *
-     * - SYSTEM_ADMIN:
-     *      Can access all revenue services.
-     *
-     * - REVENUE_COLLECTOR:
-     *      Can access collection-capable services:
-     *
-     *          COLLECTION_ONLY
-     *          ASSESSMENT_AND_COLLECTION
-     *
-     *      Collection is centralized in the Revenue Office,
-     *      so sector service access rules are NOT applied.
-     *
-     * - Other users:
-     *      Can access assessment-capable services:
-     *
-     *          ASSESSMENT_ONLY
-     *          ASSESSMENT_AND_COLLECTION
-     *
-     *      Additionally, the service must have an active
-     *      service access rule for the user's sector.
-     */
-    public function paginate(Request $request)
-    {
-        $user = auth()->user();
+   
+/**
+ * Paginated revenue services.
+ *
+ * Supported query params (all optional):
+ *
+ * - search:            string   — matches service name, revenue code, or code name
+ * - revenue_domain:    string   — RevenueCategory.revenue_domain
+ * - code:              string   — RevenueCode UUID (revenue_codes.id)
+ * - collection_mode:   string   — further filters the user's allowed modes
+ * - is_active:         bool     — RevenueService.is_active
+ * - page:              int      — page number
+ * - per_page:          int      — page size, defaults to 20
+ *
+ * Workflow access:
+ *
+ * - SYSTEM_ADMIN:
+ *      Can access all revenue services.
+ *
+ * - REVENUE_COLLECTOR:
+ *      Can access collection-capable services:
+ *          COLLECTION_ONLY
+ *          ASSESSMENT_AND_COLLECTION
+ *
+ *      Sector service access rules are not applied.
+ *
+ * - Other users:
+ *      Can access assessment-capable services:
+ *          ASSESSMENT_ONLY
+ *          ASSESSMENT_AND_COLLECTION
+ *
+ *      An active service access rule for the user's sector is required.
+ */
+public function paginate(Request $request)
+{
+    $user = auth()->user();
 
-        $query = RevenueService::query();
+    $query = RevenueService::query();
 
-        /*
-        |--------------------------------------------------------------------------
-        | User Workflow / Access Scope
-        |--------------------------------------------------------------------------
-        |
-        | This is the primary authorization-aware service scope.
-        |
-        | SYSTEM_ADMIN
-        |     → all services
-        |
-        | REVENUE_COLLECTOR
-        |     → collection-capable services
-        |
-        | Other users
-        |     → assessment-capable services
-        |     → sector access required
-        |
-        */
-        $this->applyUserScope(
-            $query,
-            $user
-        );
+    /*
+    |--------------------------------------------------------------------------
+    | User Workflow / Access Scope
+    |--------------------------------------------------------------------------
+    |
+    | SYSTEM_ADMIN
+    |     → all services
+    |
+    | REVENUE_COLLECTOR
+    |     → collection-capable services
+    |
+    | Other users
+    |     → assessment-capable services
+    |     → sector access required
+    |
+    */
+    $this->applyUserScope(
+        $query,
+        $user
+    );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Relationships
-        |--------------------------------------------------------------------------
-        |
-        | RevenueService
-        |      ↓
-        | RevenueCode
-        |      ↓
-        | RevenueCategory
-        |
-        */
-        $query->with([
-            'revenueCode.category',
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
-            /*
-             * RevenueService
-             *      ↓
-             * RevenueServiceField
-             *      ↓
-             * BaseField
-             *      ├── MeasurementUnit
-             *      └── Options
-             */
-            'fields.baseField.measurementUnit',
-            'fields.baseField.options',
-        ]);
+    $query->with([
+        'revenueCode.category',
+        'fields.baseField.measurementUnit',
+        'fields.baseField.options',
+    ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Field Count
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Field Count
+    |--------------------------------------------------------------------------
+    */
 
-        $query->withCount('fields');
+    $query->withCount('fields');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Search
-        |--------------------------------------------------------------------------
-        |
-        | Matches:
-        |
-        | - service name
-        | - revenue code
-        | - revenue code name
-        |
-        */
-        $query->when(
-            $request->filled('search'),
-            function (Builder $query) use ($request) {
+    /*
+    |--------------------------------------------------------------------------
+    | Search
+    |--------------------------------------------------------------------------
+    |
+    | Matches:
+    | - service name
+    | - revenue code
+    | - revenue code name
+    |
+    */
+    $query->when(
+        $request->filled('search'),
+        function (Builder $query) use ($request) {
+            $search = trim(
+                $request->string('search')->toString()
+            );
 
-                $search = trim(
-                    $request->string('search')
-                );
-
-                $query->where(
-                    function (Builder $inner) use ($search) {
-
-                        $inner
-                            ->where(
-                                'name',
-                                'like',
-                                "%{$search}%"
-                            )
-
-                            ->orWhereHas(
-                                'revenueCode',
-                                function (Builder $codeQuery) use ($search) {
-
-                                    $codeQuery
-                                        ->where(
-                                            'code',
-                                            'like',
-                                            "%{$search}%"
-                                        )
-
-                                        ->orWhere(
-                                            'name',
-                                            'like',
-                                            "%{$search}%"
-                                        );
-                                }
-                            );
-                    }
-                );
-            }
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Revenue Domain
-        |--------------------------------------------------------------------------
-        |
-        | Revenue domain is stored on RevenueCategory.
-        |
-        | RevenueService
-        |      ↓
-        | RevenueCode
-        |      ↓
-        | RevenueCategory
-        |
-        */
-        $query->when(
-            $request->filled('revenue_domain'),
-            function (Builder $query) use ($request) {
-
-                $query->whereHas(
-                    'revenueCode.category',
-                    function (Builder $categoryQuery) use ($request) {
-
-                        $categoryQuery->where(
-                            'revenue_domain',
-                            $request->string(
-                                'revenue_domain'
-                            )
+            $query->where(
+                function (Builder $inner) use ($search) {
+                    $inner
+                        ->where(
+                            'name',
+                            'like',
+                            "%{$search}%"
+                        )
+                        ->orWhereHas(
+                            'revenueCode',
+                            function (Builder $codeQuery) use ($search) {
+                                $codeQuery
+                                    ->where(
+                                        'code',
+                                        'like',
+                                        "%{$search}%"
+                                    )
+                                    ->orWhere(
+                                        'name',
+                                        'like',
+                                        "%{$search}%"
+                                    );
+                            }
                         );
-                    }
-                );
-            }
-        );
+                }
+            );
+        }
+    );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Revenue Code
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Revenue Domain
+    |--------------------------------------------------------------------------
+    |
+    | RevenueService
+    |      ↓
+    | RevenueCode
+    |      ↓
+    | RevenueCategory
+    |
+    */
+    $query->when(
+        $request->filled('revenue_domain'),
+        function (Builder $query) use ($request) {
+            $revenueDomain = $request
+                ->string('revenue_domain')
+                ->toString();
 
-        $query->when(
-            $request->filled('code'),
-            function (Builder $query) use ($request) {
+            $query->whereHas(
+                'revenueCode.category',
+                function (Builder $categoryQuery) use ($revenueDomain) {
+                    $categoryQuery->where(
+                        'revenue_domain',
+                        $revenueDomain
+                    );
+                }
+            );
+        }
+    );
 
-                $query->whereHas(
-                    'revenueCode',
-                    function (Builder $codeQuery) use ($request) {
+    /*
+    |--------------------------------------------------------------------------
+    | Revenue Code
+    |--------------------------------------------------------------------------
+    |
+    | The frontend sends the selected RevenueCode UUID, for example:
+    |
+    | code=01a0a718-17fe-7281-b796-93d0cff856a2
+    |
+    | Filter by the related RevenueCode primary key, not its human-readable
+    | code column.
+    |
+    */
+    $query->when(
+        $request->filled('code'),
+        function (Builder $query) use ($request) {
+            $codeId = $request->input('code');
 
-                        $codeQuery->where(
-                            'code',
-                            $request->string('code')
-                        );
-                    }
-                );
-            }
-        );
+            $query->whereHas(
+                'revenueCode',
+                function (Builder $codeQuery) use ($codeId) {
+                    $codeQuery->whereKey($codeId);
+                }
+            );
+        }
+    );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Collection Mode
-        |--------------------------------------------------------------------------
-        |
-        | IMPORTANT:
-        |
-        | This filter only narrows the already-authorized workflow scope.
-        |
-        | It cannot grant additional access.
-        |
-        | Example:
-        |
-        | REVENUE_COLLECTOR
-        |     allowed:
-        |         COLLECTION_ONLY
-        |         ASSESSMENT_AND_COLLECTION
-        |
-        | If collector sends:
-        |
-        |     ?collection_mode=COLLECTION_ONLY
-        |
-        |     → COLLECTION_ONLY
-        |
-        | If collector sends:
-        |
-        |     ?collection_mode=ASSESSMENT_AND_COLLECTION
-        |
-        |     → ASSESSMENT_AND_COLLECTION
-        |
-        | Normal sector user:
-        |
-        |     ?collection_mode=COLLECTION_ONLY
-        |
-        |     → empty result
-        |
-        */
-        $query->when(
-            $request->filled('collection_mode'),
-            function (Builder $query) use ($request) {
+    /*
+    |--------------------------------------------------------------------------
+    | Collection Mode
+    |--------------------------------------------------------------------------
+    |
+    | This filter narrows the authorized workflow scope. It does not grant
+    | access to services outside that scope.
+    |
+    */
+    $query->when(
+        $request->filled('collection_mode'),
+        function (Builder $query) use ($request) {
+            $collectionMode = $request
+                ->string('collection_mode')
+                ->toString();
 
-                $query->where(
-                    'collection_mode',
-                    $request->string(
-                        'collection_mode'
-                    )
-                );
-            }
-        );
+            $query->where(
+                'collection_mode',
+                $collectionMode
+            );
+        }
+    );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Active Status
-        |--------------------------------------------------------------------------
-        |
-        | Handles:
-        |
-        | true
-        | false
-        | "true"
-        | "false"
-        | "1"
-        | "0"
-        |
-        */
-        $query->when(
-            $request->has('is_active'),
-            function (Builder $query) use ($request) {
+    /*
+    |--------------------------------------------------------------------------
+    | Active Status
+    |--------------------------------------------------------------------------
+    |
+    | Supports true, false, "true", "false", "1", and "0".
+    |
+    */
+    $query->when(
+        $request->has('is_active'),
+        function (Builder $query) use ($request) {
+            $query->where(
+                'is_active',
+                $request->boolean('is_active')
+            );
+        }
+    );
 
-                $query->where(
-                    'is_active',
-                    $request->boolean(
-                        'is_active'
-                    )
-                );
-            }
-        );
+    /*
+    |--------------------------------------------------------------------------
+    | Ordering
+    |--------------------------------------------------------------------------
+    */
 
-        /*
-        |--------------------------------------------------------------------------
-        | Ordering
-        |--------------------------------------------------------------------------
-        */
+    $query->latest();
 
-        $query->latest();
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination
+    |--------------------------------------------------------------------------
+    */
 
-        /*
-        |--------------------------------------------------------------------------
-        | Pagination
-        |--------------------------------------------------------------------------
-        */
+    $perPage = $request->integer('per_page', 20);
 
-        return $query
-            ->paginate(
-                $request->integer(
-                    'per_page',
-                    20
-                )
-            )
-            ->withQueryString();
-    }
+    // Prevent invalid or excessively large page sizes.
+    $perPage = max(1, min($perPage, 100));
+
+    return $query
+        ->paginate($perPage)
+        ->withQueryString();
+}
+
 
     /**
      * Apply workflow and access scope based on the authenticated user.
@@ -746,236 +686,183 @@ class RevenueServiceService
         );
     }
 
+   
     /**
      * Synchronize Revenue Service fields.
      *
-     * The incoming `$fields` array represents the desired
-     * complete configuration of the service fields.
+     * The incoming $fields array represents the complete desired
+     * configuration of the service fields.
      *
-     * Existing fields are updated.
-     * New fields are created.
-     * Removed fields are deleted.
+     * - Existing fields are updated.
+     * - Soft-deleted fields are restored when selected again.
+     * - New fields are created only when no relationship exists.
+     * - Fields omitted from the submitted configuration are soft-deleted.
      */
     private function syncFields(
         RevenueService $service,
         array $fields
     ): void {
-
         /*
         |--------------------------------------------------------------------------
-        | Validate BaseField References
+        | Validate Base Field References
         |--------------------------------------------------------------------------
         */
 
         $baseFieldIds = collect($fields)
             ->pluck('base_field_id')
             ->filter()
-            ->unique()
+            ->map(fn ($id) => (string) $id)
             ->values();
 
+        /*
+        |--------------------------------------------------------------------------
+        | Prevent Duplicate Field Selections
+        |--------------------------------------------------------------------------
+        */
+
+        if ($baseFieldIds->count() !== $baseFieldIds->unique()->count()) {
+            throw ValidationException::withMessages([
+                'fields' => 'A base field cannot be selected more than once for the same revenue service.',
+            ]);
+        }
+
+        $baseFieldIds = $baseFieldIds->unique()->values();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Active Base Fields
+        |--------------------------------------------------------------------------
+        */
+
         if ($baseFieldIds->isNotEmpty()) {
+            $validBaseFieldIds = DB::table('base_fields')
+                ->whereIn('id', $baseFieldIds)
+                ->where('is_active', true)
+                ->pluck('id')
+                ->map(fn ($id) => (string) $id);
 
-            $validBaseFieldIds =
-                DB::table('base_fields')
-                    ->whereIn(
-                        'id',
-                        $baseFieldIds
-                    )
-                    ->where(
-                        'is_active',
-                        true
-                    )
-                    ->pluck('id');
+            $invalidBaseFieldIds = $baseFieldIds
+                ->diff($validBaseFieldIds)
+                ->values();
 
-            $invalidBaseFieldIds =
-                $baseFieldIds
-                    ->diff(
-                        $validBaseFieldIds
-                    )
-                    ->values();
-
-            if (
-                $invalidBaseFieldIds->isNotEmpty()
-            ) {
-
+            if ($invalidBaseFieldIds->isNotEmpty()) {
                 throw ValidationException::withMessages([
-                    'fields' =>
-                        'One or more selected base fields are invalid or inactive.',
+                    'fields' => 'One or more selected base fields are invalid or inactive.',
                 ]);
             }
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Existing Service Fields
+        | Load Existing Fields Including Soft-Deleted Records
         |--------------------------------------------------------------------------
+        |
+        | withTrashed() is essential. Without it, previously deleted
+        | relationships would be missed and duplicate inserts attempted.
+        |
         */
 
-        $existingFields =
-            RevenueServiceField::query()
-                ->where(
-                    'service_id',
-                    $service->id
-                )
-                ->get()
-                ->keyBy(
-                    'base_field_id'
-                );
+        $existingFields = RevenueServiceField::withTrashed()
+            ->where('service_id', $service->id)
+            ->get()
+            ->keyBy(fn (RevenueServiceField $field) => (string) $field->base_field_id);
 
         /*
         |--------------------------------------------------------------------------
-        | Track Incoming Base Fields
+        | Track Incoming Base Field IDs
         |--------------------------------------------------------------------------
         */
 
-        $incomingBaseFieldIds = [];
+        $incomingBaseFieldIds = $baseFieldIds->all();
 
         /*
         |--------------------------------------------------------------------------
-        | Create / Update Fields
+        | Create, Update, or Restore Fields
         |--------------------------------------------------------------------------
         */
 
-        foreach (
-            $fields as $index => $field
-        ) {
-
-            $baseFieldId =
-                $field['base_field_id'];
-
-            $incomingBaseFieldIds[] =
-                $baseFieldId;
+        foreach ($fields as $index => $field) {
+            $baseFieldId = (string) $field['base_field_id'];
 
             /*
             |--------------------------------------------------------------------------
-            | Normalize Values
+            | Normalize Field Configuration
             |--------------------------------------------------------------------------
             */
 
             $payload = [
-
-                'sort_order' =>
-                    $field['sort_order']
-                    ?? $index,
-
-                'is_required' =>
-                    $field['is_required']
-                    ?? false,
-
-                'label' =>
-                    $field['label']
-                    ?? null,
-
-                'help_text' =>
-                    $field['help_text']
-                    ?? null,
-
-                'validation_rules' =>
-                    $field['validation_rules']
-                    ?? null,
-
-                'is_active' =>
-                    $field['is_active']
-                    ?? true,
+                'sort_order' => $field['sort_order'] ?? $index,
+                'is_required' => $field['is_required'] ?? false,
+                'label' => $field['label'] ?? null,
+                'help_text' => $field['help_text'] ?? null,
+                'validation_rules' => $field['validation_rules'] ?? null,
+                'is_active' => $field['is_active'] ?? true,
             ];
 
             /*
             |--------------------------------------------------------------------------
-            | Existing Field
+            | Existing Relationship
             |--------------------------------------------------------------------------
             */
 
-            if (
-                $existingFields->has(
-                    $baseFieldId
-                )
-            ) {
+            if ($existingFields->has($baseFieldId)) {
+                /** @var RevenueServiceField $serviceField */
+                $serviceField = $existingFields->get($baseFieldId);
 
-                $serviceField =
-                    $existingFields->get(
-                        $baseFieldId
-                    );
+                /*
+                |--------------------------------------------------------------------------
+                | Restore Previously Deleted Relationship
+                |--------------------------------------------------------------------------
+                */
 
-                $serviceField->update(
-                    $payload
-                );
+                if ($serviceField->trashed()) {
+                    $serviceField->restore();
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Update Existing Relationship
+                |--------------------------------------------------------------------------
+                */
+
+                $serviceField->update($payload);
 
                 continue;
             }
 
             /*
             |--------------------------------------------------------------------------
-            | New Field
+            | Create New Relationship
             |--------------------------------------------------------------------------
             */
 
             RevenueServiceField::create([
-
-                'service_id' =>
-                    $service->id,
-
-                'base_field_id' =>
-                    $baseFieldId,
-
-                'sort_order' =>
-                    $payload['sort_order'],
-
-                'is_required' =>
-                    $payload['is_required'],
-
-                'label' =>
-                    $payload['label'],
-
-                'help_text' =>
-                    $payload['help_text'],
-
-                'validation_rules' =>
-                    $payload['validation_rules'],
-
-                'is_active' =>
-                    $payload['is_active'],
+                'service_id' => $service->id,
+                'base_field_id' => $baseFieldId,
+                ...$payload,
             ]);
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Remove Deleted Fields
+        | Soft-Delete Fields Removed From the Configuration
         |--------------------------------------------------------------------------
         |
-        | The frontend sends the complete desired field
-        | configuration.
-        |
-        | Therefore any existing field that is no longer
-        | present should be removed.
+        | Only fields absent from the submitted configuration are removed.
+        | Already soft-deleted records remain deleted unless selected again.
         |
         */
 
-        if ($existingFields->isNotEmpty()) {
-
-            $fieldsToRemove =
-                $existingFields->filter(
-                    function (
-                        RevenueServiceField $field
-                    ) use (
-                        $incomingBaseFieldIds
-                    ) {
-
-                        return !in_array(
-                            $field->base_field_id,
-                            $incomingBaseFieldIds,
-                            true
-                        );
-                    }
-                );
-
-            foreach (
-                $fieldsToRemove as $field
+        foreach ($existingFields as $baseFieldId => $serviceField) {
+            if (
+                !in_array((string) $baseFieldId, $incomingBaseFieldIds, true)
+                && !$serviceField->trashed()
             ) {
-
-                $field->delete();
+                $serviceField->delete();
             }
         }
     }
+
 
     /**
      * Validate Revenue Code.

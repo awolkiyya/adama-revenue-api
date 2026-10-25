@@ -12,89 +12,93 @@ use App\Models\MeasurementUnit;
 
 class MeasurementUnitService
 {
-    /**
-     * Get all measurement units.
-     */
-    public function getAll(array $filters = []): LengthAwarePaginator
-    {
-        $query = MeasurementUnit::query()
-            ->withCount('baseFields');
+    
+/**
+ * Get all measurement units.
+ */
+public function getAll(array $filters = []): LengthAwarePaginator
+{
+    $query = MeasurementUnit::query()
+        ->withCount('baseFields');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Search
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Search
+    |--------------------------------------------------------------------------
+    */
 
-        if (!empty($filters['search'])) {
+    $search = trim((string) ($filters['search'] ?? ''));
 
-            $search = trim($filters['search']);
+    if ($search !== '') {
+        $query->where(function ($q) use ($search) {
+            $q->where('code', 'like', "%{$search}%")
+                ->orWhere('name', 'like', "%{$search}%")
+                ->orWhere('symbol', 'like', "%{$search}%");
+        });
+    }
 
-            $query->where(function ($q) use ($search) {
+    /*
+    |--------------------------------------------------------------------------
+    | Status
+    |--------------------------------------------------------------------------
+    */
 
-                $q->where('code', 'like', "%{$search}%")
-                    ->orWhere('name', 'like', "%{$search}%")
-                    ->orWhere('symbol', 'like', "%{$search}%");
-            });
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Status
-        |--------------------------------------------------------------------------
-        */
-
-        if (array_key_exists('is_active', $filters)) {
-
-            $query->where(
-                'is_active',
-                filter_var($filters['is_active'], FILTER_VALIDATE_BOOLEAN)
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Sorting
-        |--------------------------------------------------------------------------
-        */
-
-        $allowedSorts = [
-
-            'code',
-            'name',
-            'symbol',
-            'sort_order',
-            'created_at',
-        ];
-
-        $sortBy = $filters['sort_by'] ?? 'sort_order';
-
-        if (!in_array($sortBy, $allowedSorts)) {
-
-            $sortBy = 'sort_order';
-        }
-
-        $sortDirection = strtolower(
-            $filters['sort_direction'] ?? 'asc'
+    if (array_key_exists('is_active', $filters)) {
+        $isActive = filter_var(
+            $filters['is_active'],
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE,
         );
 
-        if (!in_array($sortDirection, ['asc', 'desc'])) {
-
-            $sortDirection = 'asc';
+        if ($isActive !== null) {
+            $query->where('is_active', $isActive);
         }
-
-        $query->orderBy($sortBy, $sortDirection);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Pagination
-        |--------------------------------------------------------------------------
-        */
-
-        $perPage = (int) ($filters['per_page'] ?? 15);
-
-        return $query->paginate($perPage);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sorting
+    |--------------------------------------------------------------------------
+    */
+
+    $allowedSorts = [
+        'code',
+        'name',
+        'symbol',
+        'sort_order',
+        'created_at',
+    ];
+
+    $sortBy = $filters['sort_by'] ?? 'sort_order';
+
+    if (!in_array($sortBy, $allowedSorts, true)) {
+        $sortBy = 'sort_order';
+    }
+
+    $sortDirection = strtolower(
+        (string) ($filters['sort_direction'] ?? 'asc')
+    );
+
+    if (!in_array($sortDirection, ['asc', 'desc'], true)) {
+        $sortDirection = 'asc';
+    }
+
+    $query->orderBy($sortBy, $sortDirection);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination
+    |--------------------------------------------------------------------------
+    */
+
+    $perPage = max(
+        1,
+        min((int) ($filters['per_page'] ?? 15), 100)
+    );
+
+    return $query->paginate($perPage);
+}
+
 
     /**
      * Find measurement unit by id.

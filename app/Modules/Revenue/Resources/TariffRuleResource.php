@@ -2,9 +2,10 @@
 
 namespace App\Modules\Revenue\Resources;
 
+use App\Modules\Users\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use App\Modules\Users\Resources\UserResource;
+use Illuminate\Support\Collection;
 
 class TariffRuleResource extends JsonResource
 {
@@ -14,7 +15,6 @@ class TariffRuleResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-
             /*
             |--------------------------------------------------------------------------
             | Identity
@@ -28,10 +28,6 @@ class TariffRuleResource extends JsonResource
             'name' => $this->name,
 
             'description' => $this->description,
-
-
-
-
 
             /*
             |--------------------------------------------------------------------------
@@ -63,12 +59,6 @@ class TariffRuleResource extends JsonResource
                 $this->whenLoaded('measurementUnit')
             ),
 
-         
-
-
-
-
-
             /*
             |--------------------------------------------------------------------------
             | Calculation
@@ -95,13 +85,9 @@ class TariffRuleResource extends JsonResource
 
             'formula' => $this->formula,
 
-            'conditions' => $this->conditions,
+            'conditions' => $this->formatConditions(),
 
             'roundingRule' => $this->rounding_rule,
-
-
-
-
 
             /*
             |--------------------------------------------------------------------------
@@ -110,13 +96,10 @@ class TariffRuleResource extends JsonResource
             */
 
             'isActive' => $this->is_active,
+
             'status' => $this->is_active
                 ? 'ACTIVE'
                 : 'INACTIVE',
-
-
-
-
 
             /*
             |--------------------------------------------------------------------------
@@ -149,14 +132,13 @@ class TariffRuleResource extends JsonResource
             | - execution order conflicts
             |
             */
+
             'siblingRules' => $this->whenLoaded(
                 'relatedRules',
                 function () {
-
                     return $this->relatedRules
                         ->where('id', '!=', $this->id)
                         ->map(function ($rule) {
-
                             return [
                                 'id' => $rule->id,
 
@@ -166,12 +148,71 @@ class TariffRuleResource extends JsonResource
 
                                 'executionOrder' => $rule->execution_order,
                             ];
-
                         })
                         ->values();
-
                 }
             ),
         ];
+    }
+
+    /**
+     * Format tariff rule conditions with resolved base-field metadata.
+     *
+     * The controller or service must attach a collection of BaseField
+     * records to the model's resolvedConditionFields attribute.
+     *
+     * This method intentionally performs no database queries.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function formatConditions(): array
+    {
+        $conditions = $this->conditions;
+
+        if (is_string($conditions)) {
+            $conditions = json_decode($conditions, true);
+        }
+
+        if (! is_array($conditions)) {
+            return [];
+        }
+
+        $resolvedFields = $this->resource->resolvedConditionFields ?? [];
+
+        if ($resolvedFields instanceof Collection) {
+            $fieldsById = $resolvedFields->keyBy('id');
+        } elseif (is_array($resolvedFields)) {
+            $fieldsById = collect($resolvedFields)->keyBy('id');
+        } else {
+            $fieldsById = collect();
+        }
+
+        return collect($conditions)
+            ->filter(fn ($condition) => is_array($condition))
+            ->map(function (array $condition) use ($fieldsById): array {
+                $fieldId = $condition['fieldId'] ?? null;
+
+                $field = $fieldId !== null
+                    ? $fieldsById->get($fieldId)
+                    : null;
+
+                return [
+                    'fieldId' => $fieldId,
+
+                    'fieldName' => data_get($field, 'name')
+                        ?? $condition['fieldName']
+                        ?? null,
+
+                    'fieldCode' => data_get($field, 'code')
+                        ?? $condition['fieldCode']
+                        ?? null,
+
+                    'operator' => $condition['operator'] ?? null,
+
+                    'value' => $condition['value'] ?? null,
+                ];
+            })
+            ->values()
+            ->all();
     }
 }

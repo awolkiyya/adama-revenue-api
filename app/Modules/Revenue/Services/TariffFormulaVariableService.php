@@ -10,18 +10,16 @@ use Illuminate\Support\Str;
 
 class TariffFormulaVariableService
 {
-    /**
-     * Get all variables for a tariff rule.
+  /**
+     * Get all formula variables for a tariff rule.
      */
-    public function index(
-        TariffRule $tariffRule
-    ): Collection {
+    public function index(TariffRule $tariffRule): Collection
+    {
         return $tariffRule
             ->formulaVariables()
             ->with('baseField')
             ->get();
     }
-
     /**
      * Get a single variable.
      */

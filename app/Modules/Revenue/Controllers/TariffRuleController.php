@@ -12,6 +12,7 @@ use App\Modules\Revenue\Services\TariffRuleService;
 use App\Services\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Models\BaseField;
 
 class TariffRuleController extends Controller
 {
@@ -21,59 +22,103 @@ class TariffRuleController extends Controller
     }
 
 
-    /**
-     * List tariff rules
-     */
-    public function index(Request $request): JsonResponse
-    {
-        $rules = TariffRule::query()
-            ->with([
-                'tariffVersion',
-                'service.revenueCode',   // nest it under service
-                'baseField',
-                'measurementUnit',
-                'creator',
-                'updater',
-            ])
+/**
+ * List tariff rules for a tariff version.
+ */
+public function index(
+    Request $request,
+    string $tariffVersionId
+): JsonResponse {
+    $perPage = $request->integer('per_page', 15);
+    $perPage = max(1, min($perPage, 100));
 
-            ->when(
-                $request->filled('tariff_version_id'),
-                fn ($query) =>
-                    $query->where(
-                        'tariff_version_id',
-                        $request->tariff_version_id
-                    )
+    $rules = TariffRule::query()
+        ->with([
+            'tariffVersion',
+            'service.revenueCode',
+            'baseField',
+            'measurementUnit',
+            'creator',
+            'updater',
+        ])
+        ->where('tariff_version_id', $tariffVersionId)
+        ->when(
+            $request->filled('service_id'),
+            fn ($query) => $query->where(
+                'service_id',
+                $request->input('service_id')
             )
-
-            ->when(
-                $request->filled('service_id'),
-                fn ($query) =>
-                    $query->where(
-                        'service_id',
-                        $request->service_id
-                    )
+        )
+        ->when(
+            $request->filled('is_active'),
+            fn ($query) => $query->where(
+                'is_active',
+                $request->boolean('is_active')
             )
+        )
+        ->orderBy('priority')
+        ->orderBy('execution_order')
+        ->paginate($perPage);
 
-            ->when(
-                $request->filled('is_active'),
-                fn ($query) =>
-                    $query->where(
-                        'is_active',
-                        $request->boolean('is_active')
-                    )
-            )
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Condition Field Metadata
+    |--------------------------------------------------------------------------
+    |
+    | Conditions store field IDs in JSON. Resolve all unique IDs with one
+    | query rather than querying separately for every condition.
+    |
+    */
 
-            ->orderBy('priority')
-            ->orderBy('execution_order')
-            ->paginate(
-                $request->integer('per_page', 15)
+    $conditionFieldIds = $rules->getCollection()
+        ->flatMap(function (TariffRule $rule) {
+            $conditions = $rule->conditions;
+
+            if (is_string($conditions)) {
+                $conditions = json_decode($conditions, true);
+            }
+
+            if (! is_array($conditions)) {
+                return [];
+            }
+
+            return collect($conditions)
+                ->filter(fn ($condition) => is_array($condition))
+                ->pluck('fieldId');
+        })
+        ->filter(fn ($id) => is_string($id) && $id !== '')
+        ->unique()
+        ->values();
+
+    $resolvedConditionFields = $conditionFieldIds->isEmpty()
+        ? collect()
+        : BaseField::query()
+            ->whereIn('id', $conditionFieldIds)
+            ->get(['id', 'name', 'code'])
+            ->keyBy('id');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Attach Resolved Fields
+    |--------------------------------------------------------------------------
+    */
+
+    $rules->getCollection()->each(
+        function (TariffRule $rule) use ($resolvedConditionFields) {
+            $rule->setAttribute(
+                'resolvedConditionFields',
+                $resolvedConditionFields
             );
+        }
+    );
 
-        return ApiResponse::success(
-            TariffRuleResource::collection($rules),
-            'Tariff rules retrieved successfully'
-        );
-    }
+    return ApiResponse::success(
+        TariffRuleResource::collection($rules),
+        'Tariff rules retrieved successfully'
+    );
+}
+
+
 
 
 
@@ -96,34 +141,69 @@ class TariffRuleController extends Controller
     }
 
 
+/**
+ * Show tariff rule.
+ */
+public function show(
+    TariffVersion $tariffVersion,
+    TariffRule $tariffRule
+): JsonResponse {
+    $tariffRule->load([
+        'tariffVersion',
+        'service.revenueCode',
+        'baseField',
+        'measurementUnit',
+        'creator',
+        'updater',
+        'relatedRules',
+    ]);
 
-    /**
-     * Show tariff rule
-     */
-    public function show(
-        TariffVersion $tariffVersion,
-        TariffRule $tariffRule
-    ): JsonResponse {
-    
-        $tariffRule->load([
-            'tariffVersion',
-            'service.revenueCode',
-            'baseField',
-            'measurementUnit',
-            'creator',
-            'updater',
-            'relatedRules',
-            // 'formulaVariables.baseField',
-        ]);
-    
-    
-        return ApiResponse::success(
-            new TariffRuleResource($tariffRule),
-            'Tariff rule retrieved successfully'
-        );
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Condition Field Metadata
+    |--------------------------------------------------------------------------
+    |
+    | Conditions store field IDs in JSON. Resolve all referenced fields
+    | in a single query, consistent with the index() method.
+    |
+    */
+
+    $conditions = $tariffRule->conditions;
+
+    if (is_string($conditions)) {
+        $conditions = json_decode($conditions, true);
     }
 
+    $conditionFieldIds = collect(is_array($conditions) ? $conditions : [])
+        ->filter(fn ($condition) => is_array($condition))
+        ->pluck('fieldId')
+        ->filter(fn ($id) => is_string($id) && $id !== '')
+        ->unique()
+        ->values();
 
+    $resolvedConditionFields = $conditionFieldIds->isEmpty()
+        ? collect()
+        : BaseField::query()
+            ->whereIn('id', $conditionFieldIds)
+            ->get(['id', 'name', 'code'])
+            ->keyBy('id');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Attach Resolved Fields
+    |--------------------------------------------------------------------------
+    */
+
+    $tariffRule->setAttribute(
+        'resolvedConditionFields',
+        $resolvedConditionFields
+    );
+
+    return ApiResponse::success(
+        new TariffRuleResource($tariffRule),
+        'Tariff rule retrieved successfully'
+    );
+}
 
     public function update(
         UpdateTariffRuleRequest $request,

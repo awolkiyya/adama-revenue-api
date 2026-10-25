@@ -205,31 +205,26 @@ Route::prefix('revenue')
     )->name('services.access-rules.status');
 
 
-    /*
+   /*
     |--------------------------------------------------------------------------
     | Tariff Versions
     |--------------------------------------------------------------------------
     |
     | IMPORTANT:
-    | Static routes must come before /{tariffVersion}.
+    | Static and custom action routes must be declared before apiResource().
     |
     */
-
 
     /*
     |--------------------------------------------------------------------------
     | Tariff Version Dashboard Summary
     |--------------------------------------------------------------------------
-    |
-    | GET /revenue/tariff-versions/summary
-    |
     */
 
     Route::get(
-        'tariff-versions/summary',
-        [TariffVersionController::class, 'summary']
+    'tariff-versions/summary',
+    [TariffVersionController::class, 'summary']
     )->name('tariff-versions.summary');
-
 
     /*
     |--------------------------------------------------------------------------
@@ -238,10 +233,9 @@ Route::prefix('revenue')
     */
 
     Route::patch(
-        'tariff-versions/{id}/activate',
-        [TariffVersionController::class, 'activate']
+    'tariff-versions/{id}/activate',
+    [TariffVersionController::class, 'activate']
     )->name('tariff-versions.activate');
-
 
     /*
     |--------------------------------------------------------------------------
@@ -250,10 +244,20 @@ Route::prefix('revenue')
     */
 
     Route::patch(
-        'tariff-versions/{id}/restore',
-        [TariffVersionController::class, 'restore']
+    'tariff-versions/{id}/restore',
+    [TariffVersionController::class, 'restore']
     )->name('tariff-versions.restore');
 
+    /*
+    |--------------------------------------------------------------------------
+    | Duplicate Tariff Version
+    |--------------------------------------------------------------------------
+    */
+
+    Route::post(
+    'tariff-versions/{id}/duplicate',
+    [TariffVersionController::class, 'duplicate']
+    )->name('tariff-versions.duplicate');
 
     /*
     |--------------------------------------------------------------------------
@@ -262,8 +266,8 @@ Route::prefix('revenue')
     */
 
     Route::apiResource(
-        'tariff-versions',
-        TariffVersionController::class
+    'tariff-versions',
+    TariffVersionController::class
     );
 
 

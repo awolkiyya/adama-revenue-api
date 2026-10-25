@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Revenue\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
@@ -8,17 +10,11 @@ use Illuminate\Validation\Validator;
 
 class UpdateBaseFieldRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
-    /**
-     * Prepare the data for validation.
-     */
     protected function prepareForValidation(): void
     {
         $data = [];
@@ -30,11 +26,15 @@ class UpdateBaseFieldRequest extends FormRequest
         */
 
         if ($this->has('code')) {
-            $data['code'] = strtoupper(trim((string) $this->input('code')));
+            $data['code'] = strtoupper(
+                trim((string) $this->input('code'))
+            );
         }
 
         if ($this->has('name')) {
-            $data['name'] = trim((string) $this->input('name'));
+            $data['name'] = trim(
+                (string) $this->input('name')
+            );
         }
 
         if ($this->has('description')) {
@@ -50,26 +50,28 @@ class UpdateBaseFieldRequest extends FormRequest
         | Normalize Options
         |--------------------------------------------------------------------------
         |
-        | Only these option fields are supported:
-        |
+        | Supported option properties:
+        | - id
         | - value
         | - label
         | - sort_order
         | - is_default
         |
-        | Option-level is_active and description are intentionally removed.
+        | Unsupported properties are preserved for prohibited validation.
         |
         */
 
-        if ($this->has('options') && is_array($this->input('options'))) {
+        if (
+            $this->has('options')
+            && is_array($this->input('options'))
+        ) {
             $data['options'] = collect($this->input('options'))
-                ->map(function ($option) {
+                ->map(function ($option, $index) {
                     if (!is_array($option)) {
                         return $option;
                     }
 
                     return [
-                        // Preserve ID during update when supplied.
                         'id' => $option['id'] ?? null,
 
                         'value' => isset($option['value'])
@@ -80,31 +82,54 @@ class UpdateBaseFieldRequest extends FormRequest
                             ? trim((string) $option['label'])
                             : null,
 
-                        'sort_order' => $option['sort_order'] ?? null,
+                        'sort_order' => isset($option['sort_order'])
+                            ? (int) $option['sort_order']
+                            : $index,
 
-                        'is_default' => $option['is_default'] ?? false,
+                        'is_default' => filter_var(
+                            $option['is_default'] ?? false,
+                            FILTER_VALIDATE_BOOLEAN
+                        ),
+
+                        ...array_diff_key(
+                            $option,
+                            array_flip([
+                                'id',
+                                'value',
+                                'label',
+                                'sort_order',
+                                'is_default',
+                            ])
+                        ),
                     ];
                 })
                 ->values()
                 ->all();
         }
 
-        if (!empty($data)) {
+        if ($data !== []) {
             $this->merge($data);
         }
     }
 
-    /**
-     * Validation rules.
-     */
+    private function requiresOptions(): bool
+    {
+        return in_array(
+            $this->input('data_type'),
+            ['SELECT', 'RADIO', 'CHECKBOX'],
+            true
+        );
+    }
+
     public function rules(): array
     {
         $baseField = $this->route('base_field')
             ?? $this->route('baseField')
             ?? $this->route('id');
 
-        return [
+        $requiresOptions = $this->requiresOptions();
 
+        return [
             /*
             |--------------------------------------------------------------------------
             | Identity
@@ -116,7 +141,6 @@ class UpdateBaseFieldRequest extends FormRequest
                 'string',
                 'max:100',
                 'alpha_dash',
-
                 Rule::unique('base_fields', 'code')
                     ->ignore($baseField),
             ],
@@ -130,6 +154,26 @@ class UpdateBaseFieldRequest extends FormRequest
             'description' => [
                 'nullable',
                 'string',
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Input Source
+            |--------------------------------------------------------------------------
+            |
+            | Optional during updates so clients that do not send this
+            | property can continue updating other base field properties.
+            |
+            */
+
+            'input_source' => [
+                'sometimes',
+                'required',
+                Rule::in([
+                    'MANUAL',
+                    'AI',
+                    'MANUAL_OR_AI',
+                ]),
             ],
 
             /*
@@ -177,6 +221,12 @@ class UpdateBaseFieldRequest extends FormRequest
                 'boolean',
             ],
 
+            /*
+            |--------------------------------------------------------------------------
+            | Sort Order
+            |--------------------------------------------------------------------------
+            */
+
             'sort_order' => [
                 'sometimes',
                 'integer',
@@ -187,27 +237,13 @@ class UpdateBaseFieldRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Options
             |--------------------------------------------------------------------------
-            |
-            | Options are required for:
-            |
-            | SELECT
-            | RADIO
-            | CHECKBOX
-            |
             */
 
             'options' => [
-                'nullable',
+                'present',
                 'array',
-                'required_if:data_type,SELECT,RADIO,CHECKBOX',
-                'min:1',
+                $requiresOptions ? 'min:1' : 'max:0',
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Individual Options
-            |--------------------------------------------------------------------------
-            */
 
             'options.*' => [
                 'required',
@@ -215,6 +251,7 @@ class UpdateBaseFieldRequest extends FormRequest
             ],
 
             'options.*.id' => [
+                'sometimes',
                 'nullable',
                 'uuid',
             ],
@@ -244,11 +281,8 @@ class UpdateBaseFieldRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Removed Option Fields
+            | Unsupported Option Properties
             |--------------------------------------------------------------------------
-            |
-            | These are intentionally prohibited.
-            |
             */
 
             'options.*.is_active' => [
@@ -261,21 +295,15 @@ class UpdateBaseFieldRequest extends FormRequest
         ];
     }
 
-    /**
-     * Additional validation.
-     */
     public function withValidator(Validator $validator): void
     {
-        $validator->after(function (Validator $validator) {
-
+        $validator->after(function (Validator $validator): void {
             $dataType = $this->input('data_type');
-            $options = $this->input('options');
+            $options = $this->input('options', []);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Option-Based Data Types
-            |--------------------------------------------------------------------------
-            */
+            if (!is_array($options) || $options === []) {
+                return;
+            }
 
             $optionDataTypes = [
                 'SELECT',
@@ -283,74 +311,13 @@ class UpdateBaseFieldRequest extends FormRequest
                 'CHECKBOX',
             ];
 
-            /*
-            |--------------------------------------------------------------------------
-            | Non-Option Data Types
-            |--------------------------------------------------------------------------
-            */
-
-            $nonOptionDataTypes = [
-                'NUMBER',
-                'DECIMAL',
-                'PERCENTAGE',
-                'TEXT',
-                'BOOLEAN',
-                'DATE',
-                'FILE',
-            ];
-
-            /*
-            |--------------------------------------------------------------------------
-            | Options Must Not Exist for Non-Option Fields
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                in_array($dataType, $nonOptionDataTypes, true)
-                && is_array($options)
-                && count($options) > 0
-            ) {
-                $validator->errors()->add(
-                    'options',
-                    "Options are not allowed for {$dataType} data type."
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Options Required for Option-Based Fields
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                in_array($dataType, $optionDataTypes, true)
-                && (!is_array($options) || count($options) === 0)
-            ) {
-                $validator->errors()->add(
-                    'options',
-                    "At least one option is required for {$dataType} data type."
-                );
-
+            if (!in_array($dataType, $optionDataTypes, true)) {
                 return;
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Nothing More to Validate
-            |--------------------------------------------------------------------------
-            */
-
-            if (!is_array($options) || empty($options)) {
-                return;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Unique Option Values
-            |--------------------------------------------------------------------------
-            */
 
             $values = [];
+            $labels = [];
+            $defaultCount = 0;
 
             foreach ($options as $index => $option) {
                 if (!is_array($option)) {
@@ -359,72 +326,65 @@ class UpdateBaseFieldRequest extends FormRequest
 
                 $value = isset($option['value'])
                     ? trim((string) $option['value'])
-                    : null;
-
-                if ($value === null || $value === '') {
-                    continue;
-                }
-
-                $normalizedValue = mb_strtolower($value);
-
-                if (in_array($normalizedValue, $values, true)) {
-                    $validator->errors()->add(
-                        "options.{$index}.value",
-                        'Option values must be unique.'
-                    );
-                }
-
-                $values[] = $normalizedValue;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Unique Option Labels
-            |--------------------------------------------------------------------------
-            */
-
-            $labels = [];
-
-            foreach ($options as $index => $option) {
-                if (!is_array($option)) {
-                    continue;
-                }
+                    : '';
 
                 $label = isset($option['label'])
                     ? trim((string) $option['label'])
-                    : null;
+                    : '';
 
-                if ($label === null || $label === '') {
-                    continue;
-                }
+                /*
+                |--------------------------------------------------------------------------
+                | Option Values Must Be Unique
+                |--------------------------------------------------------------------------
+                */
 
-                $normalizedLabel = mb_strtolower($label);
+                if ($value !== '') {
+                    $normalizedValue = mb_strtolower($value);
 
-                if (in_array($normalizedLabel, $labels, true)) {
-                    $validator->errors()->add(
-                        "options.{$index}.label",
-                        'Option labels must be unique.'
-                    );
-                }
-
-                $labels[] = $normalizedLabel;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Only One Default Option
-            |--------------------------------------------------------------------------
-            */
-
-            $defaultCount = collect($options)
-                ->filter(function ($option) {
-                    return is_array($option)
-                        && filter_var(
-                            $option['is_default'] ?? false,
-                            FILTER_VALIDATE_BOOLEAN
+                    if (in_array($normalizedValue, $values, true)) {
+                        $validator->errors()->add(
+                            "options.{$index}.value",
+                            'Option values must be unique.'
                         );
-                })
-                ->count();
+                    }
+
+                    $values[] = $normalizedValue;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Option Labels Must Be Unique
+                |--------------------------------------------------------------------------
+                */
+
+                if ($label !== '') {
+                    $normalizedLabel = mb_strtolower($label);
+
+                    if (in_array($normalizedLabel, $labels, true)) {
+                        $validator->errors()->add(
+                            "options.{$index}.label",
+                            'Option labels must be unique.'
+                        );
+                    }
+
+                    $labels[] = $normalizedLabel;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Only One Default Option
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    filter_var(
+                        $option['is_default'] ?? false,
+                        FILTER_VALIDATE_BOOLEAN
+                    )
+                ) {
+                    $defaultCount++;
+                }
+            }
 
             if ($defaultCount > 1) {
                 $validator->errors()->add(
@@ -435,13 +395,9 @@ class UpdateBaseFieldRequest extends FormRequest
         });
     }
 
-    /**
-     * Custom validation messages.
-     */
     public function messages(): array
     {
         return [
-
             /*
             |--------------------------------------------------------------------------
             | Identity
@@ -449,13 +405,21 @@ class UpdateBaseFieldRequest extends FormRequest
             */
 
             'code.required' => 'Base field code is required.',
-
             'code.unique' => 'This base field code already exists.',
-
             'code.alpha_dash' =>
                 'The code may only contain letters, numbers, dashes and underscores.',
-
             'name.required' => 'Base field name is required.',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Input Source
+            |--------------------------------------------------------------------------
+            */
+
+            'input_source.required' =>
+                'Input source is required when provided.',
+            'input_source.in' =>
+                'The selected input source is invalid.',
 
             /*
             |--------------------------------------------------------------------------
@@ -465,7 +429,6 @@ class UpdateBaseFieldRequest extends FormRequest
 
             'measurement_unit_id.uuid' =>
                 'The measurement unit ID must be a valid UUID.',
-
             'measurement_unit_id.exists' =>
                 'The selected measurement unit does not exist.',
 
@@ -476,20 +439,20 @@ class UpdateBaseFieldRequest extends FormRequest
             */
 
             'data_type.required' => 'Data type is required.',
-
             'data_type.in' => 'The selected data type is invalid.',
 
             /*
             |--------------------------------------------------------------------------
-            | Status
+            | Status and Sort Order
             |--------------------------------------------------------------------------
             */
 
-            'is_active.boolean' => 'Active status must be true or false.',
-
-            'sort_order.integer' => 'Sort order must be an integer.',
-
-            'sort_order.min' => 'Sort order cannot be negative.',
+            'is_active.boolean' =>
+                'Active status must be true or false.',
+            'sort_order.integer' =>
+                'Sort order must be an integer.',
+            'sort_order.min' =>
+                'Sort order cannot be negative.',
 
             /*
             |--------------------------------------------------------------------------
@@ -497,13 +460,14 @@ class UpdateBaseFieldRequest extends FormRequest
             |--------------------------------------------------------------------------
             */
 
-            'options.array' => 'Options must be provided as an array.',
-
+            'options.present' =>
+                'The options field must be provided.',
+            'options.array' =>
+                'Options must be provided as an array.',
             'options.min' =>
-                'At least one option is required.',
-
-            'options.required_if' =>
-                'Options are required for SELECT, RADIO and CHECKBOX fields.',
+                'At least one option is required for SELECT, RADIO, and CHECKBOX fields.',
+            'options.max' =>
+                'Options are not allowed for this data type.',
 
             /*
             |--------------------------------------------------------------------------
@@ -513,82 +477,56 @@ class UpdateBaseFieldRequest extends FormRequest
 
             'options.*.array' =>
                 'Each option must be a valid object.',
-
             'options.*.id.uuid' =>
                 'The option ID must be a valid UUID.',
-
             'options.*.value.required' =>
                 'Option value is required.',
-
             'options.*.value.max' =>
                 'Option value may not exceed 100 characters.',
-
             'options.*.label.required' =>
                 'Option label is required.',
-
             'options.*.label.max' =>
                 'Option label may not exceed 150 characters.',
-
             'options.*.sort_order.required' =>
                 'Option sort order is required.',
-
             'options.*.sort_order.integer' =>
                 'Option sort order must be an integer.',
-
             'options.*.sort_order.min' =>
                 'Option sort order cannot be negative.',
-
             'options.*.is_default.required' =>
                 'Option default status is required.',
-
             'options.*.is_default.boolean' =>
                 'Option default status must be true or false.',
 
             /*
             |--------------------------------------------------------------------------
-            | Removed Fields
+            | Unsupported Option Fields
             |--------------------------------------------------------------------------
             */
 
             'options.*.is_active.prohibited' =>
                 'Option-level active status is not supported.',
-
             'options.*.description.prohibited' =>
                 'Option-level description is not supported.',
         ];
     }
 
-    /**
-     * Friendly attribute names.
-     */
     public function attributes(): array
     {
         return [
-
             'code' => 'base field code',
-
             'name' => 'base field name',
-
             'description' => 'description',
-
+            'input_source' => 'input source',
             'measurement_unit_id' => 'measurement unit',
-
             'data_type' => 'data type',
-
             'is_active' => 'active status',
-
             'sort_order' => 'sort order',
-
             'options' => 'options',
-
             'options.*.id' => 'option ID',
-
             'options.*.value' => 'option value',
-
             'options.*.label' => 'option label',
-
             'options.*.sort_order' => 'option sort order',
-
             'options.*.is_default' => 'option default status',
         ];
     }

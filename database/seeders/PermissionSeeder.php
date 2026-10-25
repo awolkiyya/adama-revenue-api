@@ -443,17 +443,25 @@ class PermissionSeeder extends Seeder
 
 
 
-            /*
+           /*
             |--------------------------------------------------------------------------
             | Calculation Setup - Measurement Units
             |--------------------------------------------------------------------------
-            */
+           */
 
             [
                 'name' => 'measurement_units.view',
                 'label' => 'View Measurement Units',
                 'module' => 'measurement_units',
                 'description' => 'Allows viewing measurement units used by revenue calculations.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'measurement_units.read',
+                'label' => 'Read Measurement Units',
+                'module' => 'measurement_units',
+                'description' => 'Allows reading measurement unit details and retrieving measurement unit records.',
                 'is_system' => false,
             ],
 
@@ -520,6 +528,14 @@ class PermissionSeeder extends Seeder
             ],
 
             [
+                'name' => 'base_fields.read',
+                'label' => 'Read Base Fields',
+                'module' => 'base_fields',
+                'description' => 'Allows reading base field details and retrieving base field records.',
+                'is_system' => false,
+            ],
+
+            [
                 'name' => 'base_fields.create',
                 'label' => 'Create Base Field',
                 'module' => 'base_fields',
@@ -543,6 +559,7 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+           
             /*
             |--------------------------------------------------------------------------
             | Revenue Categories
@@ -554,6 +571,14 @@ class PermissionSeeder extends Seeder
                 'label' => 'View Revenue Categories',
                 'module' => 'revenue_categorys',
                 'description' => 'Allows viewing revenue categories.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'revenue_categorys.read',
+                'label' => 'Read Revenue Category',
+                'module' => 'revenue_categorys',
+                'description' => 'Allows viewing the details of an individual revenue category.',
                 'is_system' => false,
             ],
 
@@ -580,6 +605,7 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows deleting eligible revenue categories.',
                 'is_system' => false,
             ],
+
 
 
             /*
@@ -644,6 +670,14 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+            [
+                'name' => 'revenue_services.manage',
+                'label' => 'Manage Revenue Service Access',
+                'module' => 'revenue_services',
+                'description' => 'Allows managing access permissions for revenue services.',
+                'is_system' => false,
+            ],
+
 
             /*
             |--------------------------------------------------------------------------
@@ -682,6 +716,88 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows deactivating access for a sector so the sector is not allowed to use the configured revenue service.',
                 'is_system' => false,
             ],
+
+             /*
+            |--------------------------------------------------------------------------
+            | Tariff Versions
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'tariff_version.view',
+                'label' => 'View Tariff Versions',
+                'module' => 'tariff_version',
+                'description' => 'Allows viewing tariff versions and their lifecycle status.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.create',
+                'label' => 'Create Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows creating tariff versions.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.update',
+                'label' => 'Update Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows updating eligible tariff versions.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.submit',
+                'label' => 'Submit Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows submitting tariff versions for approval.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.approve',
+                'label' => 'Approve Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows approving tariff versions.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.reject',
+                'label' => 'Reject Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows rejecting tariff versions.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.view_history',
+                'label' => 'View Tariff Version History',
+                'module' => 'tariff_version',
+                'description' => 'Allows viewing tariff version history.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.duplicate',
+                'label' => 'Duplicate Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows duplicating an existing tariff version into a new draft for modification.',
+                'is_system' => false,
+            ],
+
+            [
+                'name' => 'tariff_version.delete',
+                'label' => 'Delete Tariff Version',
+                'module' => 'tariff_version',
+                'description' => 'Allows deleting eligible draft tariff versions that have no dependent records.',
+                'is_system' => false,
+            ],
+
+
+
+
 
 
             /*
@@ -787,68 +903,6 @@ class PermissionSeeder extends Seeder
                 'label' => 'Validate Tariff Formula',
                 'module' => 'tariff',
                 'description' => 'Allows validating tariff formulas before they are used for revenue calculation.',
-                'is_system' => false,
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Tariff Versions
-            |--------------------------------------------------------------------------
-            */
-
-            [
-                'name' => 'tariff_version.view',
-                'label' => 'View Tariff Versions',
-                'module' => 'tariff_version',
-                'description' => 'Allows viewing tariff versions and their lifecycle status.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'tariff_version.create',
-                'label' => 'Create Tariff Version',
-                'module' => 'tariff_version',
-                'description' => 'Allows creating tariff versions.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'tariff_version.update',
-                'label' => 'Update Tariff Version',
-                'module' => 'tariff_version',
-                'description' => 'Allows updating eligible tariff versions.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'tariff_version.submit',
-                'label' => 'Submit Tariff Version',
-                'module' => 'tariff_version',
-                'description' => 'Allows submitting tariff versions for approval.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'tariff_version.approve',
-                'label' => 'Approve Tariff Version',
-                'module' => 'tariff_version',
-                'description' => 'Allows approving tariff versions.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'tariff_version.reject',
-                'label' => 'Reject Tariff Version',
-                'module' => 'tariff_version',
-                'description' => 'Allows rejecting tariff versions.',
-                'is_system' => false,
-            ],
-
-            [
-                'name' => 'tariff_version.view_history',
-                'label' => 'View Tariff Version History',
-                'module' => 'tariff_version',
-                'description' => 'Allows viewing tariff version history.',
                 'is_system' => false,
             ],
             
@@ -1369,6 +1423,449 @@ class PermissionSeeder extends Seeder
                 'description' => 'Allows viewing audit logs and system activity history.',
                 'is_system' => true,
             ],
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Bank Accounts
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'bank_accounts.view',
+                'label' => 'View Bank Accounts',
+                'module' => 'bank_accounts',
+                'description' => 'Allows viewing bank accounts configured for municipal revenue collection.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'bank_accounts.create',
+                'label' => 'Create Bank Account',
+                'module' => 'bank_accounts',
+                'description' => 'Allows registering a bank account for authorized revenue collection.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'bank_accounts.update',
+                'label' => 'Update Bank Account',
+                'module' => 'bank_accounts',
+                'description' => 'Allows updating eligible bank account configuration.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'bank_accounts.activate',
+                'label' => 'Activate Bank Account',
+                'module' => 'bank_accounts',
+                'description' => 'Allows activating an eligible bank account.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'bank_accounts.deactivate',
+                'label' => 'Deactivate Bank Account',
+                'module' => 'bank_accounts',
+                'description' => 'Allows deactivating an eligible bank account.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'bank_accounts.view_history',
+                'label' => 'View Bank Account History',
+                'module' => 'bank_accounts',
+                'description' => 'Allows viewing recorded bank account configuration changes.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Providers
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'payment_providers.view',
+                'label' => 'View Payment Providers',
+                'module' => 'payment_providers',
+                'description' => 'Allows viewing configured payment providers and their status.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'payment_providers.create',
+                'label' => 'Create Payment Provider',
+                'module' => 'payment_providers',
+                'description' => 'Allows configuring a supported payment provider.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'payment_providers.update',
+                'label' => 'Update Payment Provider',
+                'module' => 'payment_providers',
+                'description' => 'Allows updating eligible payment provider configuration.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'payment_providers.activate',
+                'label' => 'Activate Payment Provider',
+                'module' => 'payment_providers',
+                'description' => 'Allows activating a configured payment provider.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'payment_providers.deactivate',
+                'label' => 'Deactivate Payment Provider',
+                'module' => 'payment_providers',
+                'description' => 'Allows deactivating a configured payment provider.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'payment_providers.view_history',
+                'label' => 'View Payment Provider History',
+                'module' => 'payment_providers',
+                'description' => 'Allows viewing recorded payment provider configuration changes.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Lease Amendments
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'lease_amendments.view',
+                'label' => 'View Lease Amendments',
+                'module' => 'lease_amendments',
+                'description' => 'Allows viewing lease amendment requests and their status.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.create',
+                'label' => 'Create Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows creating a lease amendment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.update',
+                'label' => 'Update Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows updating eligible lease amendment drafts.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.submit',
+                'label' => 'Submit Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows submitting a lease amendment for approval.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.approve',
+                'label' => 'Approve Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows approving a lease amendment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.reject',
+                'label' => 'Reject Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows rejecting a lease amendment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.apply',
+                'label' => 'Apply Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows applying an approved lease amendment according to the amendment workflow.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.cancel',
+                'label' => 'Cancel Lease Amendment',
+                'module' => 'lease_amendments',
+                'description' => 'Allows cancelling an eligible lease amendment.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'lease_amendments.view_history',
+                'label' => 'View Lease Amendment History',
+                'module' => 'lease_amendments',
+                'description' => 'Allows viewing the history of lease amendment requests and decisions.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Field Collection
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'field_collection.view',
+                'label' => 'View Field Collections',
+                'module' => 'field_collection',
+                'description' => 'Allows viewing authorized field collection records.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'field_collection.create',
+                'label' => 'Create Field Collection',
+                'module' => 'field_collection',
+                'description' => 'Allows recording an authorized field collection transaction.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'field_collection.submit',
+                'label' => 'Submit Field Collection',
+                'module' => 'field_collection',
+                'description' => 'Allows submitting field collection records according to the collection workflow.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'field_collection.view_history',
+                'label' => 'View Field Collection History',
+                'module' => 'field_collection',
+                'description' => 'Allows viewing field collection transaction history.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Penalty Operations
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'penalty.view',
+                'label' => 'View Penalties',
+                'module' => 'penalty',
+                'description' => 'Allows viewing penalties applied to eligible revenue obligations.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'penalty.calculate',
+                'label' => 'Calculate Penalty',
+                'module' => 'penalty',
+                'description' => 'Allows calculating penalties according to configured rules.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'penalty.apply',
+                'label' => 'Apply Penalty',
+                'module' => 'penalty',
+                'description' => 'Allows applying an authorized penalty to an eligible revenue obligation.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'penalty.adjust',
+                'label' => 'Adjust Penalty',
+                'module' => 'penalty',
+                'description' => 'Allows making authorized adjustments to penalties.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'penalty.waive',
+                'label' => 'Waive Penalty',
+                'module' => 'penalty',
+                'description' => 'Allows waiving a penalty when authorized by the applicable workflow.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'penalty.view_history',
+                'label' => 'View Penalty History',
+                'module' => 'penalty',
+                'description' => 'Allows viewing penalty calculation, application, adjustment, and waiver history.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Adjustments
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'revenue_adjustments.view',
+                'label' => 'View Revenue Adjustments',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows viewing revenue adjustment requests and records.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_adjustments.create',
+                'label' => 'Create Revenue Adjustment',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows creating a revenue adjustment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_adjustments.review',
+                'label' => 'Review Revenue Adjustment',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows reviewing a revenue adjustment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_adjustments.approve',
+                'label' => 'Approve Revenue Adjustment',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows approving a revenue adjustment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_adjustments.reject',
+                'label' => 'Reject Revenue Adjustment',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows rejecting a revenue adjustment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_adjustments.cancel',
+                'label' => 'Cancel Revenue Adjustment',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows cancelling an eligible revenue adjustment request.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_adjustments.view_history',
+                'label' => 'View Revenue Adjustment History',
+                'module' => 'revenue_adjustments',
+                'description' => 'Allows viewing revenue adjustment history.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Revenue Complaints
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'revenue_complaints.view',
+                'label' => 'View Revenue Complaints',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows viewing revenue complaints and their workflow status.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.create',
+                'label' => 'Create Revenue Complaint',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows creating a revenue complaint.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.update',
+                'label' => 'Update Revenue Complaint',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows updating an eligible revenue complaint.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.review',
+                'label' => 'Review Revenue Complaint',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows reviewing a revenue complaint.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.request_information',
+                'label' => 'Request Complaint Information',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows requesting additional information for a revenue complaint.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.recommend',
+                'label' => 'Recommend Complaint Decision',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows submitting a recommendation for a revenue complaint decision.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.reject',
+                'label' => 'Reject Revenue Complaint',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows rejecting a revenue complaint.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.escalate',
+                'label' => 'Escalate Revenue Complaint',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows escalating a revenue complaint for further review.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.close',
+                'label' => 'Close Revenue Complaint',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows closing a revenue complaint.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'revenue_complaints.view_history',
+                'label' => 'View Revenue Complaint History',
+                'module' => 'revenue_complaints',
+                'description' => 'Allows viewing revenue complaint history.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Reports
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'reports.view',
+                'label' => 'View Reports',
+                'module' => 'reports',
+                'description' => 'Allows accessing authorized system reports.',
+                'is_system' => false,
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Mobile App Releases
+            |--------------------------------------------------------------------------
+            */
+
+            [
+                'name' => 'mobile_app_releases.view',
+                'label' => 'View Mobile App Releases',
+                'module' => 'mobile_app_releases',
+                'description' => 'Allows viewing mobile application release records and update status.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'mobile_app_releases.create',
+                'label' => 'Create Mobile App Release',
+                'module' => 'mobile_app_releases',
+                'description' => 'Allows creating a mobile application release record.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'mobile_app_releases.update',
+                'label' => 'Update Mobile App Release',
+                'module' => 'mobile_app_releases',
+                'description' => 'Allows updating eligible mobile application release records.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'mobile_app_releases.publish',
+                'label' => 'Publish Mobile App Release',
+                'module' => 'mobile_app_releases',
+                'description' => 'Allows publishing a mobile application release.',
+                'is_system' => false,
+            ],
+            [
+                'name' => 'mobile_app_releases.deactivate',
+                'label' => 'Deactivate Mobile App Release',
+                'module' => 'mobile_app_releases',
+                'description' => 'Allows deactivating an eligible mobile application release.',
+                'is_system' => false,
+            ],
+
         ];
 
         /*
