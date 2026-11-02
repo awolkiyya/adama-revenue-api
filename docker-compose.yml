@@ -6,6 +6,9 @@ services:
     container_name: postgres-db
     restart: unless-stopped
 
+    env_file:
+      - .env.production
+
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
@@ -74,6 +77,7 @@ services:
   # One-time Laravel Storage Initialization
   init:
     image: adama-revenue-api:latest
+
     build:
       context: .
       dockerfile: Dockerfile
@@ -109,10 +113,16 @@ services:
       redis:
         condition: service_healthy
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
     networks:
       - backend
 
-  # Laravel Application
+  # Laravel Application (PHP-FPM)
   app:
     image: adama-revenue-api:latest
     container_name: laravel-app
@@ -173,6 +183,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+
+    stop_grace_period: 30s
 
     logging:
       driver: json-file
@@ -246,6 +258,8 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+
+    stop_grace_period: 30s
 
     logging:
       driver: json-file
