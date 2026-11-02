@@ -23,6 +23,14 @@ services:
       retries: 5
       start_period: 15s
 
+    stop_grace_period: 60s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
     networks:
       - backend
 
@@ -52,17 +60,27 @@ services:
       retries: 5
       start_period: 10s
 
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
     networks:
       - backend
 
-  # One-time Laravel Initialization
+  # One-time Laravel Storage Initialization
   init:
+    image: adama-revenue-api:latest
     build:
       context: .
       dockerfile: Dockerfile
-    image: adama-revenue-api:latest
+
     container_name: laravel-init
     restart: "no"
+    init: true
     working_dir: /var/www
 
     env_file:
@@ -70,11 +88,20 @@ services:
 
     volumes:
       - storage:/var/www/storage
+      - ./public:/var/www/public
 
     command:
       - sh
       - -c
-      - php artisan migrate --force
+      - |
+        mkdir -p storage/logs \
+          storage/framework/cache \
+          storage/framework/sessions \
+          storage/framework/views \
+          storage/app/public \
+          bootstrap/cache
+
+        php artisan storage:link --force
 
     depends_on:
       postgres:
@@ -90,6 +117,7 @@ services:
     image: adama-revenue-api:latest
     container_name: laravel-app
     restart: unless-stopped
+    init: true
     working_dir: /var/www
 
     env_file:
@@ -98,6 +126,9 @@ services:
     volumes:
       - storage:/var/www/storage
       - ./public:/var/www/public:ro
+
+    expose:
+      - "9000"
 
     depends_on:
       init:
@@ -113,6 +144,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
     networks:
       - backend
@@ -135,6 +174,12 @@ services:
       app:
         condition: service_healthy
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
     networks:
       - backend
 
@@ -143,6 +188,7 @@ services:
     image: adama-revenue-api:latest
     container_name: laravel-worker
     restart: unless-stopped
+    init: true
     working_dir: /var/www
 
     env_file:
@@ -163,6 +209,14 @@ services:
       init:
         condition: service_completed_successfully
 
+    stop_grace_period: 130s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
     networks:
       - backend
 
@@ -171,6 +225,7 @@ services:
     image: adama-revenue-api:latest
     container_name: laravel-scheduler
     restart: unless-stopped
+    init: true
     working_dir: /var/www
 
     env_file:
@@ -182,11 +237,21 @@ services:
     command:
       - sh
       - -c
-      - 'while true; do php artisan schedule:run --verbose --no-interaction; sleep 60; done'
+      - |
+        while true; do
+          php artisan schedule:run --no-interaction
+          sleep 60
+        done
 
     depends_on:
       init:
         condition: service_completed_successfully
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
     networks:
       - backend
@@ -213,6 +278,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
     networks:
       - backend
