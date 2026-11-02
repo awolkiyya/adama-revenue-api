@@ -6,7 +6,7 @@ use App\Http\Controllers\PrivateFileController;
 
 
 // ============================================================
-// API HEALTH CHECK
+// api HEALTH CHECK
 // ============================================================
 
 Route::get('/ping', function () {
@@ -17,7 +17,7 @@ Route::get('/ping', function () {
 
 
 // ============================================================
-// API VERSION 1
+// api VERSION 1
 // ============================================================
 
 Route::prefix('v1')->group(function () {
@@ -28,7 +28,7 @@ Route::prefix('v1')->group(function () {
     // ========================================================
 
     require base_path(
-        'routes/Api/v1/auth.php'
+        'routes/api/v1/auth.php'
     );
 
 
@@ -43,7 +43,7 @@ Route::prefix('v1')->group(function () {
     // IMPORTANT:
     // Keep this separate from authenticated payment operations.
     //
-    // The public API must return only safe receipt information.
+    // The public api must return only safe receipt information.
     // Never expose:
     // - internal database IDs
     // - payment gateway credentials
@@ -59,7 +59,7 @@ Route::prefix('v1')->group(function () {
     // ========================================================
 
     require base_path(
-        'routes/Api/v1/public.php'
+        'routes/api/v1/public.php'
     );
 
 
@@ -74,7 +74,7 @@ Route::prefix('v1')->group(function () {
     // ========================================================
 
     require base_path(
-        'routes/Api/v1/payment-webhook.php'
+        'routes/api/v1/payment-webhook.php'
     );
 
 
@@ -131,7 +131,7 @@ Route::prefix('v1')->group(function () {
         // ====================================================
 
         require base_path(
-            'routes/Api/v1/payment/payment.php'
+            'routes/api/v1/payment/payment.php'
         );
 
 
@@ -156,7 +156,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/user.php'
+            'routes/api/v1/user.php'
         );
 
 
@@ -165,7 +165,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/administrative.php'
+            'routes/api/v1/administrative.php'
         );
 
 
@@ -174,7 +174,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/citizen.php'
+            'routes/api/v1/citizen.php'
         );
 
 
@@ -183,7 +183,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/system.php'
+            'routes/api/v1/system.php'
         );
 
 
@@ -192,7 +192,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/revenue.php'
+            'routes/api/v1/revenue.php'
         );
 
 
@@ -201,7 +201,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/assessment.php'
+            'routes/api/v1/assessment.php'
         );
 
 
@@ -210,7 +210,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/invoice.php'
+            'routes/api/v1/invoice.php'
         );
 
 
@@ -219,7 +219,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/audit.php'
+            'routes/api/v1/audit.php'
         );
 
 
@@ -228,7 +228,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/direct-collection.php'
+            'routes/api/v1/direct-collection.php'
         );
 
 
@@ -237,7 +237,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/payment-schedule.php'
+            'routes/api/v1/payment-schedule.php'
         );
 
 
@@ -246,7 +246,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/taxpayer.php'
+            'routes/api/v1/taxpayer.php'
         );
 
         // });
@@ -263,26 +263,26 @@ Route::prefix('v1')->group(function () {
         // ====================================================
 
         require base_path(
-            'routes/Api/v1/agent.php'
+            'routes/api/v1/agent.php'
         );
 
 
         // lease ammendment
 
         require base_path(
-            'routes/Api/v1/lease-amendments.php'
+            'routes/api/v1/lease-amendments.php'
         );
 
         // penalty-discount-requests
 
         require base_path(
-            'routes/Api/v1/penalty-discount-requests.php'
+            'routes/api/v1/penalty-discount-requests.php'
         );
 
 
         // mobile-app-releases
         require base_path(
-            'routes/Api/v1/mobile-app-releases.php'
+            'routes/api/v1/mobile-app-releases.php'
         );
 
         // ------------------------------------------------
@@ -290,7 +290,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/cash-reconciliations.php'
+            'routes/api/v1/cash-reconciliations.php'
         );
 
 
@@ -299,7 +299,7 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/revenue-reports.php'
+            'routes/api/v1/revenue-reports.php'
         );
 
 
@@ -308,13 +308,13 @@ Route::prefix('v1')->group(function () {
         // ------------------------------------------------
 
         require base_path(
-            'routes/Api/v1/payment-reports.php'
+            'routes/api/v1/payment-reports.php'
         );
         
         // Dashboard
 
         require base_path(
-            'routes/Api/v1/dashboard.php'
+            'routes/api/v1/dashboard.php'
         );
 
         // ====================================================
