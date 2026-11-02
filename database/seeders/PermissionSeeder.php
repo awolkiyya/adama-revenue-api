@@ -885,43 +885,48 @@ class PermissionSeeder extends Seeder
             ],
 
 
-            // tariff formula management 
+           /*
+            |--------------------------------------------------------------------------
+            | Tariff Formula Management
+            |--------------------------------------------------------------------------
+            */
+
             [
                 'name' => 'tariff_formula.view',
                 'label' => 'View Tariff Formulas',
-                'module' => 'tariff',
+                'module' => 'tariff_formula',
                 'description' => 'Allows viewing formulas used in tariff rule calculations.',
                 'is_system' => false,
             ],
-            
+
             [
                 'name' => 'tariff_formula.create',
                 'label' => 'Create Tariff Formula',
-                'module' => 'tariff',
+                'module' => 'tariff_formula',
                 'description' => 'Allows creating formulas for tariff rule calculations.',
                 'is_system' => false,
             ],
-            
+
             [
                 'name' => 'tariff_formula.update',
                 'label' => 'Update Tariff Formula',
-                'module' => 'tariff',
+                'module' => 'tariff_formula',
                 'description' => 'Allows updating formulas used in tariff rule calculations.',
                 'is_system' => false,
             ],
-            
+
             [
                 'name' => 'tariff_formula.delete',
                 'label' => 'Delete Tariff Formula',
-                'module' => 'tariff',
+                'module' => 'tariff_formula',
                 'description' => 'Allows deleting formulas from tariff rule calculations.',
                 'is_system' => false,
             ],
-            
+
             [
                 'name' => 'tariff_formula.validate',
                 'label' => 'Validate Tariff Formula',
-                'module' => 'tariff',
+                'module' => 'tariff_formula',
                 'description' => 'Allows validating tariff formulas before they are used for revenue calculation.',
                 'is_system' => false,
             ],
