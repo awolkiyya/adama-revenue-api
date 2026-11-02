@@ -5,14 +5,26 @@ namespace App\Modules\ExistingAssessment\Requests;
 use Carbon\Carbon;
 use Closure;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Validator;
 
 class StoreExistingLizzRequest extends FormRequest
 {
+    private const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+    private const ALLOWED_FILE_EXTENSIONS = [
+        'pdf',
+        'doc',
+        'docx',
+        'jpg',
+        'jpeg',
+        'png',
+    ];
+
     /**
-     * ----------------------------------------------------------------------
      * AUTHORIZE
-     * ----------------------------------------------------------------------
      */
     public function authorize(): bool
     {
@@ -20,31 +32,16 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * VALIDATION RULES
-     * ----------------------------------------------------------------------
      */
     public function rules(): array
     {
         return [
-
-            /*
-            |--------------------------------------------------------------------------
-            | Taxpayer
-            |--------------------------------------------------------------------------
-            */
-
             'taxpayer_id' => [
                 'required',
                 'uuid',
                 'exists:citizens,id',
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue Service
-            |--------------------------------------------------------------------------
-            */
 
             'revenue_service_id' => [
                 'required',
@@ -52,22 +49,10 @@ class StoreExistingLizzRequest extends FormRequest
                 'exists:revenue_services,id',
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Dynamic Service Fields
-            |--------------------------------------------------------------------------
-            */
-
             'service_fields' => [
                 'required',
                 'array',
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Source
-            |--------------------------------------------------------------------------
-            */
 
             'source' => [
                 'nullable',
@@ -75,42 +60,17 @@ class StoreExistingLizzRequest extends FormRequest
                 'max:1000',
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Notes
-            |--------------------------------------------------------------------------
-            */
-
             'notes' => [
                 'nullable',
                 'string',
                 'max:5000',
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Original Historical Obligation
-            |--------------------------------------------------------------------------
-            |
-            | Original amount of the historical LIZZ obligation.
-            |
-            */
-
             'original_obligation' => [
                 'required',
                 'numeric',
                 'min:0',
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Historical Amount Already Paid
-            |--------------------------------------------------------------------------
-            |
-            | Amount that was paid before the LIZZ balance was registered
-            | in this system.
-            |
-            */
 
             'amount_already_paid' => [
                 'required',
@@ -126,14 +86,17 @@ class StoreExistingLizzRequest extends FormRequest
                         'original_obligation'
                     );
 
-                    if ($originalObligation === null) {
+                    if (
+                        $originalObligation === null ||
+                        ! is_numeric($value) ||
+                        ! is_numeric($originalObligation)
+                    ) {
                         return;
                     }
 
                     if (
-                        is_numeric($value) &&
-                        is_numeric($originalObligation) &&
-                        (float) $value > (float) $originalObligation
+                        (float) $value >
+                        (float) $originalObligation
                     ) {
                         $fail(
                             'The amount already paid cannot be greater than the original historical obligation.'
@@ -141,20 +104,6 @@ class StoreExistingLizzRequest extends FormRequest
                     }
                 },
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Balance As Of Date
-            |--------------------------------------------------------------------------
-            |
-            | The historical cutoff date on which the outstanding LIZZ
-            | balance was determined.
-            |
-            | Business invariant:
-            |
-            |     balance_as_of_date >= agreement_date
-            |
-            */
 
             'balance_as_of_date' => [
                 'required',
@@ -164,23 +113,161 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
+     * VALIDATE DYNAMIC FILE UPLOADS
+     *
+     * Accepted multipart field name:
+     * file__SERVICE_UUID__FIELD_UUID
+     *
+     * Accepted formats: PDF, DOC, DOCX, JPG, JPEG, PNG.
+     * Maximum size: 10 MB per file.
+     */
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator): void {
+            foreach ($this->allFiles() as $key => $file) {
+                if (
+                    ! is_string($key) ||
+                    ! str_starts_with($key, 'file__')
+                ) {
+                    continue;
+                }
+
+                /*
+                 * Validate multipart field naming convention.
+                 */
+                $parts = explode('__', $key);
+
+                if (
+                    count($parts) !== 3 ||
+                    $parts[0] !== 'file' ||
+                    ! Str::isUuid($parts[1]) ||
+                    ! Str::isUuid($parts[2])
+                ) {
+                    $validator->errors()->add(
+                        $key,
+                        'The uploaded file field name is invalid.'
+                    );
+
+                    continue;
+                }
+
+                /*
+                 * Validate UploadedFile instance.
+                 */
+                if (! $file instanceof UploadedFile) {
+                    $validator->errors()->add(
+                        $key,
+                        'The uploaded value must be a file.'
+                    );
+
+                    continue;
+                }
+
+                /*
+                 * Validate PHP upload status.
+                 */
+                if (! $file->isValid()) {
+                    Log::warning(
+                        'Existing LIZZ upload failed PHP validation.',
+                        [
+                            'field' => $key,
+                            'original_filename' =>
+                                $file->getClientOriginalName(),
+                            'upload_error' => $file->getError(),
+                            'upload_error_message' =>
+                                $file->getErrorMessage(),
+                        ]
+                    );
+
+                    $validator->errors()->add(
+                        $key,
+                        'The uploaded file is invalid or the upload was interrupted.'
+                    );
+
+                    continue;
+                }
+
+                /*
+                 * Check size explicitly before MIME validation.
+                 */
+                $size = $file->getSize();
+
+                if (
+                    $size !== false &&
+                    $size > self::MAX_FILE_SIZE_BYTES
+                ) {
+                    $validator->errors()->add(
+                        $key,
+                        'The uploaded file must not exceed 10 MB.'
+                    );
+
+                    continue;
+                }
+
+                /*
+                 * Validate the detected file type using Laravel.
+                 *
+                 * The mimes rule validates the file's detected type,
+                 * not merely the extension in its filename.
+                 */
+                $fileValidator = validator(
+                    ['upload' => $file],
+                    [
+                        'upload' => [
+                            'required',
+                            'file',
+                            'mimes:pdf,doc,docx,jpg,jpeg,png',
+                        ],
+                    ]
+                );
+
+                if ($fileValidator->fails()) {
+                    Log::warning(
+                        'Existing LIZZ file upload validation failed.',
+                        [
+                            'request_id' =>
+                                $this->header('X-Request-ID'),
+                            'field' => $key,
+                            'original_filename' =>
+                                $file->getClientOriginalName(),
+                            'original_extension' =>
+                                $file->getClientOriginalExtension(),
+                            'client_mime' =>
+                                $file->getClientMimeType(),
+                            'detected_mime' =>
+                                $file->getMimeType(),
+                            'size_bytes' => $size,
+                            'upload_error' => $file->getError(),
+                            'validation_errors' =>
+                                $fileValidator->errors()->all(),
+                        ]
+                    );
+
+                    $validator->errors()->add(
+                        $key,
+                        'The uploaded file must be a valid PDF, DOC, DOCX, JPG, JPEG, or PNG file.'
+                    );
+                }
+            }
+        });
+    }
+
+    /**
      * AFTER VALIDATION
-     * ----------------------------------------------------------------------
      *
-     * Validate relationships between fields that cannot be expressed
-     * cleanly using independent validation rules.
-     *
-     * Current rule:
-     *
-     *     agreement_date <= balance_as_of_date
-     *
-     * The agreement date is stored inside dynamic service fields.
+     * Validate:
+     * agreement_date <= balance_as_of_date
      */
     public function after(): array
     {
         return [
             function (Validator $validator): void {
+                if (
+                    $validator->errors()->has('service_fields') ||
+                    $validator->errors()->has('balance_as_of_date')
+                ) {
+                    return;
+                }
 
                 $agreementDate = $this->agreementDate();
 
@@ -188,11 +275,6 @@ class StoreExistingLizzRequest extends FormRequest
                     'balance_as_of_date'
                 );
 
-                /*
-                 * The individual fields are already validated by rules().
-                 * If either value is missing, malformed, or unavailable,
-                 * allow the normal validation errors to handle it.
-                 */
                 if (
                     $agreementDate === null ||
                     empty($balanceAsOfDate)
@@ -208,23 +290,13 @@ class StoreExistingLizzRequest extends FormRequest
                     return;
                 }
 
-                /*
-                 |--------------------------------------------------------------------------
-                 | LIZZ DATE INVARIANT
-                 |--------------------------------------------------------------------------
-                 |
-                 | The historical balance cannot be established before
-                 | the agreement existed.
-                 |
-                 */
-
                 if ($balanceDate->lt($agreementDate)) {
                     $validator->errors()->add(
                         'balance_as_of_date',
                         sprintf(
                             'The balance as of date must be on or after the LIZZ agreement date. Agreement date: %s. Balance as of date: %s.',
                             $agreementDate->toDateString(),
-                            $balanceDate->toDateString(),
+                            $balanceDate->toDateString()
                         )
                     );
                 }
@@ -233,12 +305,9 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * PREPARE FOR VALIDATION
-     * ----------------------------------------------------------------------
      *
-     * service_fields may arrive as JSON when the request is submitted
-     * through multipart/form-data.
+     * Decode service_fields when submitted as JSON in multipart/form-data.
      */
     protected function prepareForValidation(): void
     {
@@ -248,10 +317,7 @@ class StoreExistingLizzRequest extends FormRequest
             return;
         }
 
-        $decoded = json_decode(
-            $serviceFields,
-            true
-        );
+        $decoded = json_decode($serviceFields, true);
 
         if (
             json_last_error() === JSON_ERROR_NONE &&
@@ -264,9 +330,7 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * TAXPAYER ID
-     * ----------------------------------------------------------------------
      */
     public function taxpayerId(): string
     {
@@ -274,9 +338,7 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * REVENUE SERVICE ID
-     * ----------------------------------------------------------------------
      */
     public function revenueServiceId(): string
     {
@@ -284,22 +346,60 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * SERVICE FIELDS
-     * ----------------------------------------------------------------------
      */
     public function serviceFields(): array
     {
-        return $this->validated(
-            'service_fields',
-            []
-        );
+        return $this->validated('service_fields', []);
     }
 
     /**
-     * ----------------------------------------------------------------------
+     * SERVICE FILES
+     *
+     * Returns uploads indexed by service UUID and field UUID:
+     *
+     * [
+     *     'SERVICE_UUID' => [
+     *         'FIELD_UUID' => UploadedFile,
+     *     ],
+     * ]
+     */
+    public function serviceFiles(): array
+    {
+        $this->validated();
+
+        $files = [];
+
+        foreach ($this->allFiles() as $key => $file) {
+            if (
+                ! is_string($key) ||
+                ! str_starts_with($key, 'file__')
+            ) {
+                continue;
+            }
+
+            $parts = explode('__', $key);
+
+            if (
+                count($parts) !== 3 ||
+                $parts[0] !== 'file' ||
+                ! Str::isUuid($parts[1]) ||
+                ! Str::isUuid($parts[2]) ||
+                ! $file instanceof UploadedFile
+            ) {
+                continue;
+            }
+
+            [, $serviceId, $fieldId] = $parts;
+
+            $files[$serviceId][$fieldId] = $file;
+        }
+
+        return $files;
+    }
+
+    /**
      * SOURCE
-     * ----------------------------------------------------------------------
      */
     public function source(): ?string
     {
@@ -307,9 +407,7 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * NOTES
-     * ----------------------------------------------------------------------
      */
     public function notes(): ?string
     {
@@ -317,9 +415,7 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
-     * ORIGINAL OBLIGATION
-     * ----------------------------------------------------------------------
+     * ORIGINAL HISTORICAL OBLIGATION
      */
     public function originalObligation(): float
     {
@@ -329,9 +425,7 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
-     * AMOUNT ALREADY PAID
-     * ----------------------------------------------------------------------
+     * HISTORICAL AMOUNT ALREADY PAID
      */
     public function amountAlreadyPaid(): float
     {
@@ -341,9 +435,7 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * BALANCE AS OF DATE
-     * ----------------------------------------------------------------------
      */
     public function balanceAsOfDate(): string
     {
@@ -353,15 +445,12 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * AGREEMENT DATE
-     * ----------------------------------------------------------------------
      *
-     * Agreement date is part of the dynamic service fields.
+     * Expected semantic key: AGREEMENT_DATE.
      *
-     * Expected field:
-     *
-     *     AGREEMENT_DATE
+     * If service_fields is UUID-keyed, resolve the agreement-date
+     * field through the configured revenue-service field definition.
      */
     public function agreementDate(): ?Carbon
     {
@@ -382,18 +471,12 @@ class StoreExistingLizzRequest extends FormRequest
     }
 
     /**
-     * ----------------------------------------------------------------------
      * OUTSTANDING BALANCE
-     * ----------------------------------------------------------------------
      *
-     * Derived entirely by the backend.
+     * Calculated by the backend:
+     * original_obligation - amount_already_paid
      *
-     * The frontend must NOT submit this value.
-     *
-     * Formula:
-     *
-     *     original_obligation - amount_already_paid
-     *
+     * The frontend must not submit this value.
      */
     public function outstandingBalance(): float
     {

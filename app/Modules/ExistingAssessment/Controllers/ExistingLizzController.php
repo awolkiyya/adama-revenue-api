@@ -11,30 +11,39 @@ use Illuminate\Http\JsonResponse;
 
 class ExistingLizzController extends Controller
 {
-    /**
-     * ----------------------------------------------------------------------
-     * CONSTRUCTOR
-     * ----------------------------------------------------------------------
-     */
     public function __construct(
         protected ExistingLizzService $existingLizzService
     ) {
     }
 
     /**
-     * ----------------------------------------------------------------------
-     * STORE
-     * ----------------------------------------------------------------------
+     * Register a historical LIZZ agreement.
      *
      * POST /existing-lizz
-     *
-     * Register a historical LIZZ agreement.
      */
     public function store(
         StoreExistingLizzRequest $request
     ): JsonResponse {
+        /*
+         * Retrieve validated scalar and dynamic-field data.
+         * Uploaded files are handled separately.
+         */
+        $validated = $request->validated();
+
+        /*
+         * File structure:
+         *
+         * [
+         *     'SERVICE_UUID' => [
+         *         'FIELD_UUID' => UploadedFile,
+         *     ],
+         * ]
+         */
+        $files = $request->serviceFiles();
+
         $assessment = $this->existingLizzService->create(
-            $request->validated()
+            $validated,
+            $files
         );
 
         return response()->json([
@@ -48,21 +57,31 @@ class ExistingLizzController extends Controller
     }
 
     /**
-     * ----------------------------------------------------------------------
-     * UPDATE
-     * ----------------------------------------------------------------------
+     * Update a historical LIZZ agreement.
      *
      * PUT/PATCH /existing-lizz/{assessment}
-     *
-     * Update a historical LIZZ agreement.
      */
     public function update(
         UpdateExistingLizzRequest $request,
         Assessment $assessment
     ): JsonResponse {
+        /*
+         * Retrieve only validated request data.
+         */
+        $validated = $request->validated();
+
+        /*
+         * An empty array means no new files were uploaded.
+         *
+         * Existing attachments should remain unchanged unless the
+         * application service receives an explicit removal request.
+         */
+        $files = $request->serviceFiles();
+
         $assessment = $this->existingLizzService->update(
             $assessment,
-            $request->validated()
+            $validated,
+            $files
         );
 
         return response()->json([

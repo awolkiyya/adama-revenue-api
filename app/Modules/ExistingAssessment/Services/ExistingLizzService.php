@@ -4,9 +4,11 @@ namespace App\Modules\ExistingAssessment\Services;
 
 use App\Models\Assessment;
 use App\Models\AssessmentService;
+use App\Modules\Assessment\Services\AssessmentFileService;
 use App\Modules\Assessment\Services\AssessmentServiceValueService;
 use App\Services\DocumentSequenceService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -14,15 +16,11 @@ use Throwable;
 
 class ExistingLizzService
 {
-    /*
-    |--------------------------------------------------------------------------
-    | Constructor
-    |--------------------------------------------------------------------------
-    */
-
     public function __construct(
         protected DocumentSequenceService $documentSequenceService,
-        protected AssessmentServiceValueService $assessmentServiceValueService
+        protected AssessmentServiceValueService $assessmentServiceValueService,
+        protected AssessmentFileService $assessmentFileService,
+        protected ExistingLizzFinancialService $financialService,
     ) {
     }
 
@@ -30,40 +28,29 @@ class ExistingLizzService
     |--------------------------------------------------------------------------
     | CREATE
     |--------------------------------------------------------------------------
-    |
-    | Register an existing historical LIZZ agreement.
-    |
-    | Existing LIZZ is submitted for approval immediately.
-    |
     */
 
-    public function create(array $data): Assessment
-    {
+    public function create(
+        array $data,
+        array $files = []
+    ): Assessment {
+        $createdFileIds = [];
+
         Log::info('Existing LIZZ creation started.', [
             'revenue_service_id' => $data['revenue_service_id'] ?? null,
-            'has_service_fields' => ! empty($data['service_fields']),
-            'service_field_count' => is_array($data['service_fields'] ?? null)
-                ? count($data['service_fields'])
-                : 0,
-            'balance_as_of_date' => $data['balance_as_of_date'] ?? null,
+            'service_field_count' => count($data['service_fields'] ?? []),
+            'uploaded_file_count' => $this->countUploadedFiles($files),
         ]);
 
         try {
-            return DB::transaction(function () use ($data) {
-
-                /*
-                |--------------------------------------------------------------------------
-                | Authenticated Officer
-                |--------------------------------------------------------------------------
-                */
-
+            return DB::transaction(function () use (
+                $data,
+                $files,
+                &$createdFileIds
+            ) {
                 $user = auth()->user();
 
                 if (! $user) {
-                    Log::warning(
-                        'Existing LIZZ creation failed: unauthenticated request.'
-                    );
-
                     throw ValidationException::withMessages([
                         'authentication' => [
                             'An authenticated user is required to register an assessment.',
@@ -71,17 +58,7 @@ class ExistingLizzService
                     ]);
                 }
 
-                $administrativeUnitId =
-                    $user->administrative_unit_id;
-
-                if (! $administrativeUnitId) {
-                    Log::warning(
-                        'Existing LIZZ creation failed: officer has no administrative unit.',
-                        [
-                            'user_id' => $user->id,
-                        ]
-                    );
-
+                if (! $user->administrative_unit_id) {
                     throw ValidationException::withMessages([
                         'administrative_unit_id' => [
                             'The authenticated officer is not assigned to an administrative unit.',
@@ -89,275 +66,104 @@ class ExistingLizzService
                     ]);
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Financial Values
-                |--------------------------------------------------------------------------
-                */
-
-                $originalObligation =
-                    (float) $data['original_obligation'];
-
-                $amountAlreadyPaid =
-                    (float) $data['amount_already_paid'];
-
-                $balanceAsOfDate =
-                    $data['balance_as_of_date'];
-
-                /*
-                |--------------------------------------------------------------------------
-                | Validate Financial Values
-                |--------------------------------------------------------------------------
-                */
-
-                $this->validateFinancialAmounts(
-                    $originalObligation,
-                    $amountAlreadyPaid
+                $financial = $this->financialService->calculate(
+                    $data['original_obligation'],
+                    $data['amount_already_paid']
                 );
 
-                /*
-                |--------------------------------------------------------------------------
-                | Calculate Historical Outstanding Balance
-                |--------------------------------------------------------------------------
-                */
-
-                $remainingAmount =
-                    max(
-                        0,
-                        $originalObligation -
-                        $amountAlreadyPaid
-                    );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Generate Assessment Number
-                |--------------------------------------------------------------------------
-                */
-
-                $assessmentNumber =
-                    $this->documentSequenceService->generate(
-                        sequenceType: 'assessment',
-
-                    );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Create Assessment
-                |--------------------------------------------------------------------------
-                */
+                $assessmentNumber = $this->documentSequenceService->generate(
+                    sequenceType: 'assessment'
+                );
 
                 $assessment = Assessment::create([
-
-                    'assessment_number' =>
-                        $assessmentNumber,
-
-                    'citizen_id' =>
-                        $data['taxpayer_id'],
-
-                    'administrative_unit_id' =>
-                        $administrativeUnitId,
-
-                    'source_type' =>
-                        'EXISTING_LIZZ',
-
-                    'status' =>
-                        'PENDING_APPROVAL',
-
-                    'submitted_at' =>
-                        now(),
-
-                    'notes' =>
-                        $data['notes'] ?? null,
-
-                    'created_by' =>
-                        $user->id,
-
-                    'updated_by' =>
-                        $user->id,
+                    'assessment_number' => $assessmentNumber,
+                    'citizen_id' => $data['taxpayer_id'],
+                    'administrative_unit_id' => $user->administrative_unit_id,
+                    'source_type' => 'EXISTING_LIZZ',
+                    'status' => 'PENDING_APPROVAL',
+                    'submitted_at' => now(),
+                    'notes' => $data['notes'] ?? null,
+                    'created_by' => $user->id,
+                    'updated_by' => $user->id,
                 ]);
-
-                Log::info(
-                    'Existing LIZZ assessment created.',
-                    [
-                        'assessment_id' =>
-                            $assessment->id,
-
-                        'assessment_number' =>
-                            $assessment->assessment_number,
-
-                        'source_type' =>
-                            $assessment->source_type,
-
-                        'status' =>
-                            $assessment->status,
-
-                        'created_by' =>
-                            $user->id,
-
-                        'administrative_unit_id' =>
-                            $administrativeUnitId,
-                    ]
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Create Primary Assessment Service
-                |--------------------------------------------------------------------------
-                |
-                | Existing LIZZ contains exactly ONE revenue service.
-                |
-                */
 
                 $assessmentService = AssessmentService::create([
-
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'service_id' =>
-                        $data['revenue_service_id'],
-
-                    /*
-                     * Original historical obligation.
-                     */
-                    'computed_amount' =>
-                        $originalObligation,
-
-                    /*
-                     * Historical amount already paid.
-                     */
-                    'paid_amount' =>
-                        $amountAlreadyPaid,
-
-                    /*
-                     * Historical outstanding balance.
-                     */
-                    'remaining_amount' =>
-                        $remainingAmount,
-
-                    /*
-                     * Historical date on which the
-                     * financial balance was determined.
-                     */
-                    'balance_as_of_date' =>
-                        $balanceAsOfDate,
+                    'assessment_id' => $assessment->id,
+                    'service_id' => $data['revenue_service_id'],
+                    'computed_amount' => $financial['original_obligation'],
+                    'paid_amount' => $financial['amount_already_paid'],
+                    'remaining_amount' => $financial['outstanding_balance'],
+                    'balance_as_of_date' => $data['balance_as_of_date'],
                 ]);
 
-                Log::info(
-                    'Existing LIZZ assessment service created.',
-                    [
-                        'assessment_id' =>
-                            $assessment->id,
-
-                        'assessment_service_id' =>
-                            $assessmentService->id,
-
-                        'revenue_service_id' =>
-                            $assessmentService->service_id,
-
-                        'computed_amount' =>
-                            $assessmentService->computed_amount,
-
-                        'paid_amount' =>
-                            $assessmentService->paid_amount,
-
-                        'remaining_amount' =>
-                            $assessmentService->remaining_amount,
-
-                        'balance_as_of_date' =>
-                            $assessmentService->balance_as_of_date,
-                    ]
+                /*
+                 * Ensure every uploaded file belongs to the selected
+                 * revenue service before processing any attachments.
+                 */
+                $this->validateUploadedService(
+                    $files,
+                    (string) $assessmentService->service_id
                 );
 
                 /*
-                |--------------------------------------------------------------------------
-                | Store Dynamic Service Fields
-                |--------------------------------------------------------------------------
-                |
-                | Existing LIZZ sends fields using RevenueServiceField UUIDs.
-                |
-                */
+                 * Convert multipart uploads into field values that
+                 * AssessmentServiceValueService can process.
+                 *
+                 * File references use the existing convention:
+                 * file__SERVICE_UUID__FIELD_UUID
+                 */
+                $serviceFields = $data['service_fields'] ?? [];
+
+                $serviceFields = $this->mergeUploadedFilesIntoFields(
+                    $serviceFields,
+                    $files,
+                    $createdFileIds,
+                    $assessmentService
+                );
 
                 $this->storeServiceFields(
                     $assessmentService,
-                    $data['service_fields'] ?? []
+                    $serviceFields
                 );
 
-                /*
-                |--------------------------------------------------------------------------
-                | Return Complete Assessment
-                |--------------------------------------------------------------------------
-                */
+                Log::info('Existing LIZZ assessment created.', [
+                    'assessment_id' => $assessment->id,
+                    'assessment_number' => $assessment->assessment_number,
+                    'service_id' => $assessmentService->service_id,
+                    'uploaded_file_count' => count($createdFileIds),
+                    'created_by' => $user->id,
+                ]);
 
-                $assessment = $assessment->fresh([
+                return $assessment->fresh([
                     'citizen',
                     'administrativeUnit',
                     'services.service',
                     'services.values',
                     'services.paymentSchedules',
                 ]);
-
-                Log::info(
-                    'Existing LIZZ creation completed successfully.',
-                    [
-                        'assessment_id' =>
-                            $assessment->id,
-
-                        'assessment_number' =>
-                            $assessment->assessment_number,
-
-                        'service_count' =>
-                            $assessment->services->count(),
-
-                        'service_value_count' =>
-                            $assessment->services
-                                ->sum(
-                                    fn ($service) =>
-                                        $service->values->count()
-                                ),
-                    ]
-                );
-
-                return $assessment;
             });
-        } catch (ValidationException $exception) {
-
-            Log::warning(
-                'Existing LIZZ creation validation failed.',
-                [
-                    'errors' =>
-                        $exception->errors(),
-
-                    'user_id' =>
-                        auth()->id(),
-                ]
-            );
-
-            throw $exception;
-
         } catch (Throwable $exception) {
+            /*
+             * DB rollback does not automatically remove physical files
+             * uploaded through StorageService.
+             */
+            $this->cleanupCreatedFiles($createdFileIds);
 
-            Log::error(
-                'Existing LIZZ creation failed.',
-                [
-                    'user_id' =>
-                        auth()->id(),
+            if ($exception instanceof ValidationException) {
+                Log::warning('Existing LIZZ creation validation failed.', [
+                    'errors' => $exception->errors(),
+                    'user_id' => auth()->id(),
+                ]);
 
-                    'revenue_service_id' =>
-                        $data['revenue_service_id'] ?? null,
+                throw $exception;
+            }
 
-                    'exception' =>
-                        $exception::class,
-
-                    'message' =>
-                        $exception->getMessage(),
-
-                    'file' =>
-                        $exception->getFile(),
-
-                    'line' =>
-                        $exception->getLine(),
-                ]
-            );
+            Log::error('Existing LIZZ creation failed.', [
+                'user_id' => auth()->id(),
+                'revenue_service_id' => $data['revenue_service_id'] ?? null,
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
 
             throw $exception;
         }
@@ -367,68 +173,16 @@ class ExistingLizzService
     |--------------------------------------------------------------------------
     | UPDATE
     |--------------------------------------------------------------------------
-    |
-    | Update an Existing LIZZ assessment.
-    |
-    | IMPORTANT:
-    |
-    | - Only RETURNED assessments can be updated.
-    | - Assessment number is NEVER regenerated.
-    | - Status becomes PENDING_APPROVAL after a successful update.
-    | - Status transition happens inside the transaction.
-    |
     */
 
     public function update(
         Assessment $assessment,
-        array $data
+        array $data,
+        array $files = []
     ): Assessment {
+        $this->ensureExistingLizz($assessment);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Existing LIZZ Check
-        |--------------------------------------------------------------------------
-        */
-
-        $this->ensureExistingLizz(
-            $assessment
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Only RETURNED assessments can be edited
-        |--------------------------------------------------------------------------
-        |
-        | This protects the approval workflow.
-        |
-        | Example:
-        |
-        | PENDING_APPROVAL -> cannot edit
-        | APPROVED         -> cannot edit
-        | REJECTED         -> cannot edit
-        | RETURNED         -> can edit
-        |
-        */
-
-        if (
-            $assessment->status !==
-            'RETURNED'
-        ) {
-
-            Log::warning(
-                'Existing LIZZ update rejected because assessment is not RETURNED.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'assessment_number' =>
-                        $assessment->assessment_number,
-
-                    'current_status' =>
-                        $assessment->status,
-                ]
-            );
-
+        if ($assessment->status !== 'RETURNED') {
             throw ValidationException::withMessages([
                 'assessment' => [
                     'Only returned assessments can be updated.',
@@ -436,24 +190,9 @@ class ExistingLizzService
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Authenticated Officer
-        |--------------------------------------------------------------------------
-        */
-
         $user = auth()->user();
 
         if (! $user) {
-
-            Log::warning(
-                'Existing LIZZ update failed: unauthenticated request.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
-                ]
-            );
-
             throw ValidationException::withMessages([
                 'authentication' => [
                     'An authenticated user is required to update an assessment.',
@@ -461,25 +200,7 @@ class ExistingLizzService
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Administrative Unit
-        |--------------------------------------------------------------------------
-        */
-
         if (! $user->administrative_unit_id) {
-
-            Log::warning(
-                'Existing LIZZ update failed: officer has no administrative unit.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'user_id' =>
-                        $user->id,
-                ]
-            );
-
             throw ValidationException::withMessages([
                 'administrative_unit_id' => [
                     'The authenticated officer is not assigned to an administrative unit.',
@@ -487,463 +208,150 @@ class ExistingLizzService
             ]);
         }
 
-        Log::info(
-            'Existing LIZZ update started.',
-            [
-                'assessment_id' =>
-                    $assessment->id,
-
-                'assessment_number' =>
-                    $assessment->assessment_number,
-
-                'current_status' =>
-                    $assessment->status,
-
-                'user_id' =>
-                    $user->id,
-
-                'has_service_fields' =>
-                    array_key_exists(
-                        'service_fields',
-                        $data
-                    ),
-
-                'service_field_count' =>
-                    is_array($data['service_fields'] ?? null)
-                        ? count($data['service_fields'])
-                        : 0,
-
-                'has_financial_update' =>
-                    array_key_exists(
-                        'original_obligation',
-                        $data
-                    ) ||
-                    array_key_exists(
-                        'amount_already_paid',
-                        $data
-                    ) ||
-                    array_key_exists(
-                        'balance_as_of_date',
-                        $data
-                    ),
-            ]
-        );
+        $createdFileIds = [];
 
         try {
-
             return DB::transaction(function () use (
                 $assessment,
                 $data,
-                $user
+                $files,
+                $user,
+                &$createdFileIds
             ) {
-
                 /*
-                |--------------------------------------------------------------------------
-                | Assessment Fields
-                |--------------------------------------------------------------------------
-                */
-
-                $assessmentData = [];
-
-                /*
-                 * Taxpayer.
+                 * Lock the assessment while processing the returned
+                 * assessment update.
                  */
-                if (
-                    array_key_exists(
-                        'taxpayer_id',
-                        $data
-                    )
-                ) {
-                    $assessmentData['citizen_id'] =
-                        $data['taxpayer_id'];
+                $assessment = Assessment::query()
+                    ->whereKey($assessment->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $this->ensureExistingLizz($assessment);
+
+                if ($assessment->status !== 'RETURNED') {
+                    throw ValidationException::withMessages([
+                        'assessment' => [
+                            'Only returned assessments can be updated.',
+                        ],
+                    ]);
                 }
 
-                /*
-                 * Notes.
-                 */
-                if (
-                    array_key_exists(
-                        'notes',
-                        $data
-                    )
-                ) {
-                    $assessmentData['notes'] =
-                        $data['notes'];
+                $assessmentData = [
+                    'administrative_unit_id' => $user->administrative_unit_id,
+                    'updated_by' => $user->id,
+                ];
+
+                if (array_key_exists('taxpayer_id', $data)) {
+                    $assessmentData['citizen_id'] = $data['taxpayer_id'];
                 }
 
-                /*
-                 * Always synchronize administrative unit
-                 * with the authenticated officer.
-                 */
-                $assessmentData['administrative_unit_id'] =
-                    $user->administrative_unit_id;
-
-                /*
-                 * Audit field.
-                 */
-                $assessmentData['updated_by'] =
-                    $user->id;
-
-                /*
-                |--------------------------------------------------------------------------
-                | Persist Assessment Changes
-                |--------------------------------------------------------------------------
-                */
-
-                if (! empty($assessmentData)) {
-
-                    $assessment->update(
-                        $assessmentData
-                    );
+                if (array_key_exists('notes', $data)) {
+                    $assessmentData['notes'] = $data['notes'];
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Get Primary Assessment Service
-                |--------------------------------------------------------------------------
-                */
+                $assessment->update($assessmentData);
 
-                $assessmentService =
-                    $this->getPrimaryAssessmentService(
-                        $assessment
-                    );
+                $assessmentService = $this->getPrimaryAssessmentService(
+                    $assessment
+                );
 
-                /*
-                |--------------------------------------------------------------------------
-                | Revenue Service
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    array_key_exists(
-                        'revenue_service_id',
-                        $data
-                    )
-                ) {
-
-                    $oldRevenueServiceId =
-                        $assessmentService->service_id;
-
-                    $newRevenueServiceId =
-                        $data['revenue_service_id'];
-
-                    if (
-                        $oldRevenueServiceId !==
-                        $newRevenueServiceId
-                    ) {
-
-                        Log::info(
-                            'Existing LIZZ revenue service changed.',
-                            [
-                                'assessment_id' =>
-                                    $assessment->id,
-
-                                'assessment_service_id' =>
-                                    $assessmentService->id,
-
-                                'old_revenue_service_id' =>
-                                    $oldRevenueServiceId,
-
-                                'new_revenue_service_id' =>
-                                    $newRevenueServiceId,
-                            ]
-                        );
-
-                        $assessmentService->update([
-                            'service_id' =>
-                                $newRevenueServiceId,
-                        ]);
-                    }
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Financial Position
-                |--------------------------------------------------------------------------
-                |
-                | Any change to:
-                |
-                | - original_obligation
-                | - amount_already_paid
-                | - balance_as_of_date
-                |
-                | is treated as a historical financial-position update.
-                |
-                */
-
-                if (
-                    array_key_exists(
-                        'original_obligation',
-                        $data
-                    ) ||
-                    array_key_exists(
-                        'amount_already_paid',
-                        $data
-                    ) ||
-                    array_key_exists(
-                        'balance_as_of_date',
-                        $data
-                    )
-                ) {
-
-                    /*
-                     * Original obligation.
-                     */
-                    $originalObligation =
-                        array_key_exists(
-                            'original_obligation',
-                            $data
-                        )
-                            ? (float) $data['original_obligation']
-                            : (float) $assessmentService->computed_amount;
-
-                    /*
-                     * Amount already paid.
-                     */
-                    $amountAlreadyPaid =
-                        array_key_exists(
-                            'amount_already_paid',
-                            $data
-                        )
-                            ? (float) $data['amount_already_paid']
-                            : (float) $assessmentService->paid_amount;
-
-                    /*
-                     * Historical balance date.
-                     */
-                    $balanceAsOfDate =
-                        array_key_exists(
-                            'balance_as_of_date',
-                            $data
-                        )
-                            ? $data['balance_as_of_date']
-                            : $assessmentService->balance_as_of_date;
-
-                    /*
-                     * Validate financial relationship.
-                     */
-                    $this->validateFinancialAmounts(
-                        $originalObligation,
-                        $amountAlreadyPaid
-                    );
-
-                    /*
-                     * Calculate outstanding balance
-                     * completely on the server.
-                     */
-                    $remainingAmount =
-                        max(
-                            0,
-                            $originalObligation -
-                            $amountAlreadyPaid
-                        );
-
-                    /*
-                     * Persist historical financial position.
-                     */
+                if (array_key_exists('revenue_service_id', $data)) {
                     $assessmentService->update([
-
-                        'computed_amount' =>
-                            $originalObligation,
-
-                        'paid_amount' =>
-                            $amountAlreadyPaid,
-
-                        'remaining_amount' =>
-                            $remainingAmount,
-
-                        'balance_as_of_date' =>
-                            $balanceAsOfDate,
+                        'service_id' => $data['revenue_service_id'],
                     ]);
 
-                    Log::info(
-                        'Existing LIZZ financial position updated.',
-                        [
-                            'assessment_id' =>
-                                $assessment->id,
-
-                            'assessment_service_id' =>
-                                $assessmentService->id,
-
-                            'computed_amount' =>
-                                $originalObligation,
-
-                            'paid_amount' =>
-                                $amountAlreadyPaid,
-
-                            'remaining_amount' =>
-                                $remainingAmount,
-
-                            'balance_as_of_date' =>
-                                $balanceAsOfDate,
-                        ]
-                    );
+                    $assessmentService->refresh();
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Dynamic Service Fields
-                |--------------------------------------------------------------------------
-                |
-                | service_fields must contain RevenueServiceField UUIDs.
-                |
-                */
+                $hasFinancialUpdate =
+                    array_key_exists('original_obligation', $data)
+                    || array_key_exists('amount_already_paid', $data)
+                    || array_key_exists('balance_as_of_date', $data);
 
-                if (
-                    array_key_exists(
-                        'service_fields',
-                        $data
-                    )
-                ) {
+                if ($hasFinancialUpdate) {
+                    $financial = $this->financialService->calculate(
+                        $data['original_obligation']
+                            ?? $assessmentService->computed_amount,
+                        $data['amount_already_paid']
+                            ?? $assessmentService->paid_amount
+                    );
 
+                    $assessmentService->update([
+                        'computed_amount' => $financial['original_obligation'],
+                        'paid_amount' => $financial['amount_already_paid'],
+                        'remaining_amount' => $financial['outstanding_balance'],
+                        'balance_as_of_date' =>
+                            $data['balance_as_of_date']
+                            ?? $assessmentService->balance_as_of_date,
+                    ]);
+                }
+
+                $this->validateUploadedService(
+                    $files,
+                    (string) $assessmentService->service_id
+                );
+
+                $serviceFields = $data['service_fields'] ?? [];
+
+                $serviceFields = $this->mergeUploadedFilesIntoFields(
+                    $serviceFields,
+                    $files,
+                    $createdFileIds,
+                    $assessmentService
+                );
+
+                if ($serviceFields !== []) {
                     $this->storeServiceFields(
                         $assessmentService,
-                        $data['service_fields'] ?? []
+                        $serviceFields
                     );
                 }
 
                 /*
-                |--------------------------------------------------------------------------
-                | Re-submit For Approval
-                |--------------------------------------------------------------------------
-                |
-                | IMPORTANT:
-                |
-                | Do this ONLY after all requested changes have
-                | successfully passed validation and persistence.
-                |
-                | Because this is inside the DB transaction:
-                |
-                | update succeeds:
-                |
-                | RETURNED -> PENDING_APPROVAL
-                |
-                | update fails:
-                |
-                | all changes, including status, are rolled back.
-                |
-                */
-
+                 * Resubmit only after the requested changes succeed.
+                 */
                 $assessment->update([
-                    'status' =>
-                        'PENDING_APPROVAL',
-
-                    'submitted_at' =>
-                        now(),
-
-                    'updated_by' =>
-                        $user->id,
+                    'status' => 'PENDING_APPROVAL',
+                    'submitted_at' => now(),
+                    'updated_by' => $user->id,
                 ]);
 
                 Log::info(
-                    'Existing LIZZ assessment re-submitted for approval after update.',
+                    'Existing LIZZ assessment resubmitted for approval.',
                     [
-                        'assessment_id' =>
-                            $assessment->id,
-
-                        'assessment_number' =>
-                            $assessment->assessment_number,
-
-                        'previous_status' =>
-                            'RETURNED',
-
-                        'new_status' =>
-                            'PENDING_APPROVAL',
-
-                        'updated_by' =>
-                            $user->id,
+                        'assessment_id' => $assessment->id,
+                        'assessment_number' => $assessment->assessment_number,
+                        'uploaded_file_count' => count($createdFileIds),
+                        'updated_by' => $user->id,
                     ]
                 );
 
-                /*
-                |--------------------------------------------------------------------------
-                | Return Fresh Assessment
-                |--------------------------------------------------------------------------
-                */
-
-                $assessment = $assessment->fresh([
+                return $assessment->fresh([
                     'citizen',
                     'administrativeUnit',
                     'services.service',
                     'services.values',
                     'services.paymentSchedules',
                 ]);
-
-                Log::info(
-                    'Existing LIZZ update completed successfully.',
-                    [
-                        'assessment_id' =>
-                            $assessment->id,
-
-                        'assessment_number' =>
-                            $assessment->assessment_number,
-
-                        'status' =>
-                            $assessment->status,
-
-                        'service_count' =>
-                            $assessment->services->count(),
-
-                        'service_value_count' =>
-                            $assessment->services
-                                ->sum(
-                                    fn ($service) =>
-                                        $service->values->count()
-                                ),
-                    ]
-                );
-
-                return $assessment;
             });
-
-        } catch (ValidationException $exception) {
-
-            Log::warning(
-                'Existing LIZZ update validation failed.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'assessment_number' =>
-                        $assessment->assessment_number,
-
-                    'user_id' =>
-                        $user->id,
-
-                    'errors' =>
-                        $exception->errors(),
-                ]
-            );
-
-            throw $exception;
-
         } catch (Throwable $exception) {
+            $this->cleanupCreatedFiles($createdFileIds);
 
-            Log::error(
-                'Existing LIZZ update failed.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
+            if ($exception instanceof ValidationException) {
+                Log::warning('Existing LIZZ update validation failed.', [
+                    'assessment_id' => $assessment->id,
+                    'errors' => $exception->errors(),
+                ]);
 
-                    'assessment_number' =>
-                        $assessment->assessment_number,
+                throw $exception;
+            }
 
-                    'user_id' =>
-                        $user->id,
-
-                    'exception' =>
-                        $exception::class,
-
-                    'message' =>
-                        $exception->getMessage(),
-
-                    'file' =>
-                        $exception->getFile(),
-
-                    'line' =>
-                        $exception->getLine(),
-                ]
-            );
+            Log::error('Existing LIZZ update failed.', [
+                'assessment_id' => $assessment->id,
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
 
             throw $exception;
         }
@@ -955,24 +363,9 @@ class ExistingLizzService
     |--------------------------------------------------------------------------
     */
 
-    public function find(
-        Assessment $assessment
-    ): Assessment {
-
-        $this->ensureExistingLizz(
-            $assessment
-        );
-
-        Log::debug(
-            'Existing LIZZ assessment loaded.',
-            [
-                'assessment_id' =>
-                    $assessment->id,
-
-                'assessment_number' =>
-                    $assessment->assessment_number,
-            ]
-        );
+    public function find(Assessment $assessment): Assessment
+    {
+        $this->ensureExistingLizz($assessment);
 
         return $assessment->load([
             'citizen',
@@ -989,15 +382,10 @@ class ExistingLizzService
     |--------------------------------------------------------------------------
     */
 
-    public function list(
-        array $filters = []
-    ): LengthAwarePaginator {
-
+    public function list(array $filters = []): LengthAwarePaginator
+    {
         $query = Assessment::query()
-            ->where(
-                'source_type',
-                'EXISTING_LIZZ'
-            )
+            ->where('source_type', 'EXISTING_LIZZ')
             ->with([
                 'citizen',
                 'administrativeUnit',
@@ -1006,138 +394,40 @@ class ExistingLizzService
                 'services.paymentSchedules',
             ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Taxpayer Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            ! empty($filters['taxpayer_id'])
-        ) {
-            $query->where(
-                'citizen_id',
-                $filters['taxpayer_id']
-            );
+        if (! empty($filters['taxpayer_id'])) {
+            $query->where('citizen_id', $filters['taxpayer_id']);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Administrative Unit Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            ! empty($filters['administrative_unit_id'])
-        ) {
+        if (! empty($filters['administrative_unit_id'])) {
             $query->where(
                 'administrative_unit_id',
                 $filters['administrative_unit_id']
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Status Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            ! empty($filters['status'])
-        ) {
-            $query->where(
-                'status',
-                $filters['status']
-            );
+        if (! empty($filters['status'])) {
+            $query->where('status', $filters['status']);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Search
-        |--------------------------------------------------------------------------
-        */
+        if (! empty($filters['search'])) {
+            $search = trim($filters['search']);
 
-        if (
-            ! empty($filters['search'])
-        ) {
-
-            $search = trim(
-                $filters['search']
-            );
-
-            $query->where(
-                function ($q) use ($search) {
-
-                    /*
-                     * Assessment number.
-                     */
-                    $q->where(
-                        'assessment_number',
-                        'like',
-                        "%{$search}%"
-                    );
-
-                    /*
-                     * Taxpayer information.
-                     */
-                    $q->orWhereHas(
-                        'citizen',
-                        function (
-                            $citizenQuery
-                        ) use ($search) {
-
-                            $citizenQuery
-                                ->where(
-                                    'name',
-                                    'like',
-                                    "%{$search}%"
-                                )
-                                ->orWhere(
-                                    'tin',
-                                    'like',
-                                    "%{$search}%"
-                                );
-                        }
-                    );
-                }
-            );
+            $query->where(function ($q) use ($search) {
+                $q->where(
+                    'assessment_number',
+                    'like',
+                    "%{$search}%"
+                )->orWhereHas('citizen', function ($citizenQuery) use ($search) {
+                    $citizenQuery
+                        ->where('name', 'like', "%{$search}%")
+                        ->orWhere('tin', 'like', "%{$search}%");
+                });
+            });
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Pagination
-        |--------------------------------------------------------------------------
-        */
-
-        $perPage = (int) (
-            $filters['per_page'] ?? 15
-        );
 
         $perPage = min(
-            max($perPage, 1),
+            max((int) ($filters['per_page'] ?? 15), 1),
             100
-        );
-
-        Log::debug(
-            'Existing LIZZ list requested.',
-            [
-                'filters' => [
-                    'taxpayer_id' =>
-                        $filters['taxpayer_id'] ?? null,
-
-                    'administrative_unit_id' =>
-                        $filters['administrative_unit_id'] ?? null,
-
-                    'status' =>
-                        $filters['status'] ?? null,
-
-                    'has_search' =>
-                        ! empty($filters['search']),
-
-                    'per_page' =>
-                        $perPage,
-                ],
-            ]
         );
 
         return $query
@@ -1147,31 +437,191 @@ class ExistingLizzService
 
     /*
     |--------------------------------------------------------------------------
-    | PRIMARY ASSESSMENT SERVICE
+    | SERVICE FIELD VALUES
+    |--------------------------------------------------------------------------
+    */
+
+    protected function storeServiceFields(
+        AssessmentService $assessmentService,
+        array $serviceFields
+    ): void {
+        if ($serviceFields === []) {
+            return;
+        }
+
+        $this->assessmentServiceValueService->storeServiceValuesByFieldId(
+            $assessmentService,
+            $serviceFields
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | MERGE UPLOADED FILES INTO FIELD VALUES
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Upload files through AssessmentFileService and return field values
+     * that reference the resulting File records.
+     *
+     * Expected upload structure:
+     *
+     * [
+     *     'SERVICE_UUID' => [
+     *         'FIELD_UUID' => UploadedFile,
+     *     ],
+     * ]
+     *
+     * This method assumes storeServiceValuesByFieldId() accepts a
+     * FILE field's uploaded file reference and invokes AssessmentFileService
+     * to attach it to the generated AssessmentServiceValue.
+     *
+     * @param array<string, mixed> $serviceFields
+     * @param array<string, mixed> $files
+     * @param array<int, string|int> $createdFileIds
+     * @return array<string, mixed>
+     */
+    protected function mergeUploadedFilesIntoFields(
+        array $serviceFields,
+        array $files,
+        array &$createdFileIds,
+        AssessmentService $assessmentService
+    ): array {
+        foreach ($files as $serviceId => $serviceFiles) {
+            foreach ($serviceFiles as $fieldId => $uploadedFile) {
+                if (! $uploadedFile instanceof UploadedFile) {
+                    throw ValidationException::withMessages([
+                        "file__{$serviceId}__{$fieldId}" => [
+                            'The uploaded file is invalid.',
+                        ],
+                    ]);
+                }
+
+                /*
+                 * Upload and register the file through the shared
+                 * assessment file service.
+                 */
+                $file = $this->assessmentFileService->uploadAssessmentFile(
+                    $assessmentService,
+                    $uploadedFile
+                );
+
+                $createdFileIds[] = $file->getKey();
+
+                /*
+                 * Pass the File ID to the value service.
+                 * The value service must recognize FILE fields and
+                 * attach this File to the corresponding field value.
+                 */
+                $serviceFields[$fieldId] = (string) $file->getKey();
+            }
+        }
+
+        return $serviceFields;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDATE UPLOADED SERVICE
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ensure uploaded files belong to the assessment service being saved.
+     *
+     * @param array<string, mixed> $files
+     */
+    protected function validateUploadedService(
+        array $files,
+        string $expectedServiceId
+    ): void {
+        foreach ($files as $serviceId => $serviceFiles) {
+            if ((string) $serviceId !== $expectedServiceId) {
+                throw ValidationException::withMessages([
+                    "file__{$serviceId}" => [
+                        'The uploaded attachment does not belong to the selected revenue service.',
+                    ],
+                ]);
+            }
+
+            if (! is_array($serviceFiles)) {
+                throw ValidationException::withMessages([
+                    "file__{$serviceId}" => [
+                        'The uploaded file collection is invalid.',
+                    ],
+                ]);
+            }
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FILE CLEANUP
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Remove newly created file records and physical files after failure.
+     *
+     * The AssessmentFileService skips files still referenced by an
+     * assessment-service value.
+     *
+     * @param array<int, string|int> $fileIds
+     */
+    protected function cleanupCreatedFiles(array $fileIds): void
+    {
+        if ($fileIds === []) {
+            return;
+        }
+
+        try {
+            $this->assessmentFileService->cleanupCreatedFiles(
+                array_values(array_unique($fileIds))
+            );
+        } catch (Throwable $exception) {
+            Log::error(
+                'Failed to clean up files created during Existing LIZZ processing.',
+                [
+                    'file_ids' => $fileIds,
+                    'exception' => $exception::class,
+                    'message' => $exception->getMessage(),
+                ]
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | COUNT UPLOADS
+    |--------------------------------------------------------------------------
+    */
+
+    protected function countUploadedFiles(array $files): int
+    {
+        $count = 0;
+
+        foreach ($files as $serviceFiles) {
+            if (is_array($serviceFiles)) {
+                $count += count($serviceFiles);
+            }
+        }
+
+        return $count;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | PRIMARY SERVICE
     |--------------------------------------------------------------------------
     */
 
     protected function getPrimaryAssessmentService(
         Assessment $assessment
     ): AssessmentService {
-
-        $assessmentService =
-            $assessment->services()
-                ->first();
+        $assessmentService = $assessment->services()->first();
 
         if (! $assessmentService) {
-
-            Log::error(
-                'Existing LIZZ assessment has no assessment service.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'assessment_number' =>
-                        $assessment->assessment_number,
-                ]
-            );
-
             throw ValidationException::withMessages([
                 'revenue_service_id' => [
                     'The existing LIZZ assessment does not have an assessment service.',
@@ -1184,190 +634,17 @@ class ExistingLizzService
 
     /*
     |--------------------------------------------------------------------------
-    | SERVICE FIELDS
-    |--------------------------------------------------------------------------
-    |
-    | Existing LIZZ receives service fields using
-    | RevenueServiceField UUIDs.
-    |
-    | The actual persistence/normalization is delegated
-    | to AssessmentServiceValueService.
-    |
-    */
-
-    protected function storeServiceFields(
-        AssessmentService $assessmentService,
-        array $serviceFields
-    ): void {
-
-        if (empty($serviceFields)) {
-
-            Log::debug(
-                'Existing LIZZ contains no service fields to persist.',
-                [
-                    'assessment_service_id' =>
-                        $assessmentService->id,
-                ]
-            );
-
-            return;
-        }
-
-        Log::info(
-            'Existing LIZZ service field persistence started.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'service_id' =>
-                    $assessmentService->service_id,
-
-                'field_count' =>
-                    count($serviceFields),
-            ]
-        );
-
-        $this->assessmentServiceValueService
-            ->storeServiceValuesByFieldId(
-                $assessmentService,
-                $serviceFields
-            );
-
-        Log::info(
-            'Existing LIZZ service field persistence completed.',
-            [
-                'assessment_service_id' =>
-                    $assessmentService->id,
-
-                'field_count' =>
-                    count($serviceFields),
-            ]
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | EXISTING LIZZ CHECK
+    | EXISTING LIZZ GUARD
     |--------------------------------------------------------------------------
     */
 
     protected function ensureExistingLizz(
         Assessment $assessment
     ): void {
-
-        if (
-            $assessment->source_type !==
-            'EXISTING_LIZZ'
-        ) {
-
-            Log::warning(
-                'Existing LIZZ operation attempted on a non-existing-LIZZ assessment.',
-                [
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'assessment_number' =>
-                        $assessment->assessment_number,
-
-                    'source_type' =>
-                        $assessment->source_type,
-                ]
-            );
-
+        if ($assessment->source_type !== 'EXISTING_LIZZ') {
             throw ValidationException::withMessages([
                 'assessment' => [
                     'The selected assessment is not an existing LIZZ assessment.',
-                ],
-            ]);
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | FINANCIAL VALIDATION
-    |--------------------------------------------------------------------------
-    */
-
-    protected function validateFinancialAmounts(
-        float $originalObligation,
-        float $amountAlreadyPaid
-    ): void {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Original Obligation
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $originalObligation < 0
-        ) {
-
-            Log::warning(
-                'Existing LIZZ financial validation failed: negative original obligation.',
-                [
-                    'original_obligation' =>
-                        $originalObligation,
-                ]
-            );
-
-            throw ValidationException::withMessages([
-                'original_obligation' => [
-                    'Original obligation cannot be negative.',
-                ],
-            ]);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Amount Already Paid
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $amountAlreadyPaid < 0
-        ) {
-
-            Log::warning(
-                'Existing LIZZ financial validation failed: negative paid amount.',
-                [
-                    'amount_already_paid' =>
-                        $amountAlreadyPaid,
-                ]
-            );
-
-            throw ValidationException::withMessages([
-                'amount_already_paid' => [
-                    'Amount already paid cannot be negative.',
-                ],
-            ]);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Paid Cannot Exceed Original Obligation
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $amountAlreadyPaid >
-            $originalObligation
-        ) {
-
-            Log::warning(
-                'Existing LIZZ financial validation failed: paid amount exceeds obligation.',
-                [
-                    'original_obligation' =>
-                        $originalObligation,
-
-                    'amount_already_paid' =>
-                        $amountAlreadyPaid,
-                ]
-            );
-
-            throw ValidationException::withMessages([
-                'amount_already_paid' => [
-                    'Amount already paid cannot be greater than the original obligation.',
                 ],
             ]);
         }
