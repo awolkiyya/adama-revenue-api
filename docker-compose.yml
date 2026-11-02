@@ -24,8 +24,10 @@ services:
 
     healthcheck:
       test:
-        - CMD-SHELL
-        - php -r '$$s=@fsockopen("127.0.0.1",9000); exit($$s ? 0 : 1);'
+        - CMD
+        - php
+        - -r
+        - "exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);"
       interval: 15s
       timeout: 5s
       retries: 5
