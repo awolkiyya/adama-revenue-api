@@ -1,63 +1,6 @@
 
 services:
-  # Laravel Application
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: adama-revenue-api:latest
-    container_name: laravel-app
-    restart: unless-stopped
-    working_dir: /var/www
-
-    env_file:
-      - .env.production
-
-    volumes:
-      - storage:/var/www/storage
-
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-    healthcheck:
-      test:
-        - CMD
-        - php
-        - -r
-        - "exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);"
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-    networks:
-      - backend
-
-  # Nginx
-  nginx:
-    image: nginx:alpine
-    container_name: laravel-nginx
-    restart: unless-stopped
-
-    ports:
-      - "80:80"
-
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./public:/var/www/public:ro
-      - storage:/var/www/storage:ro
-
-    depends_on:
-      app:
-        condition: service_healthy
-
-    networks:
-      - backend
-
-  # PostgreSQL
+  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: postgres-db
@@ -103,11 +46,94 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - 'redis-cli -a "$$REDIS_PASSWORD" ping | grep -q PONG'
+        - 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG'
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+
+    networks:
+      - backend
+
+  # One-time Laravel Initialization
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: adama-revenue-api:latest
+    container_name: laravel-init
+    restart: "no"
+    working_dir: /var/www
+
+    env_file:
+      - .env.production
+
+    volumes:
+      - storage:/var/www/storage
+
+    command:
+      - sh
+      - -c
+      - php artisan migrate --force
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    networks:
+      - backend
+
+  # Laravel Application
+  app:
+    image: adama-revenue-api:latest
+    container_name: laravel-app
+    restart: unless-stopped
+    working_dir: /var/www
+
+    env_file:
+      - .env.production
+
+    volumes:
+      - storage:/var/www/storage
+      - ./public:/var/www/public:ro
+
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - "exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    networks:
+      - backend
+
+  # Nginx
+  nginx:
+    image: nginx:alpine
+    container_name: laravel-nginx
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./public:/var/www/public:ro
+      - storage:/var/www/storage:ro
+
+    depends_on:
+      app:
+        condition: service_healthy
 
     networks:
       - backend
@@ -134,12 +160,8 @@ services:
       - --timeout=120
 
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      app:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
 
     networks:
       - backend
@@ -163,12 +185,8 @@ services:
       - 'while true; do php artisan schedule:run --verbose --no-interaction; sleep 60; done'
 
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      app:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
 
     networks:
       - backend
@@ -178,6 +196,7 @@ services:
     image: dpage/pgadmin4
     container_name: pgadmin
     restart: unless-stopped
+
     profiles:
       - tools
 
@@ -188,12 +207,12 @@ services:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?PGADMIN_DEFAULT_EMAIL is required}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?PGADMIN_DEFAULT_PASSWORD is required}
 
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
     depends_on:
       postgres:
         condition: service_healthy
-
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
 
     networks:
       - backend

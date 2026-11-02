@@ -1,7 +1,14 @@
 
+# =========================================================
+# Base image
+# =========================================================
 FROM php:8.3-fpm
 
-# System dependencies and PHP build dependencies
+WORKDIR /var/www
+
+# =========================================================
+# System dependencies and PHP extensions
+# =========================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -28,15 +35,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         opcache \
     && pecl install redis \
     && docker-php-ext-enable redis \
+    && apt-get purge -y --auto-remove $PHPIZE_DEPS \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# =========================================================
 # Composer
+# =========================================================
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-WORKDIR /var/www
-
-# Install dependencies first for Docker layer caching
+# =========================================================
+# Install PHP dependencies
+# =========================================================
 COPY composer.json composer.lock ./
 
 RUN composer install \
@@ -47,14 +57,20 @@ RUN composer install \
     --no-progress \
     --no-scripts
 
-# Copy Laravel source
+# =========================================================
+# Copy Laravel application
+# =========================================================
 COPY . .
 
-# PHP configuration
+# =========================================================
+# PHP production configuration
+# =========================================================
 COPY docker/php/custom.ini \
     /usr/local/etc/php/conf.d/custom.ini
 
+# =========================================================
 # Laravel runtime directories and permissions
+# =========================================================
 RUN mkdir -p \
         storage/logs \
         storage/framework/cache \
@@ -72,12 +88,14 @@ RUN mkdir -p \
         bootstrap/cache \
         /var/www/.config
 
+# =========================================================
 # Laravel package discovery
+# =========================================================
 RUN php artisan package:discover --ansi
 
-# Create public storage symlink
-RUN php artisan storage:link --force
-
+# =========================================================
+# PHP-FPM
+# =========================================================
 EXPOSE 9000
 
 CMD ["php-fpm"]
