@@ -17,10 +17,11 @@
 - name: Ensure deployment user exists
   ansible.builtin.user:
     name: "{{ deployment_directory_owner }}"
-    group: "{{ deployment_directory_group }}"
+    groups: "{{ deployment_directory_group }}"
+    append: true
     state: present
 
-- name: Create shared infrastructure and backup directories
+- name: Create deployment and infrastructure directories
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory

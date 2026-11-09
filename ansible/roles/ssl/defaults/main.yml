@@ -120,6 +120,6 @@ ssl_gateway_container: "laravel-nginx"
 
 ssl_gateway_service: "nginx"
 
-ssl_gateway_compose_project: "adama-revenue-api"
+ssl_gateway_compose_project: "docker"
 
 ssl_gateway_compose_file: "/opt/adama-revenue-api/gateway/docker/compose.gateway.yml"
