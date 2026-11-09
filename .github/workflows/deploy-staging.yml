@@ -213,6 +213,8 @@ jobs:
           handle_error() {
             local exit_code=$?
 
+            trap - ERR
+
             echo ""
             echo "=========================================="
             echo "STAGING DEPLOYMENT FAILED"
@@ -451,13 +453,27 @@ jobs:
           echo ""
           echo "[9/12] Running staging database migrations..."
 
+          set +e
+
           "${COMPOSE[@]}" run \
             --rm \
             --no-deps \
             app \
             php artisan migrate --force
 
+          MIGRATION_EXIT_CODE=$?
+
+          set -e
+
+          echo "Migration command exit code: $MIGRATION_EXIT_CODE"
+
+          if [ "$MIGRATION_EXIT_CODE" -ne 0 ]; then
+            echo "ERROR: Staging migrations failed."
+            exit "$MIGRATION_EXIT_CODE"
+          fi
+
           echo "STAGING_MIGRATIONS_COMPLETED"
+          echo "Migration step completed successfully."
 
           # ------------------------------------------------
           # 10. Run staging seeders
@@ -466,13 +482,27 @@ jobs:
           echo ""
           echo "[10/12] Running staging database seeders..."
 
+          set +e
+
           "${COMPOSE[@]}" run \
             --rm \
             --no-deps \
             app \
             php artisan db:seed --force
 
+          SEEDER_EXIT_CODE=$?
+
+          set -e
+
+          echo "Seeder command exit code: $SEEDER_EXIT_CODE"
+
+          if [ "$SEEDER_EXIT_CODE" -ne 0 ]; then
+            echo "ERROR: Staging database seeders failed."
+            exit "$SEEDER_EXIT_CODE"
+          fi
+
           echo "STAGING_SEEDERS_COMPLETED"
+          echo "Seeder step completed successfully."
 
           # ------------------------------------------------
           # 11. Start all staging application services
