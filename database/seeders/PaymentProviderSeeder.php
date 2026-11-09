@@ -10,34 +10,46 @@ class PaymentProviderSeeder extends Seeder
 {
     public function run(): void
     {
-        DB::table('payment_providers')->insert([
+        $providers = [
             [
-                'id' => (string) Str::uuid(),
                 'code' => 'TELEBIRR',
                 'name' => 'Telebirr',
                 'fee_percentage' => 0,
-                'is_active' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
             ],
             [
-                'id' => (string) Str::uuid(),
                 'code' => 'CBE_BIRR',
                 'name' => 'CBE Birr',
                 'fee_percentage' => 0,
-                'is_active' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
             ],
             [
-                'id' => (string) Str::uuid(),
                 'code' => 'CHAPA',
                 'name' => 'Chapa',
                 'fee_percentage' => 0,
-                'is_active' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
             ],
-        ]);
+        ];
+        
+        foreach ($providers as $provider) {
+            $existing = DB::table('payment_providers')
+                ->where('code', $provider['code'])
+                ->first();
+        
+            $values = [
+                ...$provider,
+                'is_active' => true,
+                'updated_at' => now(),
+            ];
+        
+            if ($existing) {
+                DB::table('payment_providers')
+                    ->where('id', $existing->id)
+                    ->update($values);
+            } else {
+                DB::table('payment_providers')->insert([
+                    'id' => (string) Str::uuid(),
+                    ...$values,
+                    'created_at' => now(),
+                ]);
+            }
+        }
     }
 }

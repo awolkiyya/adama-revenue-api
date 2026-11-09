@@ -149,29 +149,21 @@ class MeasurementUnitSeeder extends Seeder
 
 
         foreach ($units as $index => $unit) {
-
-            MeasurementUnit::updateOrCreate(
-
-                [
-                    'code' => $unit['code']
-                ],
-
-                [
-                    'id' => Str::uuid(),
-
-                    'name' => $unit['name'],
-
-                    'symbol' => $unit['symbol'],
-
-                    'description' => $unit['description'],
-
-                    'is_active' => true,
-
-                    'sort_order' => $index + 1,
-                ]
-
-            );
-
+            $measurementUnit = MeasurementUnit::firstOrNew([
+                'code' => $unit['code'],
+            ]);
+        
+            $measurementUnit->name = $unit['name'];
+            $measurementUnit->symbol = $unit['symbol'];
+            $measurementUnit->description = $unit['description'];
+            $measurementUnit->is_active = true;
+            $measurementUnit->sort_order = $index + 1;
+        
+            if (!$measurementUnit->exists) {
+                $measurementUnit->id = (string) Str::uuid();
+            }
+        
+            $measurementUnit->save();
         }
     }
 }
