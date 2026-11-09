@@ -20,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
-    # Configure required reviewers under:
-    # GitHub -> Settings -> Environments -> production
     environment:
       name: production
 
@@ -149,6 +147,7 @@ jobs:
       # --------------------------------------------------
 
       - name: Build and deploy Laravel production
+        id: production_deployment
         env:
           PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
           PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
@@ -183,9 +182,6 @@ jobs:
 
           GATEWAY_COMPOSE_FILE="$APP_ROOT/gateway/docker/compose.gateway.yml"
 
-          # Managed by Ansible.
-          BACKUP_DIR="/var/backups/adama-revenue-api/production/postgresql"
-
           STAGING_NETWORK="adama-revenue-staging_app-network"
           PRODUCTION_NETWORK="adama-revenue-production_app-network"
 
@@ -208,7 +204,6 @@ jobs:
           echo "Project: $PROJECT"
           echo "Source: $SOURCE_DIR"
           echo "Image: $IMAGE"
-          echo "Backup directory: $BACKUP_DIR"
 
           # ------------------------------------------------
           # Deployment failure diagnostics
@@ -252,23 +247,16 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[1/12] Checking deployment prerequisites..."
+          echo "[1/11] Checking deployment prerequisites..."
 
           test -d "$APP_ROOT"
           test -d "$SOURCE_DIR"
           test -s "$ENV_FILE"
           test -s "$ARCHIVE"
           test -s "$GATEWAY_COMPOSE_FILE"
-          test -d "$BACKUP_DIR"
 
           test -w "$SOURCE_DIR" || {
             echo "ERROR: Production source directory is not writable."
-            echo "Check Ansible directory ownership and permissions."
-            exit 1
-          }
-
-          test -w "$BACKUP_DIR" || {
-            echo "ERROR: Production backup directory is not writable."
             echo "Check Ansible directory ownership and permissions."
             exit 1
           }
@@ -290,7 +278,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[2/12] Checking Docker gateway networks..."
+          echo "[2/11] Checking Docker gateway networks..."
 
           for NETWORK in "$STAGING_NETWORK" "$PRODUCTION_NETWORK"; do
 
@@ -313,7 +301,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[3/12] Extracting production source..."
+          echo "[3/11] Extracting production source..."
 
           EXTRACT_DIR="$(mktemp -d /tmp/laravel-production.XXXXXX)"
 
@@ -337,19 +325,20 @@ jobs:
           echo "Production source extracted successfully."
 
           # ------------------------------------------------
-          # 4. Validate existing deployment before replacement
+          # 4. Prepare production source replacement
           # ------------------------------------------------
 
           echo ""
-          echo "[4/12] Preparing production source replacement..."
-
-          # Remove the old internal Nginx container before
-          # replacing its bind-mounted source directory.
+          echo "[4/11] Preparing production source replacement..."
 
           if [ -f "$SOURCE_DIR/docker/compose.yml" ] && \
              [ -f "$SOURCE_DIR/docker/compose.production.yml" ]; then
 
             "${COMPOSE[@]}" config -q
+
+            echo "Stopping existing background services..."
+
+            "${COMPOSE[@]}" stop worker scheduler || true
 
             echo "Removing existing internal Nginx container..."
 
@@ -357,16 +346,16 @@ jobs:
 
           else
 
-            echo "No previous production Nginx deployment found."
+            echo "No previous production deployment found."
 
           fi
 
           # ------------------------------------------------
-          # 5. Update production source
+          # 5. Replace production source
           # ------------------------------------------------
 
           echo ""
-          echo "[5/12] Replacing production application source..."
+          echo "[5/11] Replacing production application source..."
 
           find "$SOURCE_DIR" \
             -mindepth 1 \
@@ -388,7 +377,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[6/12] Validating production Compose configuration..."
+          echo "[6/11] Validating production Compose configuration..."
 
           "${COMPOSE[@]}" config -q
 
@@ -399,7 +388,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[7/12] Building Laravel production image..."
+          echo "[7/11] Building Laravel production image..."
 
           docker build \
             --pull \
@@ -416,104 +405,59 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[8/12] Starting production infrastructure..."
+          echo "[8/11] Starting production infrastructure..."
 
           "${COMPOSE[@]}" up -d postgres redis
 
-          # ------------------------------------------------
-          # 9. Wait for PostgreSQL readiness
-          # ------------------------------------------------
+          wait_for_healthy() {
 
-          echo ""
-          echo "[9/12] Waiting for production PostgreSQL..."
+            local service="$1"
+            local attempts="${2:-30}"
+            local container_id
+            local status
 
-          DB_READY=false
+            echo "Waiting for $service health..."
 
-          for attempt in $(seq 1 30); do
+            for attempt in $(seq 1 "$attempts"); do
 
-            DB_ID="$("${COMPOSE[@]}" ps -q postgres)"
+              container_id="$("${COMPOSE[@]}" ps -q "$service")"
 
-            if [ -n "$DB_ID" ]; then
+              if [ -n "$container_id" ]; then
 
-              DB_STATUS="$(
-                docker inspect \
-                  --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-                  "$DB_ID"
-              )"
+                status="$(
+                  docker inspect \
+                    --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                    "$container_id"
+                )"
 
-              echo "PostgreSQL: $DB_STATUS ($attempt/30)"
+                echo "$service: $status ($attempt/$attempts)"
 
-              if [ "$DB_STATUS" = "healthy" ]; then
-                DB_READY=true
-                break
+                if [ "$status" = "healthy" ]; then
+                  return 0
+                fi
+
               fi
 
-            fi
+              sleep 5
 
-            sleep 5
+            done
 
-          done
+            echo "ERROR: $service did not become healthy."
 
-          if [ "$DB_READY" != true ]; then
+            return 1
+          }
 
-            echo "ERROR: Production PostgreSQL did not become healthy."
+          wait_for_healthy postgres 30
+          wait_for_healthy redis 30
 
-            "${COMPOSE[@]}" ps -a
-
-            exit 1
-
-          fi
+          echo "Production infrastructure is healthy."
 
           # ------------------------------------------------
-          # 10. Back up PostgreSQL before deployment
+          # 9. Deploy production application services
           # ------------------------------------------------
 
           echo ""
-          echo "[10/12] Creating production PostgreSQL backup..."
-
-          # Restrict backup file permissions.
-          umask 077
-
-          TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
-
-          BACKUP_FILE="$BACKUP_DIR/production_pre_deploy_$TIMESTAMP.dump"
-          TEMP_BACKUP="$BACKUP_FILE.tmp"
-
-          if ! "${COMPOSE[@]}" exec -T postgres \
-            sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-            > "$TEMP_BACKUP"; then
-
-            rm -f "$TEMP_BACKUP"
-
-            echo "ERROR: Production database backup failed."
-
-            exit 1
-
-          fi
-
-          if [ ! -s "$TEMP_BACKUP" ]; then
-
-            rm -f "$TEMP_BACKUP"
-
-            echo "ERROR: Production database backup is empty."
-
-            exit 1
-
-          fi
-
-          mv "$TEMP_BACKUP" "$BACKUP_FILE"
-
-          chmod 600 "$BACKUP_FILE"
-
-          echo "Production backup created successfully."
-          echo "Backup file: $BACKUP_FILE"
-
-          # ------------------------------------------------
-          # 11. Deploy production application services
-          # ------------------------------------------------
-
-          echo ""
-          echo "[11/12] Deploying Laravel production services..."
+          echo "[9/11] Deploying production application services..."
 
           "${COMPOSE[@]}" up \
             -d \
@@ -524,44 +468,7 @@ jobs:
           # Verify PHP-FPM health
           # ------------------------------------------------
 
-          echo "Waiting for production PHP-FPM health..."
-
-          APP_HEALTHY=false
-
-          for attempt in $(seq 1 30); do
-
-            APP_ID="$("${COMPOSE[@]}" ps -q app)"
-
-            if [ -n "$APP_ID" ]; then
-
-              STATUS="$(
-                docker inspect \
-                  --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-                  "$APP_ID"
-              )"
-
-              echo "PHP-FPM: $STATUS ($attempt/30)"
-
-              if [ "$STATUS" = "healthy" ]; then
-                APP_HEALTHY=true
-                break
-              fi
-
-            fi
-
-            sleep 5
-
-          done
-
-          if [ "$APP_HEALTHY" != true ]; then
-
-            echo "ERROR: Production PHP-FPM health check failed."
-
-            "${COMPOSE[@]}" ps -a
-
-            exit 1
-
-          fi
+          wait_for_healthy app 30
 
           echo "Production PHP-FPM is healthy."
 
@@ -617,6 +524,8 @@ jobs:
 
           NGINX_ID="$("${COMPOSE[@]}" ps -q nginx)"
 
+          test -n "$NGINX_ID"
+
           docker exec "$NGINX_ID" nginx -t
 
           # ------------------------------------------------
@@ -648,13 +557,17 @@ jobs:
           echo "Gateway Nginx configuration is valid."
 
           # ------------------------------------------------
-          # 12. Final deployment verification
+          # 10. Final deployment verification
           # ------------------------------------------------
 
           echo ""
-          echo "[12/12] Final production deployment verification..."
+          echo "[10/11] Final production deployment verification..."
 
           "${COMPOSE[@]}" ps
+
+          # ------------------------------------------------
+          # 11. Deployment success
+          # ------------------------------------------------
 
           echo ""
           echo "=========================================="
@@ -663,18 +576,18 @@ jobs:
 
           echo "Project: $PROJECT"
           echo "Image: $IMAGE"
-          echo "Database migrations: not executed"
-          echo "Database seeders: not executed"
-          echo "Database backup: $BACKUP_FILE"
+          echo "Database migrations: manual"
+          echo "Database seeders: manual"
+          echo "Database backup: not performed by deployment workflow"
           echo "Finished: $(date -Is)"
 
           echo "PRODUCTION_DEPLOYMENT_SUCCESS"
 
           REMOTE
 
-          # ------------------------------------------------
+          # --------------------------------------------------
           # Verify remote success marker
-          # ------------------------------------------------
+          # --------------------------------------------------
 
           if ! grep -Fxq "PRODUCTION_DEPLOYMENT_SUCCESS" "$DEPLOYMENT_LOG"; then
 
@@ -700,7 +613,7 @@ jobs:
         if: success()
         env:
           PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
-          DEPLOYMENT_SUCCESS: ${{ steps.staging_deployment.outputs.deployment_success }}
+          DEPLOYMENT_SUCCESS: ${{ steps.production_deployment.outputs.deployment_success }}
         run: |
           set -Eeuo pipefail
 
@@ -714,6 +627,6 @@ jobs:
           echo "Project: adama-revenue-production"
           echo "Database migrations: manual"
           echo "Database seeders: manual"
-          echo "Production database backup: completed"
+          echo "Database backup: not performed by deployment workflow"
           echo "Remote health checks: passed"
           echo "Deployment success marker: verified"
