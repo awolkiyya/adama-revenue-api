@@ -1,4 +1,3 @@
-
 name: Deploy Laravel Staging
 
 on:
@@ -248,7 +247,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[1/12] Checking deployment prerequisites..."
+          echo "[1/10] Checking deployment prerequisites..."
 
           test -d "$APP_ROOT"
           test -d "$SOURCE_DIR"
@@ -278,7 +277,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[2/12] Checking Docker networks..."
+          echo "[2/10] Checking Docker networks..."
 
           for NETWORK in "$STAGING_NETWORK" "$PRODUCTION_NETWORK"; do
 
@@ -301,7 +300,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[3/12] Extracting staging source..."
+          echo "[3/10] Extracting staging source..."
 
           EXTRACT_DIR="$(mktemp -d /tmp/laravel-staging.XXXXXX)"
 
@@ -329,7 +328,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[4/12] Preparing staging source replacement..."
+          echo "[4/10] Preparing staging source replacement..."
 
           if [ -f "$SOURCE_DIR/docker/compose.yml" ] && \
              [ -f "$SOURCE_DIR/docker/compose.staging.yml" ]; then
@@ -351,7 +350,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[5/12] Replacing staging application source..."
+          echo "[5/10] Replacing staging application source..."
 
           find "$SOURCE_DIR" \
             -mindepth 1 \
@@ -372,7 +371,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[6/12] Validating Compose configuration..."
+          echo "[6/10] Validating Compose configuration..."
 
           "${COMPOSE[@]}" config -q
 
@@ -383,7 +382,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[7/12] Building Laravel staging image..."
+          echo "[7/10] Building Laravel staging image..."
 
           docker build \
             --pull \
@@ -400,7 +399,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[8/12] Starting staging infrastructure..."
+          echo "[8/10] Starting staging infrastructure..."
 
           "${COMPOSE[@]}" up -d postgres redis
 
@@ -448,107 +447,11 @@ jobs:
           echo "Staging infrastructure is healthy."
 
           # ------------------------------------------------
-          # 9. Run migrations
+          # 9. Start all staging application services
           # ------------------------------------------------
 
           echo ""
-          echo "[9/12] Running staging database migrations..."
-
-          if "${COMPOSE[@]}" run \
-            --rm \
-            --no-deps \
-            -T \
-            --interactive=false \
-            app \
-            php artisan migrate --force \
-            </dev/null
-          then
-
-            MIGRATION_EXIT_CODE=0
-
-          else
-
-            MIGRATION_EXIT_CODE=$?
-
-          fi
-
-          echo "Migration command exit code: $MIGRATION_EXIT_CODE"
-
-          if [ "$MIGRATION_EXIT_CODE" -ne 0 ]; then
-
-            echo "ERROR: Staging migrations failed."
-
-            echo ""
-            echo "Staging container status:"
-
-            "${COMPOSE[@]}" ps -a || true
-
-            echo ""
-            echo "Staging application logs:"
-
-            "${COMPOSE[@]}" logs --tail=100 app || true
-
-            exit "$MIGRATION_EXIT_CODE"
-
-          fi
-
-          echo "STAGING_MIGRATIONS_COMPLETED"
-          echo "Migration step completed successfully."
-
-          # ------------------------------------------------
-          # 10. Run staging seeders
-          # ------------------------------------------------
-
-          echo ""
-          echo "[10/12] Running staging database seeders..."
-
-          if "${COMPOSE[@]}" run \
-            --rm \
-            --no-deps \
-            -T \
-            --interactive=false \
-            app \
-            php artisan db:seed --force \
-            </dev/null
-          then
-
-            SEEDER_EXIT_CODE=0
-
-          else
-
-            SEEDER_EXIT_CODE=$?
-
-          fi
-
-          echo "Seeder command exit code: $SEEDER_EXIT_CODE"
-
-          if [ "$SEEDER_EXIT_CODE" -ne 0 ]; then
-
-            echo "ERROR: Staging database seeders failed."
-
-            echo ""
-            echo "Staging container status:"
-
-            "${COMPOSE[@]}" ps -a || true
-
-            echo ""
-            echo "Staging application logs:"
-
-            "${COMPOSE[@]}" logs --tail=100 app || true
-
-            exit "$SEEDER_EXIT_CODE"
-
-          fi
-
-          echo "STAGING_SEEDERS_COMPLETED"
-          echo "Seeder step completed successfully."
-
-          # ------------------------------------------------
-          # 11. Start all staging application services
-          # ------------------------------------------------
-
-          echo ""
-          echo "[11/12] Deploying Laravel staging services..."
+          echo "[9/10] Deploying Laravel staging services..."
 
           "${COMPOSE[@]}" up \
             -d \
@@ -649,11 +552,11 @@ jobs:
           echo "Gateway Nginx configuration is valid."
 
           # ------------------------------------------------
-          # 12. Final verification
+          # 10. Final verification
           # ------------------------------------------------
 
           echo ""
-          echo "[12/12] Final staging deployment verification..."
+          echo "[10/10] Final staging deployment verification..."
 
           "${COMPOSE[@]}" ps
 
@@ -710,5 +613,7 @@ jobs:
 
           echo "Server: $STAGING_HOST"
           echo "Project: adama-revenue-staging"
+          echo "Database migrations: not executed"
+          echo "Database seeders: not executed"
           echo "Remote health checks: passed"
           echo "Deployment success marker: verified"

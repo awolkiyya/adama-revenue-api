@@ -12,4 +12,6 @@
     - directories
     - backup
     - monitoring
-    - ssl
+    - role: ssl
+      tags:
+        - ssl
