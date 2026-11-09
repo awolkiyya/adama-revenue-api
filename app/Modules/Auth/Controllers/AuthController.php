@@ -12,7 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-
+use Illuminate\Validation\ValidationException;
 class AuthController extends Controller
 {
     public function __construct(
@@ -22,327 +22,327 @@ class AuthController extends Controller
     }
 
     /*
-|--------------------------------------------------------------------------
-| WEB LOGIN
-|--------------------------------------------------------------------------
-|
-| Authentication:
-|
-|     Laravel Web Session
-|
-| Browser receives:
-|
-|     laravel_session
-|     role                 ← employee frontend routing hint only
-|
-| IMPORTANT:
-|
-| - Laravel session is the REAL authentication mechanism.
-| - The role cookie is NOT trusted for backend authorization.
-| - Employee users receive a role cookie.
-| - Citizen users do NOT receive a role cookie.
-| - No Sanctum personal access token is created.
-|
-*/
+    |--------------------------------------------------------------------------
+    | WEB LOGIN
+    |--------------------------------------------------------------------------
+    |
+    | Authentication:
+    |
+    |     Laravel Web Session
+    |
+    | Browser receives:
+    |
+    |     laravel_session
+    |     role                 ← employee frontend routing hint only
+    |
+    | IMPORTANT:
+    |
+    | - Laravel session is the REAL authentication mechanism.
+    | - The role cookie is NOT trusted for backend authorization.
+    | - Employee users receive a role cookie.
+    | - Citizen users do NOT receive a role cookie.
+    | - No Sanctum personal access token is created.
+    |
+    */
 
-public function webLogin(
-    LoginRequest $request
-): JsonResponse {
+    public function webLogin(
+        LoginRequest $request
+    ): JsonResponse {
 
-    Log::info('========== WEB LOGIN START ==========');
+        Log::info('========== WEB LOGIN START ==========');
 
-    Log::info('Web login request received', [
-        'email' => $request->input('email'),
-        'ip' => $request->ip(),
-        'user_agent' => $request->userAgent(),
-    ]);
-
-    try {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Request
-        |--------------------------------------------------------------------------
-        */
-
-        $validated = $request->validated();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Credentials
-        |--------------------------------------------------------------------------
-        |
-        | Returns:
-        |
-        |     User
-        |
-        | Does NOT create a Sanctum token.
-        |
-        */
-
-        $user = $this->authService->validateCredentials(
-            $validated
-        );
-
-        Log::info('Web credentials authenticated', [
-            'user_id' => $user->id,
-            'user_type' => $user->user_type,
-            'email' => $user->email,
-            'name' => $user->name,
+        Log::info('Web login request received', [
+            'email' => $request->input('email'),
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Create Laravel Web Session
-        |--------------------------------------------------------------------------
-        |
-        | AuthSessionService:
-        |
-        |     Auth::guard('web')->login()
-        |     session()->regenerate()
-        |
-        */
-
-        $this->authSessionService->authenticate(
-            $request,
-            $user
-        );
-
-        Log::info('Laravel web session created', [
-            'user_id' => $user->id,
-            'session_id' => $request->session()->getId(),
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Update Last Login
-        |--------------------------------------------------------------------------
-        */
-
-        $user->update([
-            'last_login_at' => now(),
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Load User Relations
-        |--------------------------------------------------------------------------
-        |
-        | Employee:
-        |
-        |     roles.permissions
-        |
-        | Citizen:
-        |
-        |     citizenAccount.citizen.avatar
-        |
-        */
-
-        $this->loadUserRelations($user);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Build Response
-        |--------------------------------------------------------------------------
-        |
-        | IMPORTANT:
-        |
-        | No Sanctum token is returned.
-        |
-        */
-
-        $resource = new AuthUserResource(
-            $user
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Create API Response
-        |--------------------------------------------------------------------------
-        */
-
-        $response = ApiResponse::success(
-            $resource,
-            'Login successful'
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | EMPLOYEE ROLE COOKIE
-        |--------------------------------------------------------------------------
-        |
-        | The role cookie is ONLY used by Next.js middleware
-        | for frontend route gating.
-        |
-        | It is NOT a security authority.
-        |
-        | Laravel MUST independently enforce:
-        |
-        |     - authentication
-        |     - role
-        |     - permissions
-        |     - organizational scope
-        |     - resource ownership
-        |
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            $user->user_type === 'employee' &&
-            $user->roles->isNotEmpty()
-        ) {
+        try {
 
             /*
             |--------------------------------------------------------------------------
-            | Primary Role
+            | Validate Request
             |--------------------------------------------------------------------------
-            |
-            | For the frontend we use the user's primary/first
-            | assigned role.
-            |
             */
 
-            $primaryRole = $user->roles
-                ->first()
-                ->name;
+            $validated = $request->validated();
 
             /*
             |--------------------------------------------------------------------------
-            | Remember Me
+            | Validate Credentials
             |--------------------------------------------------------------------------
             |
-            | If LoginRequest contains:
+            | Returns:
             |
-            |     remember = true
+            |     User
             |
-            | role cookie:
-            |
-            |     30 days
-            |
-            | Otherwise:
-            |
-            |     24 hours
+            | Does NOT create a Sanctum token.
             |
             */
 
-            $remember = (bool) (
-                $validated['remember'] ?? false
+            $user = $this->authService->validateCredentials(
+                $validated
             );
 
+            Log::info('Web credentials authenticated', [
+                'user_id' => $user->id,
+                'user_type' => $user->user_type,
+                'email' => $user->email,
+                'name' => $user->name,
+            ]);
+
             /*
             |--------------------------------------------------------------------------
-            | Attach Role Cookie
+            | Create Laravel Web Session
             |--------------------------------------------------------------------------
             |
-            | Cookie:
+            | AuthSessionService:
             |
-            |     role=SYSTEM_ADMIN
+            |     Auth::guard('web')->login()
+            |     session()->regenerate()
             |
-            | Security:
+            */
+
+            $this->authSessionService->authenticate(
+                $request,
+                $user
+            );
+
+            Log::info('Laravel web session created', [
+                'user_id' => $user->id,
+                'session_id' => $request->session()->getId(),
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update Last Login
+            |--------------------------------------------------------------------------
+            */
+
+            $user->update([
+                'last_login_at' => now(),
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Load User Relations
+            |--------------------------------------------------------------------------
             |
-            |     Secure   → production only
-            |     HttpOnly → true
-            |     SameSite → Lax
+            | Employee:
+            |
+            |     roles.permissions
+            |
+            | Citizen:
+            |
+            |     citizenAccount.citizen.avatar
+            |
+            */
+
+            $this->loadUserRelations($user);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Build Response
+            |--------------------------------------------------------------------------
             |
             | IMPORTANT:
             |
-            | HttpOnly does NOT prevent Next.js middleware
-            | from reading the cookie.
-            |
-            | It only prevents browser JavaScript from reading
-            | the cookie through document.cookie.
+            | No Sanctum token is returned.
             |
             */
 
-            $response->withCookie(
-                cookie(
-                    'role',
-
-                    // Exact role value
-                    $primaryRole,
-
-                    // Lifetime
-                    $remember
-                        ? 60 * 24 * 30   // 30 days
-                        : 60 * 24,       // 24 hours
-
-                    // Path
-                    '/',
-
-                    // Domain
-                    null,
-
-                    // Secure
-                    app()->environment('production'),
-
-                    // HttpOnly
-                    true,
-
-                    // Raw
-                    false,
-
-                    // SameSite
-                    'Lax'
-                )
+            $resource = new AuthUserResource(
+                $user
             );
 
-            Log::info('Frontend role cookie created', [
-                'user_id' => $user->id,
-                'role' => $primaryRole,
-                'remember' => $remember,
-            ]);
-        }
+            /*
+            |--------------------------------------------------------------------------
+            | Create API Response
+            |--------------------------------------------------------------------------
+            */
 
-        /*
-        |--------------------------------------------------------------------------
-        | CITIZEN LOGIN
-        |--------------------------------------------------------------------------
-        |
-        | Citizens do NOT have RBAC roles.
-        |
-        | Therefore:
-        |
-        |     - No role cookie is created.
-        |     - Laravel session remains the authentication mechanism.
-        |
-        */
+            $response = ApiResponse::success(
+                $resource,
+                'Login successful'
+            );
 
-        if ($user->user_type === 'citizen') {
+            /*
+            |--------------------------------------------------------------------------
+            | EMPLOYEE ROLE COOKIE
+            |--------------------------------------------------------------------------
+            |
+            | The role cookie is ONLY used by Next.js middleware
+            | for frontend route gating.
+            |
+            | It is NOT a security authority.
+            |
+            | Laravel MUST independently enforce:
+            |
+            |     - authentication
+            |     - role
+            |     - permissions
+            |     - organizational scope
+            |     - resource ownership
+            |
+            |--------------------------------------------------------------------------
+            */
 
-            Log::info(
-                'Citizen web login completed without role cookie',
-                [
+            if (
+                $user->user_type === 'employee' &&
+                $user->roles->isNotEmpty()
+            ) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Primary Role
+                |--------------------------------------------------------------------------
+                |
+                | For the frontend we use the user's primary/first
+                | assigned role.
+                |
+                */
+
+                $primaryRole = $user->roles
+                    ->first()
+                    ->name;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Remember Me
+                |--------------------------------------------------------------------------
+                |
+                | If LoginRequest contains:
+                |
+                |     remember = true
+                |
+                | role cookie:
+                |
+                |     30 days
+                |
+                | Otherwise:
+                |
+                |     24 hours
+                |
+                */
+
+                $remember = (bool) (
+                    $validated['remember'] ?? false
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Attach Role Cookie
+                |--------------------------------------------------------------------------
+                |
+                | Cookie:
+                |
+                |     role=SYSTEM_ADMIN
+                |
+                | Security:
+                |
+                |     Secure   → production only
+                |     HttpOnly → true
+                |     SameSite → Lax
+                |
+                | IMPORTANT:
+                |
+                | HttpOnly does NOT prevent Next.js middleware
+                | from reading the cookie.
+                |
+                | It only prevents browser JavaScript from reading
+                | the cookie through document.cookie.
+                |
+                */
+
+                $response->withCookie(
+                    cookie(
+                        'role',
+
+                        // Exact role value
+                        $primaryRole,
+
+                        // Lifetime
+                        $remember
+                            ? 60 * 24 * 30   // 30 days
+                            : 60 * 24,       // 24 hours
+
+                        // Path
+                        '/',
+
+                        // Domain
+                        null,
+
+                        // Secure
+                        app()->environment('production'),
+
+                        // HttpOnly
+                        true,
+
+                        // Raw
+                        false,
+
+                        // SameSite
+                        'Lax'
+                    )
+                );
+
+                Log::info('Frontend role cookie created', [
                     'user_id' => $user->id,
+                    'role' => $primaryRole,
+                    'remember' => $remember,
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | CITIZEN LOGIN
+            |--------------------------------------------------------------------------
+            |
+            | Citizens do NOT have RBAC roles.
+            |
+            | Therefore:
+            |
+            |     - No role cookie is created.
+            |     - Laravel session remains the authentication mechanism.
+            |
+            */
+
+            if ($user->user_type === 'citizen') {
+
+                Log::info(
+                    'Citizen web login completed without role cookie',
+                    [
+                        'user_id' => $user->id,
+                    ]
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | SUCCESS
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info('========== WEB LOGIN SUCCESS ==========');
+
+            return $response;
+
+        } catch (\Throwable $e) {
+
+            Log::error(
+                '========== WEB LOGIN FAILED ==========',
+                [
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                    'user_email' => $request->input('email'),
+                    'ip' => $request->ip(),
                 ]
             );
+
+            throw $e;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | SUCCESS
-        |--------------------------------------------------------------------------
-        */
-
-        Log::info('========== WEB LOGIN SUCCESS ==========');
-
-        return $response;
-
-    } catch (\Throwable $e) {
-
-        Log::error(
-            '========== WEB LOGIN FAILED ==========',
-            [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'user_email' => $request->input('email'),
-                'ip' => $request->ip(),
-            ]
-        );
-
-        throw $e;
     }
-}
 
 
 
@@ -411,5 +411,97 @@ public function webLogin(
         }
 
         $user->load($relations);
+    }
+
+   /*
+    |--------------------------------------------------------------------------
+    | MOBILE LOGIN
+    |--------------------------------------------------------------------------
+    |
+    | Authentication:
+    |
+    |     Laravel Sanctum Personal Access Token
+    |
+    | Flutter sends:
+    |
+    |     Authorization: Bearer {token}
+    |
+    | IMPORTANT:
+    |
+    | - Does NOT create a Laravel web session.
+    | - Does NOT create a role cookie.
+    | - Reuses AuthenticationService.
+    | - Only authorized revenue collectors can access the app.
+    |
+    */
+
+    public function mobileLogin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'password' => ['required', 'string'],
+            'device_name' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        // Validate credentials, account status and lockout.
+        $user = $this->authService->validateCredentials($validated);
+
+        // Restrict access to authorized field collectors.
+        if (
+            $user->user_type !== 'employee' ||
+            !$user->hasRole('REVENUE_COLLECTOR')
+        ) {
+            throw ValidationException::withMessages([
+                'email' => [
+                    'You are not authorized to access the field collector application.',
+                ],
+            ]);
+        }
+
+        // Load relationships required by AuthUserResource.
+        $this->loadUserRelations($user);
+
+        // Create Sanctum personal access token.
+        $token = $user->createToken(
+            $validated['device_name'] ?? 'field-collector-app'
+        )->plainTextToken;
+
+        Log::info('Mobile login successful', [
+            'user_id' => $user->id,
+            'device_name' => $validated['device_name'] ?? 'field-collector-app',
+            'ip' => $request->ip(),
+        ]);
+
+        // Return user resource with mobile token.
+        return ApiResponse::success(
+            new AuthUserResource($user, $token),
+            'Login successful'
+        );
+    }
+
+
+
+
+   /*
+    |--------------------------------------------------------------------------
+    | MOBILE LOGOUT
+    |--------------------------------------------------------------------------
+    */
+
+    public function mobileLogout(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        // Revoke only the current device token.
+        $user->currentAccessToken()?->delete();
+
+        Log::info('Mobile logout successful', [
+            'user_id' => $user->id,
+        ]);
+
+        return ApiResponse::success(
+            null,
+            'Successfully logged out.'
+        );
     }
 }

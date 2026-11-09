@@ -1,0 +1,24 @@
+
+---
+# Server timezone
+server_timezone: Africa/Addis_Ababa
+
+# APT configuration
+common_apt_cache_valid_time: 3600
+common_upgrade_packages: true
+
+# Essential Ubuntu packages
+common_packages:
+  - curl
+  - wget
+  - git
+  - vim
+  - nano
+  - htop
+  - jq
+  - unzip
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - software-properties-common
+  - apt-transport-https

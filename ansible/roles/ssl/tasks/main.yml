@@ -1,0 +1,45 @@
+
+---
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - PRODUCTION SSL ROLE
+# PRODUCTION HTTPS / IP ADDRESS CERTIFICATE
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Install and validate Certbot
+# ------------------------------------------------------------
+
+- name: Install and validate Certbot
+  ansible.builtin.import_tasks: install.yml
+
+
+# ------------------------------------------------------------
+# 2. Create persistent production SSL directories
+# ------------------------------------------------------------
+
+- name: Create production SSL directories
+  ansible.builtin.import_tasks: directories.yml
+
+
+# ------------------------------------------------------------
+# 3. Issue or validate production IP certificate
+# ------------------------------------------------------------
+
+- name: Issue or validate production certificate
+  ansible.builtin.import_tasks: issue.yml
+
+
+# ------------------------------------------------------------
+# 4. Validate production Nginx gateway
+# ------------------------------------------------------------
+
+- name: Validate production Nginx gateway
+  ansible.builtin.import_tasks: nginx.yml
+
+
+# ------------------------------------------------------------
+# 5. Configure automatic certificate renewal
+# ------------------------------------------------------------
+
+- name: Configure production certificate renewal
+  ansible.builtin.import_tasks: renewal.yml

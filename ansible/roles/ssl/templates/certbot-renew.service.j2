@@ -1,0 +1,25 @@
+
+[Unit]
+Description=Adama Municipal Revenue - Let's Encrypt Certificate Renewal
+Documentation=https://certbot.eff.org/docs/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+
+ExecStart={{ ssl_certbot_binary }} renew --quiet --non-interactive --config-dir={{ ssl_config_dir }} --work-dir={{ ssl_certbot_work_dir }} --logs-dir={{ ssl_certbot_logs_dir }} --deploy-hook {{ ssl_certbot_deploy_hook }}
+
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
+
+# Allow Certbot to access persistent certificate and ACME state.
+ReadWritePaths={{ ssl_config_dir }} {{ ssl_certbot_work_dir }} {{ ssl_certbot_logs_dir }}
+
+# Renewal operation timeout.
+TimeoutStartSec=30min
+TimeoutStopSec=2min

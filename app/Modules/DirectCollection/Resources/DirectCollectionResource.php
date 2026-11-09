@@ -11,10 +11,7 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class DirectCollectionResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
-     * The underlying resource is an Invoice created and issued
-     * through the Direct Collection workflow.
+     * Transform the invoice into a direct collection response.
      */
     public function toArray(Request $request): array
     {
@@ -23,6 +20,7 @@ class DirectCollectionResource extends JsonResource
 
         $invoice->loadMissing([
             'citizen',
+            'citizen.administrativeUnit',
             'items',
             'items.service',
         ]);
@@ -34,8 +32,10 @@ class DirectCollectionResource extends JsonResource
                 return [
                     'id' => $item->id,
                     'line_number' => $item->line_number,
+
                     'service_id' => $item->service_id,
                     'service_name' => $item->service?->name,
+
                     'description' => $item->description,
 
                     'quantity' => $this->decimalOrNull(
@@ -66,6 +66,10 @@ class DirectCollectionResource extends JsonResource
             }
         )->values();
 
+        $totalAmount = $invoice->total_amount ?? '0.0000';
+        $paidAmount = $invoice->paid_amount ?? '0.0000';
+        $balanceDue = $invoice->balance_due ?? '0.0000';
+
         return [
             /*
             |--------------------------------------------------------------------------
@@ -74,7 +78,6 @@ class DirectCollectionResource extends JsonResource
             */
 
             'id' => $invoice->id,
-
             'source_type' => $invoice->source_type,
 
             /*
@@ -87,7 +90,6 @@ class DirectCollectionResource extends JsonResource
                 'id' => $invoice->id,
                 'invoice_number' => $invoice->invoice_number,
                 'status' => $invoice->status,
-
                 'currency' => $invoice->currency,
 
                 'subtotal' => $this->decimalOrNull(
@@ -110,8 +112,12 @@ class DirectCollectionResource extends JsonResource
                     $invoice->total_amount
                 ),
 
-                'amount' => $this->decimalOrNull(
-                    $invoice->amount
+                'paid_amount' => $this->decimalOrNull(
+                    $invoice->paid_amount
+                ),
+
+                'balance_due' => $this->decimalOrNull(
+                    $invoice->balance_due
                 ),
 
                 'due_date' => $this->dateOrNull(
@@ -122,22 +128,47 @@ class DirectCollectionResource extends JsonResource
                     $invoice->issued_at
                 ),
 
+                'paid_at' => $this->dateOrNull(
+                    $invoice->paid_at
+                ),
+
                 'created_at' => $invoice->created_at?->toISOString(),
                 'updated_at' => $invoice->updated_at?->toISOString(),
             ],
 
             /*
             |--------------------------------------------------------------------------
-            | Taxpayer / Citizen
+            | Taxpayer
             |--------------------------------------------------------------------------
             */
 
             'taxpayer' => $citizen
                 ? [
                     'id' => $citizen->id,
-                    'name' => $this->resolveCitizenName($citizen),
-                    'phone' => $citizen->phone ?? null,
-                    'email' => $citizen->email ?? null,
+                    'citizen_uid' => $citizen->citizen_uid,
+                    'full_name' => $citizen->full_name,
+
+                    'phone' => $citizen->phone,
+                    'email' => $citizen->email,
+
+                    'national_id' => $citizen->national_id,
+                    'gender' => $citizen->gender,
+
+                    'date_of_birth' => $citizen->date_of_birth
+                        ?->toDateString(),
+
+                    'address' => $citizen->address,
+
+                    'administrative_unit' => $citizen->administrativeUnit
+                        ? [
+                            'id' => $citizen->administrativeUnit->id,
+                            'name' => $citizen->administrativeUnit->name,
+                            'code' => $citizen->administrativeUnit->code,
+                        ]
+                        : null,
+
+                    'registered_at' => $citizen->registered_at
+                        ?->toISOString(),
                 ]
                 : null,
 
@@ -153,7 +184,7 @@ class DirectCollectionResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Items
+            | Invoice Items
             |--------------------------------------------------------------------------
             */
 
@@ -161,7 +192,37 @@ class DirectCollectionResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Summary
+            | Payment Summary
+            |--------------------------------------------------------------------------
+            |
+            | Invoice financial totals are authoritative.
+            | Do not sum all payment records here.
+            |
+            */
+
+            'payment_summary' => [
+                'total_amount' => $this->decimalOrNull(
+                    $totalAmount
+                ),
+
+                'paid_amount' => $this->decimalOrNull(
+                    $paidAmount
+                ),
+
+                'balance_due' => $this->decimalOrNull(
+                    $balanceDue
+                ),
+
+                'currency' => $invoice->currency,
+
+                'payment_status' => $this->resolvePaymentStatus(
+                    $invoice
+                ),
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Collection Summary
             |--------------------------------------------------------------------------
             */
 
@@ -169,7 +230,7 @@ class DirectCollectionResource extends JsonResource
                 'item_count' => $items->count(),
 
                 'amount' => $this->decimalOrNull(
-                    $invoice->amount
+                    $totalAmount
                 ),
 
                 'currency' => $invoice->currency,
@@ -192,10 +253,38 @@ class DirectCollectionResource extends JsonResource
     }
 
     /**
-     * Return a decimal value as a string.
-     *
-     * Keeping monetary values as strings avoids floating-point
-     * precision problems in the API response.
+     * Resolve the payment status from authoritative invoice totals.
+     */
+    private function resolvePaymentStatus(Invoice $invoice): string
+    {
+        if ($invoice->status === 'CANCELLED') {
+            return 'CANCELLED';
+        }
+
+        if ($invoice->status === 'VOID') {
+            return 'VOID';
+        }
+
+        $paidAmount = (string) ($invoice->paid_amount ?? '0.0000');
+        $balanceDue = (string) ($invoice->balance_due ?? '0.0000');
+        $totalAmount = (string) ($invoice->total_amount ?? '0.0000');
+
+        if (
+            bccomp($totalAmount, '0', 4) > 0
+            && bccomp($balanceDue, '0', 4) <= 0
+        ) {
+            return 'PAID';
+        }
+
+        if (bccomp($paidAmount, '0', 4) > 0) {
+            return 'PARTIALLY_PAID';
+        }
+
+        return 'UNPAID';
+    }
+
+    /**
+     * Preserve decimal precision by returning decimal strings.
      */
     private function decimalOrNull(mixed $value): ?string
     {
@@ -203,20 +292,11 @@ class DirectCollectionResource extends JsonResource
             return null;
         }
 
-        if (is_numeric($value)) {
-            return number_format(
-                (float) $value,
-                4,
-                '.',
-                ''
-            );
-        }
-
         return (string) $value;
     }
 
     /**
-     * Normalize a date/datetime value.
+     * Normalize date/datetime values.
      */
     private function dateOrNull(mixed $value): ?string
     {
@@ -229,48 +309,5 @@ class DirectCollectionResource extends JsonResource
         }
 
         return (string) $value;
-    }
-
-    /**
-     * Resolve the citizen's display name without assuming
-     * one specific naming convention.
-     */
-    private function resolveCitizenName(object $citizen): ?string
-    {
-        $fullName = collect([
-            $citizen->first_name ?? null,
-            $citizen->middle_name ?? null,
-            $citizen->last_name ?? null,
-        ])
-            ->filter(
-                fn ($value): bool =>
-                    $value !== null
-                    && trim((string) $value) !== ''
-            )
-            ->map(
-                fn ($value): string =>
-                    trim((string) $value)
-            )
-            ->implode(' ');
-
-        if ($fullName !== '') {
-            return $fullName;
-        }
-
-        if (
-            isset($citizen->name)
-            && trim((string) $citizen->name) !== ''
-        ) {
-            return trim((string) $citizen->name);
-        }
-
-        if (
-            isset($citizen->full_name)
-            && trim((string) $citizen->full_name) !== ''
-        ) {
-            return trim((string) $citizen->full_name);
-        }
-
-        return null;
     }
 }

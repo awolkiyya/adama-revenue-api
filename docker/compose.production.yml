@@ -1,0 +1,37 @@
+services:
+  app:
+    env_file:
+      - ../../.env.production
+
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+
+  worker:
+    env_file:
+      - ../../.env.production
+
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+
+  scheduler:
+    env_file:
+      - ../../.env.production
+
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+
+  nginx:
+    networks:
+      backend: {}
+
+      gateway:
+        aliases:
+          - production-api
+
+networks:
+  gateway:
+    external: true
+    name: adama-revenue-production_app-network

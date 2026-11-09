@@ -50,128 +50,111 @@ use App\Modules\Auth\Controllers\SessionController;
 Route::prefix('auth')->group(function () {
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | WEB AUTHENTICATION
-    |--------------------------------------------------------------------------
-    |
-    | Next.js / Browser
-    |
-    | Authentication:
-    |     Laravel Sanctum Stateful Authentication
-    |
-    | Credentials:
-    |     laravel-session
-    |     XSRF-TOKEN
-    |
-    |--------------------------------------------------------------------------
-    */
 
-    // Route::middleware('web')->group(function () {
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | WEB EMPLOYEE LOGIN
-        |--------------------------------------------------------------------------
-        |
-        | POST:
-        |     /api/v1/auth/web-login
-        |
-        | Authentication:
-        |     None before login
-        |
-        | Result:
-        |     Laravel session cookie
-        |
-        |--------------------------------------------------------------------------
-        */
-
-        Route::post(
-            '/web-login',
-            [AuthController::class, 'webLogin']
-        )->middleware('throttle:login')->name('auth.web-login');
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | WEB CITIZEN OTP
-        |--------------------------------------------------------------------------
-        */
-
-        Route::prefix('web-otp')->group(function () {
 
 
             /*
             |--------------------------------------------------------------------------
-            | SEND OTP
+            | WEB EMPLOYEE LOGIN
+            |--------------------------------------------------------------------------
+            |
+            | POST:
+            |     /api/v1/auth/web-login
+            |
+            | Authentication:
+            |     None before login
+            |
+            | Result:
+            |     Laravel session cookie
+            |
             |--------------------------------------------------------------------------
             */
 
             Route::post(
-                '/send',
-                [OtpController::class, 'webSend']
-            )->name('auth.web-otp.send');
+                '/web-login',
+                [AuthController::class, 'webLogin']
+            )->middleware('throttle:login')->name('auth.web-login');
 
 
             /*
             |--------------------------------------------------------------------------
-            | VERIFY OTP
+            | WEB CITIZEN OTP
             |--------------------------------------------------------------------------
             */
 
-            Route::post(
-                '/verify',
-                [OtpController::class, 'webVerify']
-            )->name('auth.web-otp.verify');
+            Route::prefix('web-otp')->group(function () {
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | SEND OTP
+                |--------------------------------------------------------------------------
+                */
+
+                Route::post(
+                    '/send',
+                    [OtpController::class, 'webSend']
+                )->name('auth.web-otp.send');
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | VERIFY OTP
+                |--------------------------------------------------------------------------
+                */
+
+                Route::post(
+                    '/verify',
+                    [OtpController::class, 'webVerify']
+                )->name('auth.web-otp.verify');
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | RESEND OTP
+                |--------------------------------------------------------------------------
+                */
+
+                Route::post(
+                    '/resend',
+                    [OtpController::class, 'webResend']
+                )->name('auth.web-otp.resend');
+
+            });
 
 
             /*
             |--------------------------------------------------------------------------
-            | RESEND OTP
+            | WEB PROTECTED
+            |--------------------------------------------------------------------------
+            |
+            | Middleware order:
+            |
+            |     web
+            |       ↓
+            |     log.auth
+            |       ↓
+            |     auth:sanctum
+            |       ↓
+            |     Controller
+            |
+            | `web`:
+            |     Starts Laravel's session middleware.
+            |
+            | `log.auth`:
+            |     Temporary diagnostic middleware.
+            |
+            | `auth:sanctum`:
+            |     Authenticates the browser using the
+            |     Laravel session for stateful requests.
+            |
             |--------------------------------------------------------------------------
             */
 
-            Route::post(
-                '/resend',
-                [OtpController::class, 'webResend']
-            )->name('auth.web-otp.resend');
-
-        });
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | WEB PROTECTED
-        |--------------------------------------------------------------------------
-        |
-        | Middleware order:
-        |
-        |     web
-        |       ↓
-        |     log.auth
-        |       ↓
-        |     auth:sanctum
-        |       ↓
-        |     Controller
-        |
-        | `web`:
-        |     Starts Laravel's session middleware.
-        |
-        | `log.auth`:
-        |     Temporary diagnostic middleware.
-        |
-        | `auth:sanctum`:
-        |     Authenticates the browser using the
-        |     Laravel session for stateful requests.
-        |
-        |--------------------------------------------------------------------------
-        */
-
-        Route::middleware([
-            'log.auth',
-            'auth:sanctum',
-        ])->group(function () {
+            Route::middleware([
+                'log.auth',
+                'auth:sanctum',
+            ])->group(function () {
 
 
             /*
@@ -226,7 +209,50 @@ Route::prefix('auth')->group(function () {
 
         });
 
-    // });
+        /*
+        |--------------------------------------------------------------------------
+        | MOBILE AUTHENTICATION (FLUTTER)
+        |--------------------------------------------------------------------------
+        |
+        | Authentication:
+        |     Laravel Sanctum Personal Access Token
+        |
+        | Credentials:
+        |     Authorization: Bearer {token}
+        |
+        | Routes:
+        |     POST /api/v1/auth/mobile/login
+        |     GET  /api/v1/auth/mobile/me
+        |     POST /api/v1/auth/mobile/logout
+        |
+        */
+
+        Route::prefix('mobile')->group(function () {
+
+        // Public mobile login.
+        Route::post(
+            '/login',
+            [AuthController::class, 'mobileLogin']
+        )
+            ->middleware('throttle:login')
+            ->name('auth.mobile-login');
+
+        // Protected mobile routes.
+        Route::middleware('auth:sanctum')->group(function () {
+
+            Route::get(
+                '/me',
+                [SessionController::class, 'mobileMe']
+            )->name('auth.mobile-me');
+
+            Route::post(
+                '/logout',
+                [AuthController::class, 'mobileLogout']
+            )->name('auth.mobile-logout');
+
+        });
+
+        });
 
 
 });

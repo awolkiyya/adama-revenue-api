@@ -1,0 +1,83 @@
+---
+- name: Check Docker daemon status
+  ansible.builtin.command:
+    cmd: systemctl is-active docker
+  register: monitoring_docker_service
+  changed_when: false
+  failed_when: monitoring_docker_service.rc != 0
+
+- name: Verify Docker daemon connectivity
+  ansible.builtin.command:
+    cmd: docker info
+  register: monitoring_docker_info
+  changed_when: false
+
+- name: Get all Docker containers
+  ansible.builtin.command:
+    cmd: docker ps -a
+  register: monitoring_docker_containers
+  changed_when: false
+
+- name: Display Docker containers
+  ansible.builtin.debug:
+    var: monitoring_docker_containers.stdout_lines
+
+- name: Get Docker container resource usage
+  ansible.builtin.command:
+    cmd: docker stats --no-stream
+  register: monitoring_docker_stats
+  changed_when: false
+
+- name: Display Docker resource usage
+  ansible.builtin.debug:
+    var: monitoring_docker_stats.stdout_lines
+
+- name: Find unhealthy Docker containers
+  ansible.builtin.command:
+    cmd: docker ps --filter health=unhealthy -q
+  register: monitoring_docker_unhealthy
+  changed_when: false
+
+- name: Report unhealthy Docker containers
+  ansible.builtin.debug:
+    msg: "WARNING: Unhealthy container IDs: {{ monitoring_docker_unhealthy.stdout }}"
+  when: monitoring_docker_unhealthy.stdout | length > 0
+
+- name: Report healthy Docker container status
+  ansible.builtin.debug:
+    msg: "No unhealthy Docker containers detected."
+  when: monitoring_docker_unhealthy.stdout | length == 0
+
+- name: Get container restart and health information
+  ansible.builtin.shell: |
+    container_ids="$(docker ps -aq)"
+
+    if [ -z "$container_ids" ]; then
+      echo "No Docker containers found."
+    else
+      docker inspect $container_ids | python3 -c '
+    import json
+    import sys
+
+    for container in json.load(sys.stdin):
+        state = container.get("State", {})
+        health = state.get("Health", {}).get("Status", "no-healthcheck")
+
+        print(
+            "{} | state={} | health={} | restart_count={}".format(
+                container["Name"].lstrip("/"),
+                state.get("Status", "unknown"),
+                health,
+                container.get("RestartCount", 0)
+            )
+        )
+    '
+    fi
+  args:
+    executable: /bin/bash
+  register: monitoring_docker_details
+  changed_when: false
+
+- name: Display Docker container details
+  ansible.builtin.debug:
+    var: monitoring_docker_details.stdout_lines

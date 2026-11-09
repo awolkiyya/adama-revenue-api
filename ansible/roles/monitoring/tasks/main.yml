@@ -1,0 +1,57 @@
+---
+# 1. Host resource monitoring (Sysstat)
+- name: Configure host resource monitoring
+  when:
+    - monitoring_enabled | bool
+    - monitoring_sysstat_enabled | bool
+  block:
+
+    - name: Install Sysstat monitoring package
+      ansible.builtin.apt:
+        name: sysstat
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Enable Sysstat data collection
+      ansible.builtin.lineinfile:
+        path: /etc/default/sysstat
+        regexp: '^ENABLED='
+        line: 'ENABLED="true"'
+      notify: Restart Sysstat timers
+
+    - name: Enable Sysstat collection timer
+      ansible.builtin.systemd:
+        name: sysstat-collect.timer
+        enabled: true
+        state: started
+
+    - name: Enable Sysstat summary timer
+      ansible.builtin.systemd:
+        name: sysstat-summary.timer
+        enabled: true
+        state: started
+
+
+# 2. Disk-space monitoring
+- name: Include disk-space monitoring
+  ansible.builtin.include_tasks: disk.yml
+  when:
+    - monitoring_enabled | bool
+    - monitoring_disk_enabled | bool
+
+
+# 3. Docker monitoring
+- name: Include Docker monitoring
+  ansible.builtin.include_tasks: docker.yml
+  when:
+    - monitoring_enabled | bool
+    - monitoring_docker_enabled | bool
+
+
+# 4. Application health monitoring
+- name: Include application health monitoring
+  ansible.builtin.include_tasks: application.yml
+  when:
+    - monitoring_enabled | bool
+    - monitoring_application_health_enabled | bool

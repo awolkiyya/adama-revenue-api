@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Payment\Resources;
 
 use Illuminate\Http\Request;
@@ -50,21 +52,10 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'payment_method' => $this->enumValue(
-                $this->payment_method
-            ),
-
-            'payment_provider' => $this->enumValue(
-                $this->payment_provider
-            ),
-
-            'payment_source' => $this->enumValue(
-                $this->payment_source
-            ),
-
-            'status' => $this->enumValue(
-                $this->status
-            ),
+            'payment_method' => $this->enumValue($this->payment_method),
+            'payment_provider' => $this->enumValue($this->payment_provider),
+            'payment_source' => $this->enumValue($this->payment_source),
+            'status' => $this->enumValue($this->status),
 
             /*
             |--------------------------------------------------------------------------
@@ -79,21 +70,12 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             | Payer Information
             |--------------------------------------------------------------------------
-            |
-            | Prefer the original payment snapshot. Fall back to the
-            | citizen record for older payments with empty snapshots.
-            |
             */
 
             'payer' => [
-                'name' => $this->payer_name
-                    ?: ($citizen?->full_name),
-
-                'email' => $this->payer_email
-                    ?: ($citizen?->email),
-
-                'phone' => $this->payer_phone
-                    ?: ($citizen?->phone),
+                'name' => $this->payer_name ?: $citizen?->full_name,
+                'email' => $this->payer_email ?: $citizen?->email,
+                'phone' => $this->payer_phone ?: $citizen?->phone,
             ],
 
             /*
@@ -126,9 +108,7 @@ class PaymentResource extends JsonResource
                     : null
             ),
 
-            'verified_at' => $this->dateValue(
-                $this->verified_at
-            ),
+            'verified_at' => $this->dateValue($this->verified_at),
 
             /*
             |--------------------------------------------------------------------------
@@ -142,10 +122,6 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             | Application Metadata
             |--------------------------------------------------------------------------
-            |
-            | Expose only metadata appropriate for the authorized
-            | audience. Do not store or expose secrets here.
-            |
             */
 
             'metadata' => $this->metadata,
@@ -168,6 +144,7 @@ class PaymentResource extends JsonResource
                     return [
                         'id' => $invoice->id,
                         'invoice_number' => $invoice->invoice_number,
+
                         'source_type' => $this->enumValue(
                             $invoice->source_type
                         ),
@@ -274,9 +251,11 @@ class PaymentResource extends JsonResource
                                                         'id' => $item->service->id,
                                                         'name' => $item->service->name,
                                                         'description' => $item->service->description,
+
                                                         'service_type' => $this->enumValue(
                                                             $item->service->service_type
                                                         ),
+
                                                         'collection_mode' => $this->enumValue(
                                                             $item->service->collection_mode
                                                         ),
@@ -358,10 +337,6 @@ class PaymentResource extends JsonResource
                                         |--------------------------------------------------------------------------
                                         | Payment Schedule Context
                                         |--------------------------------------------------------------------------
-                                        |
-                                        | Only fields confirmed by the current
-                                        | resource are returned here.
-                                        |
                                         */
 
                                         'payment_schedule' => $item->relationLoaded('paymentSchedule')
@@ -386,9 +361,6 @@ class PaymentResource extends JsonResource
                         |--------------------------------------------------------------------------
                         | Invoice Taxpayer
                         |--------------------------------------------------------------------------
-                        |
-                        | Citizen uses full_name, not name.
-                        |
                         */
 
                         'citizen' => $invoice->relationLoaded('citizen')
@@ -413,9 +385,6 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             | Payment-Level Citizen
             |--------------------------------------------------------------------------
-            |
-            | Citizen uses full_name, not name.
-            |
             */
 
             'citizen' => $this->whenLoaded(
@@ -499,11 +468,6 @@ class PaymentResource extends JsonResource
                         ),
 
                         'sender_name' => $bank->sender_name,
-
-                        /*
-                         * Restrict sender account details according
-                         * to the application's authorization policy.
-                         */
                         'sender_account' => $bank->sender_account,
 
                         'verification_status' => $this->enumValue(
@@ -546,10 +510,6 @@ class PaymentResource extends JsonResource
                         |--------------------------------------------------------------------------
                         | Bank Transfer Evidence
                         |--------------------------------------------------------------------------
-                        |
-                        | Never expose storage_path or direct private
-                        | storage URLs. Use authorized file-opening routes.
-                        |
                         */
 
                         'files' => $bank->relationLoaded('files')
@@ -580,11 +540,6 @@ class PaymentResource extends JsonResource
 
                     $paymentStatus = $this->enumValue($this->status);
 
-                    /*
-                     * Do not expose a checkout URL for completed payments.
-                     * A completed payment should be verified through its
-                     * payment status and receipt, not paid again.
-                     */
                     $checkoutUrl = in_array(
                         $paymentStatus,
                         ['PENDING', 'PROCESSING'],
@@ -626,8 +581,16 @@ class PaymentResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
-            | Receipt
+            | Official Receipt
             |--------------------------------------------------------------------------
+            |
+            | The receipt is a separate record related to this payment.
+            | The receipt number is generated by the backend and must
+            | never be generated by the Flutter application.
+            |
+            | Requires the Payment model's "receipt" relationship
+            | to be eager-loaded by the controller/service.
+            |
             */
 
             'receipt' => $this->whenLoaded(
@@ -667,10 +630,6 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             | Payment-Level Files
             |--------------------------------------------------------------------------
-            |
-            | Bank transfer evidence remains under
-            | bank_transfer_details.files.
-            |
             */
 
             'files' => $this->whenLoaded(
@@ -688,13 +647,8 @@ class PaymentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'created_at' => $this->dateValue(
-                $this->created_at
-            ),
-
-            'updated_at' => $this->dateValue(
-                $this->updated_at
-            ),
+            'created_at' => $this->dateValue($this->created_at),
+            'updated_at' => $this->dateValue($this->updated_at),
         ];
     }
 

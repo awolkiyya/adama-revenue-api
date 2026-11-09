@@ -21,10 +21,8 @@ class StoreDirectCollectionRequest extends FormRequest
     /**
      * Validation rules for direct collection.
      *
-     * Dynamic service-specific fields are intentionally
-     * not hard-coded here. They are validated by the
-     * DirectCollectionService against the selected
-     * RevenueServiceField configuration.
+     * Revenue-service-specific fields are validated by
+     * DirectCollectionInputService.
      */
     public function rules(): array
     {
@@ -55,8 +53,38 @@ class StoreDirectCollectionRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Dynamic Service Fields
+            | Collection Entries
             |--------------------------------------------------------------------------
+            |
+            | One direct collection can contain multiple entries
+            | for the same taxpayer and revenue service.
+            |
+            */
+
+            'entries' => [
+                'required',
+                'array',
+                'min:1',
+            ],
+
+            'entries.*' => [
+                'required',
+                'array',
+            ],
+
+            'entries.*.fields' => [
+                'required',
+                'array',
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Legacy Single-Entry Fields
+            |--------------------------------------------------------------------------
+            |
+            | Supported for backward compatibility.
+            | prepareForValidation() converts these into entries.
+            |
             */
 
             'fields' => [
@@ -78,17 +106,6 @@ class StoreDirectCollectionRequest extends FormRequest
                 'nullable',
                 'string',
                 'max:1000',
-            ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | Invoice Due Date
-            |--------------------------------------------------------------------------
-            */
-
-            'due_date' => [
-                'nullable',
-                'date_format:Y-m-d',
             ],
         ];
     }
@@ -126,7 +143,74 @@ class StoreDirectCollectionRequest extends FormRequest
 
         /*
         |--------------------------------------------------------------------------
-        | Normalize dynamic fields
+        | Normalize collection entries
+        |--------------------------------------------------------------------------
+        */
+
+        $entries = $this->input('entries');
+
+        /*
+         * Backward compatibility:
+         *
+         * Convert the old single-entry format:
+         *
+         * {
+         *     "fields": {
+         *         "field-uuid": "value"
+         *     }
+         * }
+         *
+         * Into the new format:
+         *
+         * {
+         *     "entries": [
+         *         {
+         *             "fields": {
+         *                 "field-uuid": "value"
+         *             }
+         *         }
+         *     ]
+         * }
+         */
+
+        if (
+            ! $this->has('entries')
+            && is_array($this->input('fields'))
+        ) {
+            $entries = [
+                [
+                    'fields' => $this->input('fields'),
+                ],
+            ];
+        }
+
+        if (is_array($entries)) {
+            $normalizedEntries = [];
+
+            foreach ($entries as $entry) {
+                if (! is_array($entry)) {
+                    $normalizedEntries[] = $entry;
+                    continue;
+                }
+
+                if (
+                    isset($entry['fields'])
+                    && is_array($entry['fields'])
+                ) {
+                    $entry['fields'] = $this->normalizeFields(
+                        $entry['fields']
+                    );
+                }
+
+                $normalizedEntries[] = $entry;
+            }
+
+            $data['entries'] = $normalizedEntries;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize legacy fields
         |--------------------------------------------------------------------------
         */
 
@@ -134,21 +218,9 @@ class StoreDirectCollectionRequest extends FormRequest
             $this->has('fields')
             && is_array($this->input('fields'))
         ) {
-            $fields = [];
-
-            foreach ($this->input('fields') as $key => $value) {
-                $normalizedKey = is_string($key)
-                    ? trim($key)
-                    : $key;
-
-                if (is_string($value)) {
-                    $value = trim($value);
-                }
-
-                $fields[$normalizedKey] = $value;
-            }
-
-            $data['fields'] = $fields;
+            $data['fields'] = $this->normalizeFields(
+                $this->input('fields')
+            );
         }
 
         /*
@@ -158,26 +230,38 @@ class StoreDirectCollectionRequest extends FormRequest
         */
 
         if ($this->has('notes')) {
-            $data['notes'] = is_string($this->input('notes'))
-                ? trim($this->input('notes'))
-                : $this->input('notes');
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Normalize due date
-        |--------------------------------------------------------------------------
-        */
-
-        if ($this->has('due_date')) {
-            $data['due_date'] = $this->normalizeString(
-                $this->input('due_date')
+            $data['notes'] = $this->normalizeString(
+                $this->input('notes')
             );
         }
 
         if ($data !== []) {
             $this->merge($data);
         }
+    }
+
+    /**
+     * Normalize dynamic service field values.
+     *
+     * Field UUIDs are preserved as array keys.
+     */
+    private function normalizeFields(array $fields): array
+    {
+        $normalized = [];
+
+        foreach ($fields as $key => $value) {
+            $normalizedKey = is_string($key)
+                ? trim($key)
+                : $key;
+
+            if (is_string($value)) {
+                $value = trim($value);
+            }
+
+            $normalized[$normalizedKey] = $value;
+        }
+
+        return $normalized;
     }
 
     /**

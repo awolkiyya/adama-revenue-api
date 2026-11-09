@@ -1,0 +1,19 @@
+
+[Unit]
+Description=Adama Municipal Revenue - Scheduled Let's Encrypt Certificate Renewal
+
+[Timer]
+# Run renewal checks twice daily.
+OnCalendar={{ ssl_certbot_renewal_calendar }}
+
+# Spread renewal checks to avoid synchronized requests.
+RandomizedDelaySec={{ ssl_certbot_renewal_random_delay }}
+
+# Run missed checks after the server becomes available.
+Persistent=true
+
+# Execute the dedicated renewal service.
+Unit={{ ssl_certbot_service }}
+
+[Install]
+WantedBy=timers.target

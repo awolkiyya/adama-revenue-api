@@ -1,0 +1,9 @@
+---
+- name: Install security packages
+  ansible.builtin.import_tasks: packages.yml
+
+- name: Configure SSH security
+  ansible.builtin.import_tasks: ssh.yml
+
+- name: Configure automatic security updates
+  ansible.builtin.import_tasks: updates.yml

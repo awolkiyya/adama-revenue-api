@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - NGINX CERTIFICATE DEPLOYMENT HOOK
+# ============================================================
+
+COMPOSE_PROJECT="{{ ssl_gateway_compose_project }}"
+COMPOSE_FILE="{{ ssl_gateway_compose_file }}"
+NGINX_SERVICE="{{ ssl_gateway_service }}"
+
+log() {
+    printf '[adama-certbot-deploy] %s\n' "$1"
+}
+
+fail() {
+    log "ERROR: $1"
+    exit 1
+}
+
+# 1. Verify Docker executable.
+if ! command -v docker >/dev/null 2>&1; then
+    fail "Docker executable was not found."
+fi
+
+# 2. Verify gateway Compose file.
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+    fail "Gateway Compose file does not exist: $COMPOSE_FILE"
+fi
+
+# 3. Check Docker daemon.
+if ! docker info >/dev/null 2>&1; then
+    fail "Docker daemon is unavailable. Certificate deployment cannot continue."
+fi
+
+# 4. Validate Compose configuration.
+log "Validating gateway Compose configuration..."
+
+if ! docker compose \
+    -p "$COMPOSE_PROJECT" \
+    -f "$COMPOSE_FILE" \
+    config --quiet; then
+    fail "Gateway Compose configuration is invalid."
+fi
+
+# 5. Resolve the current Nginx container dynamically.
+log "Locating Nginx gateway container..."
+
+CONTAINER_ID="$(
+    docker compose \
+        -p "$COMPOSE_PROJECT" \
+        -f "$COMPOSE_FILE" \
+        ps -q "$NGINX_SERVICE"
+)"
+
+if [[ -z "$CONTAINER_ID" ]]; then
+    fail "Nginx gateway container was not found or is not running."
+fi
+
+# 6. Verify the exact container state.
+RUNNING="$(
+    docker inspect \
+        --format '{% raw %}{{.State.Running}}{% endraw %}' \
+        "$CONTAINER_ID"
+)"
+
+if [[ "$RUNNING" != "true" ]]; then
+    fail "Nginx gateway container is not running."
+fi
+
+# 7. Validate Nginx configuration inside the resolved container.
+log "Testing Nginx configuration..."
+
+if ! docker exec "$CONTAINER_ID" nginx -t; then
+    fail "Nginx configuration test failed. Reload aborted."
+fi
+
+# 8. Reload the same validated container without restarting it.
+log "Reloading Nginx..."
+
+if ! docker exec "$CONTAINER_ID" nginx -s reload; then
+    fail "Nginx reload failed."
+fi
+
+log "Nginx successfully reloaded."

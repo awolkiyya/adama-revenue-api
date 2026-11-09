@@ -1,0 +1,13 @@
+---
+firewall_enabled: true
+
+firewall_default_incoming_policy: deny
+firewall_default_outgoing_policy: allow
+
+firewall_ssh_port: 22
+
+firewall_allowed_ports:
+  - 80
+  - 443
+  - 8081
+  - 8443

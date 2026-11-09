@@ -1,0 +1,27 @@
+---
+- name: Check application HTTP health
+  ansible.builtin.uri:
+    url: "{{ item.url }}"
+    method: GET
+    status_code: "{{ item.expected_status }}"
+    return_content: false
+    timeout: 10
+  loop: "{{ monitoring_health_check_urls }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: monitoring_application_health
+  failed_when: false
+  changed_when: false
+
+- name: Report application health results
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }}:
+      {% if item.status | default(0) == item.item.expected_status %}
+      HEALTHY (HTTP {{ item.status }})
+      {% else %}
+      UNHEALTHY (HTTP {{ item.status | default('unreachable') }})
+      {% endif %}
+  loop: "{{ monitoring_application_health.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

@@ -1,0 +1,33 @@
+---
+- name: Find root filesystem
+  ansible.builtin.set_fact:
+    monitoring_root_mount: >-
+      {{ ansible_mounts
+         | selectattr('mount', 'equalto', '/')
+         | first }}
+
+- name: Calculate root filesystem usage
+  ansible.builtin.set_fact:
+    monitoring_root_disk_usage: >-
+      {{ (
+          100 -
+          (
+            monitoring_root_mount.size_available * 100
+            / monitoring_root_mount.size_total
+          )
+        ) | round(2) }}
+
+- name: Report disk usage status
+  ansible.builtin.debug:
+    msg: >-
+      Root filesystem usage: {{ monitoring_root_disk_usage }}%.
+      Status: {{ disk_status }}.
+  vars:
+    disk_status: >-
+      {% if monitoring_root_disk_usage | float >= monitoring_disk_critical_threshold | float %}
+      CRITICAL
+      {% elif monitoring_root_disk_usage | float >= monitoring_disk_warning_threshold | float %}
+      WARNING
+      {% else %}
+      HEALTHY
+      {% endif %}

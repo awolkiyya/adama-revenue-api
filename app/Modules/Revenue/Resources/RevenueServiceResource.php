@@ -52,6 +52,7 @@ class RevenueServiceResource extends JsonResource
             'serviceType' => $this->service_type,
 
             'collectionMode' => $this->collection_mode,
+            'allowMultiple' => $this->allow_multiple,
 
 
             /*

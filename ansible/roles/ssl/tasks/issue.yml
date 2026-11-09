@@ -1,0 +1,288 @@
+
+---
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - PRODUCTION CERTIFICATE ISSUANCE
+# Let's Encrypt IP Address Certificate
+# ============================================================
+
+# 1. Validate production certificate configuration.
+
+- name: Validate SSL certificate configuration
+  ansible.builtin.assert:
+    that:
+      - ssl_certificate_ip | length > 0
+      - ssl_email | length > 0
+      - "'@' in ssl_email"
+      - ssl_certbot_profile == "shortlived"
+      - not (ssl_certbot_staging | bool)
+    fail_msg: >-
+      Invalid production SSL configuration.
+      Configure a valid IP address, real email address,
+      shortlived profile, and production ACME environment.
+
+# 2. Select production ACME server.
+
+- name: Select ACME server
+  ansible.builtin.set_fact:
+    ssl_certbot_selected_server: "{{ ssl_certbot_production_server }}"
+
+# 3. Inspect existing certificate and private key.
+
+- name: Check existing certificate
+  ansible.builtin.stat:
+    path: "{{ ssl_certificate_fullchain }}"
+    follow: true
+  register: ssl_existing_certificate
+
+- name: Check existing certificate private key
+  ansible.builtin.stat:
+    path: "{{ ssl_certificate_private_key }}"
+    follow: true
+  register: ssl_existing_private_key
+
+# 4. Check existing certificate expiration.
+
+- name: Check existing certificate expiration
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ ssl_certificate_fullchain }}"
+      - -checkend
+      - "0"
+      - -noout
+  register: ssl_certificate_expiration
+  changed_when: false
+  failed_when: false
+  when:
+    - ssl_existing_certificate.stat.exists
+    - ssl_existing_certificate.stat.isreg
+
+# 5. Verify existing certificate covers the configured IP.
+
+- name: Check existing certificate IP address
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ ssl_certificate_fullchain }}"
+      - -checkip
+      - "{{ ssl_certificate_ip }}"
+      - -noout
+  register: ssl_existing_ip_check
+  changed_when: false
+  failed_when: false
+  when:
+    - ssl_existing_certificate.stat.exists
+    - ssl_existing_certificate.stat.isreg
+
+# 6. Extract existing certificate public key.
+
+- name: Extract existing certificate public key
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ ssl_certificate_fullchain }}"
+      - -pubkey
+      - -noout
+  register: ssl_existing_cert_public_key
+  changed_when: false
+  failed_when: false
+  when:
+    - ssl_existing_certificate.stat.exists
+    - ssl_existing_certificate.stat.isreg
+
+# 7. Extract public key from existing private key.
+
+- name: Extract existing private key public component
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - pkey
+      - -in
+      - "{{ ssl_certificate_private_key }}"
+      - -pubout
+  register: ssl_existing_private_public_key
+  changed_when: false
+  failed_when: false
+  when:
+    - ssl_existing_private_key.stat.exists
+    - ssl_existing_private_key.stat.isreg
+
+# 8. Determine whether existing certificate can be reused.
+
+- name: Determine existing certificate validity
+  ansible.builtin.set_fact:
+    ssl_existing_certificate_valid: >-
+      {{
+        (ssl_existing_certificate.stat.exists | default(false))
+        and
+        (ssl_existing_certificate.stat.isreg | default(false))
+        and
+        (ssl_existing_private_key.stat.exists | default(false))
+        and
+        (ssl_existing_private_key.stat.isreg | default(false))
+        and
+        (ssl_certificate_expiration.rc | default(1) == 0)
+        and
+        (ssl_existing_ip_check.rc | default(1) == 0)
+        and
+        (ssl_existing_cert_public_key.rc | default(1) == 0)
+        and
+        (ssl_existing_private_public_key.rc | default(1) == 0)
+        and
+        (
+          ssl_existing_cert_public_key.stdout | default('')
+          ==
+          ssl_existing_private_public_key.stdout | default('')
+        )
+      }}
+
+# 9. Request certificate if no valid matching certificate exists.
+
+- name: Request Let's Encrypt IP address certificate
+  ansible.builtin.command:
+    argv:
+      - "{{ ssl_certbot_binary }}"
+      - certonly
+      - --non-interactive
+      - --agree-tos
+      - --email
+      - "{{ ssl_email }}"
+      - --preferred-profile
+      - "{{ ssl_certbot_profile }}"
+      - --webroot
+      - --webroot-path
+      - "{{ ssl_webroot_dir }}"
+      - --ip-address
+      - "{{ ssl_certificate_ip }}"
+      - --cert-name
+      - "{{ ssl_certificate_name }}"
+      - --config-dir
+      - "{{ ssl_certbot_effective_config_dir }}"
+      - --work-dir
+      - "{{ ssl_certbot_work_dir }}"
+      - --logs-dir
+      - "{{ ssl_certbot_logs_dir }}"
+      - --server
+      - "{{ ssl_certbot_selected_server }}"
+  register: ssl_certbot_issue_result
+  when: not (ssl_existing_certificate_valid | bool)
+
+# 10. Verify issued certificate file.
+
+- name: Verify issued certificate exists
+  ansible.builtin.stat:
+    path: "{{ ssl_certificate_fullchain }}"
+    follow: true
+  register: ssl_issued_certificate
+
+- name: Ensure certificate file exists
+  ansible.builtin.assert:
+    that:
+      - ssl_issued_certificate.stat.exists
+      - ssl_issued_certificate.stat.isreg
+    fail_msg: >-
+      Certificate issuance did not produce a valid certificate file:
+      {{ ssl_certificate_fullchain }}
+
+# 11. Verify private key file.
+
+- name: Verify issued private key exists
+  ansible.builtin.stat:
+    path: "{{ ssl_certificate_private_key }}"
+    follow: true
+  register: ssl_issued_private_key
+
+- name: Ensure private key file exists
+  ansible.builtin.assert:
+    that:
+      - ssl_issued_private_key.stat.exists
+      - ssl_issued_private_key.stat.isreg
+    fail_msg: >-
+      Certificate private key is missing:
+      {{ ssl_certificate_private_key }}
+
+# 12. Verify certificate expiration.
+
+- name: Verify certificate expiration
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ ssl_certificate_fullchain }}"
+      - -checkend
+      - "0"
+      - -noout
+  changed_when: false
+
+# 13. Verify certificate IP address.
+
+- name: Verify certificate IP address
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ ssl_certificate_fullchain }}"
+      - -checkip
+      - "{{ ssl_certificate_ip }}"
+      - -noout
+  changed_when: false
+
+# 14. Extract issued certificate public key.
+
+- name: Extract issued certificate public key
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ ssl_certificate_fullchain }}"
+      - -pubkey
+      - -noout
+  register: ssl_final_cert_public_key
+  changed_when: false
+
+# 15. Extract issued private key public component.
+
+- name: Extract issued private key public component
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - pkey
+      - -in
+      - "{{ ssl_certificate_private_key }}"
+      - -pubout
+  register: ssl_final_private_public_key
+  changed_when: false
+
+# 16. Verify certificate and private key match.
+
+- name: Verify certificate and private key match
+  ansible.builtin.assert:
+    that:
+      - ssl_final_cert_public_key.stdout == ssl_final_private_public_key.stdout
+    fail_msg: >-
+      Certificate and private key do not match.
+
+# 17. Display certificate summary.
+
+- name: Display certificate summary
+  ansible.builtin.debug:
+    msg:
+      - "Certificate IP: {{ ssl_certificate_ip }}"
+      - "Certificate name: {{ ssl_certificate_name }}"
+      - "ACME environment: Production"
+      - "ACME server: {{ ssl_certbot_selected_server }}"
+      - "Certificate file: {{ ssl_certificate_fullchain }}"
+      - "Private key file: {{ ssl_certificate_private_key }}"
+      - "Existing valid certificate reused: {{ ssl_existing_certificate_valid }}"
+      - "IP address verification: passed"
+      - "Certificate expiration verification: passed"
+      - "Certificate/private key matching: passed"

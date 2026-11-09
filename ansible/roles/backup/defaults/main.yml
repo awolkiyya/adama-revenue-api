@@ -1,0 +1,41 @@
+---
+# Laravel API deployment configuration
+backup_enabled: true
+
+backup_project_dir: /opt/adama-revenue-api
+backup_compose_file: /opt/adama-revenue-api/docker-compose.yml
+backup_postgres_service: postgres
+
+# Backup storage
+backup_root_dir: /var/backups/adama-revenue-api
+backup_postgres_dir: "{{ backup_root_dir }}/postgresql"
+backup_owner: root
+backup_group: root
+backup_directory_mode: "0700"
+backup_file_mode: "0600"
+
+# Scheduling: daily at 01:00 server local time
+backup_schedule_minute: "0"
+backup_schedule_hour: "1"
+backup_schedule_day: "*"
+backup_schedule_month: "*"
+backup_schedule_weekday: "*"
+
+# Retention
+backup_retention_days: 30
+
+# Script and logging
+backup_script_path: /usr/local/sbin/adama-revenue-backup
+backup_log_file: /var/log/adama-revenue-backup.log
+backup_lock_file: /var/lock/adama-revenue-backup.lock
+
+# Cron
+backup_cron_job_name: adama-revenue-postgresql-backup
+backup_cron_user: root
+
+# Required system packages
+backup_packages:
+  - cron
+  - util-linux
+  - coreutils
+  - findutils

@@ -1,0 +1,22 @@
+---
+# Overall monitoring
+monitoring_enabled: true
+
+# Sysstat monitoring
+monitoring_sysstat_enabled: true
+
+# Docker monitoring
+monitoring_docker_enabled: true
+
+# Disk-space monitoring
+monitoring_disk_enabled: true
+monitoring_disk_warning_threshold: 80
+monitoring_disk_critical_threshold: 90
+
+# Application health monitoring
+monitoring_application_health_enabled: false
+
+monitoring_health_check_urls:
+  - name: frontend
+    url: http://127.0.0.1
+    expected_status: 200

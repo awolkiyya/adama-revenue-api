@@ -1,0 +1,108 @@
+---
+- name: Validate Docker configuration
+  ansible.builtin.assert:
+    that:
+      - docker_edition == 'ce'
+      - docker_packages | length > 0
+      - docker_service_name | length > 0
+    fail_msg: "Invalid Docker role configuration."
+
+- name: Verify supported operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] is version('22.04', '>=')
+    fail_msg: "This Docker role requires Ubuntu 22.04 or later."
+
+- name: Install Docker repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create APT keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Docker official GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Get system package architecture
+  ansible.builtin.command:
+    cmd: dpkg --print-architecture
+  register: docker_arch
+  changed_when: false
+
+- name: Add Docker official APT repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types:
+      - deb
+    uris:
+      - https://download.docker.com/linux/ubuntu
+    suites:
+      - "{{ ansible_facts['distribution_release'] }}"
+    components:
+      - stable
+    architectures:
+      - "{{ docker_arch.stdout }}"
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+    enabled: true
+
+- name: Update APT package cache after adding Docker repository
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Remove conflicting Ubuntu Docker Compose package
+  ansible.builtin.apt:
+    name: docker-compose-v2
+    state: absent
+
+- name: Install Docker Engine and plugins
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+    update_cache: true
+
+- name: Deploy Docker daemon configuration
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "dockerd --validate --config-file %s"
+  notify: Restart Docker
+
+- name: Enable and start Docker service
+  ansible.builtin.service:
+    name: "{{ docker_service_name }}"
+    state: started
+    enabled: true
+
+- name: Ensure Docker group exists
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: Add configured users to Docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"

@@ -1,0 +1,124 @@
+
+name: Laravel API CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: laravel-api-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Laravel API
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: adama_test
+          POSTGRES_USER: adama_test
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U adama_test -d adama_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      APP_ENV: testing
+      APP_DEBUG: true
+      APP_URL: http://localhost
+
+      DB_CONNECTION: pgsql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_DATABASE: adama_test
+      DB_USERNAME: adama_test
+      DB_PASSWORD: password
+
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+
+      CACHE_STORE: array
+      CACHE_DRIVER: array
+      SESSION_DRIVER: array
+      QUEUE_CONNECTION: sync
+      MAIL_MAILER: log
+      BROADCAST_CONNECTION: log
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v5
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: >-
+            bcmath,
+            ctype,
+            curl,
+            dom,
+            exif,
+            fileinfo,
+            gd,
+            intl,
+            mbstring,
+            opcache,
+            pcntl,
+            pdo_pgsql,
+            pgsql,
+            redis,
+            tokenizer,
+            xml,
+            zip
+          tools: composer:v2
+          coverage: none
+          cache: composer
+
+      - name: Display PHP and Composer versions
+        run: |
+          php --version
+          composer --version
+
+      - name: Validate Composer configuration
+        run: composer validate --no-check-publish
+
+      - name: Prepare Laravel environment
+        run: cp .env.example .env
+
+      - name: Install Composer dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Generate application key
+        run: php artisan key:generate --force
+
+      - name: Clear Laravel caches
+        run: php artisan optimize:clear
+
+      - name: Run database migrations
+        run: php artisan migrate --force
+
+      - name: Run Laravel tests
+        run: php artisan test

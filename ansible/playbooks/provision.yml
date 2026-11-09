@@ -1,0 +1,15 @@
+---
+- name: Provision Laravel API server
+  hosts: laravel
+  become: true
+  gather_facts: true
+
+  roles:
+    - common
+    - security
+    - firewall
+    - docker
+    - directories
+    - backup
+    - monitoring
+    - ssl

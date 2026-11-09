@@ -1,0 +1,461 @@
+name: Deploy Laravel Staging
+
+on:
+  push:
+    branches:
+      - staging
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-laravel-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy Laravel staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # --------------------------------------------------
+      # 1. Checkout source code
+      # --------------------------------------------------
+
+      - name: Checkout source code
+        uses: actions/checkout@v5
+
+      # --------------------------------------------------
+      # 2. Configure SSH
+      # --------------------------------------------------
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+
+          test -n "$SSH_PRIVATE_KEY" || {
+            echo "::error::STAGING_SSH_KEY is missing."
+            exit 1
+          }
+
+          test -n "$SSH_KNOWN_HOSTS" || {
+            echo "::error::STAGING_KNOWN_HOSTS is missing."
+            exit 1
+          }
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" \
+            | tr -d '\r' \
+            > "$HOME/.ssh/id_ed25519"
+
+          chmod 600 "$HOME/.ssh/id_ed25519"
+
+          printf '%s\n' "$SSH_KNOWN_HOSTS" \
+            | tr -d '\r' \
+            > "$HOME/.ssh/known_hosts"
+
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          ssh-keygen -y \
+            -f "$HOME/.ssh/id_ed25519" \
+            > /dev/null
+
+          echo "Staging SSH configuration verified."
+
+      # --------------------------------------------------
+      # 3. Validate and package Laravel source
+      # --------------------------------------------------
+
+      - name: Package Laravel source
+        run: |
+          set -Eeuo pipefail
+
+          test -f docker/Dockerfile
+          test -f docker/compose.yml
+          test -f docker/compose.staging.yml
+          test -f nginx/default.conf
+          test -f public/index.php
+
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='vendor' \
+            --exclude='node_modules' \
+            --exclude='coverage' \
+            --exclude='certificates' \
+            --exclude='gateway' \
+            --exclude='*.log' \
+            -czf "$RUNNER_TEMP/laravel-staging-source.tar.gz" .
+
+          test -s "$RUNNER_TEMP/laravel-staging-source.tar.gz"
+
+          tar -tzf "$RUNNER_TEMP/laravel-staging-source.tar.gz" > /dev/null
+
+          echo "Laravel staging source package created."
+          echo "Commit: $GITHUB_SHA"
+
+      # --------------------------------------------------
+      # 4. Transfer source to API server
+      # --------------------------------------------------
+
+      - name: Transfer source code
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -Eeuo pipefail
+
+          test -n "$STAGING_HOST"
+          test -n "$STAGING_USER"
+
+          scp \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            "$RUNNER_TEMP/laravel-staging-source.tar.gz" \
+            "$STAGING_USER@$STAGING_HOST:/tmp/laravel-staging-source.tar.gz"
+
+          echo "Staging source transferred."
+
+      # --------------------------------------------------
+      # 5. Build and deploy Laravel staging
+      # --------------------------------------------------
+
+      - name: Build and deploy Laravel staging
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -Eeuo pipefail
+
+          ssh \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            "$STAGING_USER@$STAGING_HOST" \
+            'bash -s' <<'REMOTE'
+
+          set -Eeuo pipefail
+
+          # ------------------------------------------------
+          # Deployment configuration
+          # ------------------------------------------------
+
+          APP_ROOT="/opt/adama-revenue-api"
+          SOURCE_DIR="$APP_ROOT/source-staging"
+          ENV_FILE="$APP_ROOT/.env.staging"
+          ARCHIVE="/tmp/laravel-staging-source.tar.gz"
+
+          PROJECT="adama-revenue-staging"
+          IMAGE="adama-revenue-api:staging"
+
+          GATEWAY_COMPOSE_FILE="$APP_ROOT/gateway/docker/compose.gateway.yml"
+
+          STAGING_NETWORK="adama-revenue-staging_app-network"
+          PRODUCTION_NETWORK="adama-revenue-production_app-network"
+
+          export IMAGE
+
+          COMPOSE=(
+            docker compose
+            --env-file "$ENV_FILE"
+            -p "$PROJECT"
+            -f "$SOURCE_DIR/docker/compose.yml"
+            -f "$SOURCE_DIR/docker/compose.staging.yml"
+          )
+
+          echo "=========================================="
+          echo "LARAVEL STAGING DEPLOYMENT"
+          echo "=========================================="
+
+          echo "Server: $(hostname)"
+          echo "Project: $PROJECT"
+          echo "Source: $SOURCE_DIR"
+          echo "Image: $IMAGE"
+
+          # ------------------------------------------------
+          # 1. Validate prerequisites
+          # ------------------------------------------------
+
+          test -d "$APP_ROOT"
+          test -s "$ENV_FILE"
+          test -s "$ARCHIVE"
+          test -s "$GATEWAY_COMPOSE_FILE"
+
+          docker --version
+          docker compose version
+
+          tar -tzf "$ARCHIVE" > /dev/null
+
+          # ------------------------------------------------
+          # 2. Ensure external gateway networks exist
+          # ------------------------------------------------
+
+          for NETWORK in "$STAGING_NETWORK" "$PRODUCTION_NETWORK"; do
+            if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+              echo "Creating Docker network: $NETWORK"
+              docker network create "$NETWORK"
+            else
+              echo "Docker network already exists: $NETWORK"
+            fi
+          done
+
+          # ------------------------------------------------
+          # 3. Extract source into temporary directory
+          # ------------------------------------------------
+
+          EXTRACT_DIR="$(mktemp -d /tmp/laravel-staging.XXXXXX)"
+
+          cleanup() {
+            rm -rf -- "$EXTRACT_DIR"
+            rm -f -- "$ARCHIVE"
+          }
+
+          trap cleanup EXIT
+
+          tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR"
+
+          test -f "$EXTRACT_DIR/docker/Dockerfile"
+          test -f "$EXTRACT_DIR/docker/compose.yml"
+          test -f "$EXTRACT_DIR/docker/compose.staging.yml"
+          test -f "$EXTRACT_DIR/nginx/default.conf"
+          test -f "$EXTRACT_DIR/public/index.php"
+
+          # ------------------------------------------------
+          # 4. Update staging source
+          # ------------------------------------------------
+
+          mkdir -p "$SOURCE_DIR"
+
+          find "$SOURCE_DIR" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name 'storage' \
+            -exec rm -rf -- {} +
+
+          cp -a "$EXTRACT_DIR/." "$SOURCE_DIR/"
+
+          # Never place or symlink .env inside the build context.
+          rm -f "$SOURCE_DIR/.env"
+
+          cd "$APP_ROOT"
+
+          # ------------------------------------------------
+          # 5. Validate Compose configuration
+          # ------------------------------------------------
+
+          echo "Validating staging Compose configuration..."
+
+          "${COMPOSE[@]}" config -q
+
+          # ------------------------------------------------
+          # 6. Build Laravel staging image
+          # ------------------------------------------------
+
+          echo "Building Laravel staging image..."
+
+          docker build \
+            --pull \
+            -f "$SOURCE_DIR/docker/Dockerfile" \
+            -t "$IMAGE" \
+            "$SOURCE_DIR"
+
+          # ------------------------------------------------
+          # 7. Start staging PostgreSQL and Redis
+          # ------------------------------------------------
+
+          echo "Starting staging PostgreSQL and Redis..."
+
+          "${COMPOSE[@]}" up -d postgres redis
+
+          # ------------------------------------------------
+          # 8. Wait for PostgreSQL readiness
+          # ------------------------------------------------
+
+          echo "Waiting for staging PostgreSQL..."
+
+          DB_READY=false
+
+          for attempt in $(seq 1 30); do
+
+            DB_ID="$("${COMPOSE[@]}" ps -q postgres)"
+
+            if [ -n "$DB_ID" ]; then
+
+              DB_STATUS="$(
+                docker inspect \
+                  --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                  "$DB_ID"
+              )"
+
+              echo "PostgreSQL: $DB_STATUS ($attempt/30)"
+
+              if [ "$DB_STATUS" = "healthy" ]; then
+                DB_READY=true
+                break
+              fi
+            fi
+
+            sleep 5
+          done
+
+          if [ "$DB_READY" != true ]; then
+            echo "ERROR: Staging PostgreSQL did not become healthy."
+            "${COMPOSE[@]}" ps -a
+            exit 1
+          fi
+
+          # ------------------------------------------------
+          # 9. Run staging migrations
+          # ------------------------------------------------
+
+          echo "Running staging database migrations..."
+
+          "${COMPOSE[@]}" run \
+            --rm \
+            --no-deps \
+            app \
+            php artisan migrate --force
+
+          # ------------------------------------------------
+          # 10. Deploy staging application services
+          # ------------------------------------------------
+
+          echo "Deploying Laravel staging services..."
+
+          "${COMPOSE[@]}" up \
+            -d \
+            --remove-orphans \
+            --scale app=1
+
+          # ------------------------------------------------
+          # 11. Verify PHP-FPM health
+          # ------------------------------------------------
+
+          echo "Waiting for staging PHP-FPM health..."
+
+          APP_HEALTHY=false
+
+          for attempt in $(seq 1 30); do
+
+            mapfile -t APP_IDS < <(
+              "${COMPOSE[@]}" ps -q app
+            )
+
+            if [ "${#APP_IDS[@]}" -eq 1 ]; then
+
+              STATUS="$(
+                docker inspect \
+                  --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+                  "${APP_IDS[0]}"
+              )"
+
+              echo "PHP-FPM: $STATUS ($attempt/30)"
+
+              if [ "$STATUS" = "healthy" ]; then
+                APP_HEALTHY=true
+                break
+              fi
+
+              if [ "$STATUS" = "unhealthy" ] || [ "$STATUS" = "missing" ]; then
+                docker logs --tail 100 "${APP_IDS[0]}" || true
+                break
+              fi
+            fi
+
+            sleep 5
+          done
+
+          if [ "$APP_HEALTHY" != true ]; then
+            echo "ERROR: Staging PHP-FPM health check failed."
+            "${COMPOSE[@]}" ps -a
+            exit 1
+          fi
+
+          # ------------------------------------------------
+          # 12. Verify internal Laravel Nginx
+          # ------------------------------------------------
+
+          NGINX_ID="$("${COMPOSE[@]}" ps -q nginx)"
+
+          if [ -z "$NGINX_ID" ]; then
+            echo "ERROR: Laravel internal Nginx container not found."
+            exit 1
+          fi
+
+          NGINX_STATUS="$(
+            docker inspect \
+              --format '{{.State.Status}}' \
+              "$NGINX_ID"
+          )"
+
+          if [ "$NGINX_STATUS" != "running" ]; then
+            echo "ERROR: Laravel internal Nginx is not running."
+            docker logs --tail 100 "$NGINX_ID" || true
+            exit 1
+          fi
+
+          docker exec "$NGINX_ID" nginx -t
+
+          # ------------------------------------------------
+          # 13. Verify shared gateway
+          # ------------------------------------------------
+
+          echo "Checking shared Nginx gateway..."
+
+          mapfile -t GATEWAY_IDS < <(
+            docker ps \
+              --filter "publish=80" \
+              --format '{{.ID}}'
+          )
+
+          if [ "${#GATEWAY_IDS[@]}" -ne 1 ]; then
+            echo "ERROR: Expected exactly one running container publishing port 80."
+            docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Ports}}'
+            exit 1
+          fi
+
+          GATEWAY_ID="${GATEWAY_IDS[0]}"
+
+          docker exec "$GATEWAY_ID" nginx -t
+
+          # ------------------------------------------------
+          # 14. Final deployment status
+          # ------------------------------------------------
+
+          echo "=========================================="
+          echo "STAGING DEPLOYMENT STATUS"
+          echo "=========================================="
+
+          "${COMPOSE[@]}" ps
+
+          echo "=========================================="
+          echo "LARAVEL STAGING DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+
+          REMOTE
+
+      # --------------------------------------------------
+      # 6. Deployment summary
+      # --------------------------------------------------
+
+      - name: Staging deployment summary
+        if: success()
+        run: |
+          echo "Laravel staging deployment completed."
+          echo "Server: ${{ secrets.STAGING_HOST }}"
+          echo "Project: adama-revenue-staging"

@@ -1,0 +1,37 @@
+services:
+  app:
+    env_file:
+      - ../../.env.staging
+
+    environment:
+      APP_ENV: staging
+      APP_DEBUG: "false"
+
+  worker:
+    env_file:
+      - ../../.env.staging
+
+    environment:
+      APP_ENV: staging
+      APP_DEBUG: "false"
+
+  scheduler:
+    env_file:
+      - ../../.env.staging
+
+    environment:
+      APP_ENV: staging
+      APP_DEBUG: "false"
+
+  nginx:
+    networks:
+      backend: {}
+
+      gateway:
+        aliases:
+          - staging-api
+
+networks:
+  gateway:
+    external: true
+    name: adama-revenue-staging_app-network

@@ -20,6 +20,32 @@ class StoreRevenueServiceRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Allow Multiple
+        |--------------------------------------------------------------------------
+        |
+        | Default: false.
+        |
+        | Accept boolean values and common boolean representations.
+        | Invalid values are preserved so Laravel validation can reject them.
+        |
+        */
+
+        $allowMultiple = $this->input('allow_multiple', false);
+
+        if (!is_bool($allowMultiple)) {
+            $normalizedAllowMultiple = filter_var(
+                $allowMultiple,
+                FILTER_VALIDATE_BOOLEAN,
+                FILTER_NULL_ON_FAILURE
+            );
+
+            if ($normalizedAllowMultiple !== null) {
+                $allowMultiple = $normalizedAllowMultiple;
+            }
+        }
+
         $this->merge([
             /*
             |--------------------------------------------------------------------------
@@ -61,7 +87,7 @@ class StoreRevenueServiceRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Active status
+            | Active Status
             |--------------------------------------------------------------------------
             */
 
@@ -70,6 +96,14 @@ class StoreRevenueServiceRequest extends FormRequest
                 FILTER_VALIDATE_BOOLEAN,
                 FILTER_NULL_ON_FAILURE
             ) ?? true,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Multiple Collection Entries
+            |--------------------------------------------------------------------------
+            */
+
+            'allow_multiple' => $allowMultiple,
         ]);
     }
 
@@ -161,6 +195,23 @@ class StoreRevenueServiceRequest extends FormRequest
                     'FIELD_COLLECTION',
                     'BOTH',
                 ]),
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Multiple Collection Entries
+            |--------------------------------------------------------------------------
+            |
+            | Determines whether multiple collection entries are permitted
+            | for this service in one direct collection transaction.
+            |
+            | Default: false.
+            |
+            */
+
+            'allow_multiple' => [
+                'required',
+                'boolean',
             ],
 
             /*
@@ -257,16 +308,6 @@ class StoreRevenueServiceRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Validation Rules
             |--------------------------------------------------------------------------
-            |
-            | Expected structure:
-            |
-            | {
-            |     "min": 0,
-            |     "max": 1000,
-            |     "minLength": 2,
-            |     "maxLength": 100
-            | }
-            |
             */
 
             'fields.*.validation_rules' => [
@@ -306,6 +347,26 @@ class StoreRevenueServiceRequest extends FormRequest
         $validator->after(function ($validator) {
             $fields = $this->input('fields', []);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Collection Mode Consistency
+            |--------------------------------------------------------------------------
+            |
+            | Multiple collection entries are only applicable when the
+            | service supports field collection.
+            |
+            */
+
+            if (
+                $this->input('allow_multiple') === true &&
+                $this->input('collection_mode') === 'ASSESSMENT_ONLY'
+            ) {
+                $validator->errors()->add(
+                    'allow_multiple',
+                    'Multiple collection entries can only be enabled for services that support field collection.'
+                );
+            }
+
             if (!is_array($fields)) {
                 return;
             }
@@ -322,8 +383,7 @@ class StoreRevenueServiceRequest extends FormRequest
             $baseFieldIds = [];
 
             foreach ($fields as $index => $field) {
-                $baseFieldId =
-                    $field['base_field_id'] ?? null;
+                $baseFieldId = $field['base_field_id'] ?? null;
 
                 if (!$baseFieldId) {
                     continue;
@@ -355,8 +415,7 @@ class StoreRevenueServiceRequest extends FormRequest
             $sortOrders = [];
 
             foreach ($fields as $index => $field) {
-                $sortOrder =
-                    $field['sort_order'] ?? null;
+                $sortOrder = $field['sort_order'] ?? null;
 
                 if ($sortOrder === null) {
                     continue;
@@ -386,18 +445,14 @@ class StoreRevenueServiceRequest extends FormRequest
             */
 
             foreach ($fields as $index => $field) {
-                $rules =
-                    $field['validation_rules'] ?? null;
+                $rules = $field['validation_rules'] ?? null;
 
                 if (!is_array($rules)) {
                     continue;
                 }
 
-                $min =
-                    $rules['min'] ?? null;
-
-                $max =
-                    $rules['max'] ?? null;
+                $min = $rules['min'] ?? null;
+                $max = $rules['max'] ?? null;
 
                 if (
                     $min !== null &&
@@ -418,11 +473,8 @@ class StoreRevenueServiceRequest extends FormRequest
                 |--------------------------------------------------------------------------
                 */
 
-                $minLength =
-                    $rules['minLength'] ?? null;
-
-                $maxLength =
-                    $rules['maxLength'] ?? null;
+                $minLength = $rules['minLength'] ?? null;
+                $maxLength = $rules['maxLength'] ?? null;
 
                 if (
                     $minLength !== null &&
@@ -499,6 +551,18 @@ class StoreRevenueServiceRequest extends FormRequest
 
             'collection_mode.in' =>
                 'Invalid collection mode selected.',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Multiple Collection Entries
+            |--------------------------------------------------------------------------
+            */
+
+            'allow_multiple.required' =>
+                'Multiple collection configuration is required.',
+
+            'allow_multiple.boolean' =>
+                'Multiple collection configuration must be true or false.',
 
             /*
             |--------------------------------------------------------------------------

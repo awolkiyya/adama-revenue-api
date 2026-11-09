@@ -1,0 +1,125 @@
+
+---
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - API SSL ROLE DEFAULTS
+# PRODUCTION HTTPS CONFIGURATION
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Certificate identity
+# ------------------------------------------------------------
+
+ssl_certificate_ip: "196.190.216.33"
+ssl_certificate_name: "{{ ssl_certificate_ip }}"
+
+ssl_email: "awolabdulbaasit143@gmail.com"
+
+
+# ------------------------------------------------------------
+# 2. Certificate environment
+# ------------------------------------------------------------
+
+ssl_certbot_staging: false
+
+ssl_certbot_profile: "shortlived"
+
+ssl_certbot_min_version: "5.4.0"
+
+
+# ------------------------------------------------------------
+# 3. Let's Encrypt ACME servers
+# ------------------------------------------------------------
+
+ssl_certbot_staging_server: >-
+  https://acme-staging-v02.api.letsencrypt.org/directory
+
+ssl_certbot_production_server: >-
+  https://acme-v02.api.letsencrypt.org/directory
+
+
+# ------------------------------------------------------------
+# 4. Persistent certificate storage
+# ------------------------------------------------------------
+
+ssl_base_dir: "/opt/adama-revenue-api/certificates"
+
+ssl_webroot_dir: "{{ ssl_base_dir }}/www"
+
+ssl_config_dir: "{{ ssl_base_dir }}/conf"
+
+ssl_certbot_effective_config_dir: "{{ ssl_config_dir }}"
+
+ssl_certificate_live_dir: >-
+  {{ ssl_certbot_effective_config_dir }}/live/{{ ssl_certificate_name }}
+
+ssl_certificate_fullchain: "{{ ssl_certificate_live_dir }}/fullchain.pem"
+
+ssl_certificate_private_key: "{{ ssl_certificate_live_dir }}/privkey.pem"
+
+
+# ------------------------------------------------------------
+# 5. Directory ownership and permissions
+# ------------------------------------------------------------
+
+ssl_owner: "buadmin"
+ssl_group: "buadmin"
+
+ssl_config_owner: "root"
+ssl_config_group: "root"
+
+
+# ------------------------------------------------------------
+# 6. Certbot Snap installation
+# ------------------------------------------------------------
+
+ssl_certbot_snap_name: "certbot"
+
+ssl_certbot_snap_channel: "latest/stable"
+
+ssl_certbot_binary: "/snap/bin/certbot"
+
+
+# ------------------------------------------------------------
+# 7. Certbot working and log directories
+# ------------------------------------------------------------
+
+ssl_certbot_work_dir: "/var/lib/letsencrypt"
+
+ssl_certbot_logs_dir: "/var/log/letsencrypt"
+
+
+# ------------------------------------------------------------
+# 8. Automatic certificate renewal
+# ------------------------------------------------------------
+
+ssl_certbot_service: "adama-certbot-renew.service"
+
+ssl_certbot_timer: "adama-certbot-renew.timer"
+
+ssl_certbot_renewal_calendar: "*-*-* 00,12:00:00"
+
+ssl_certbot_renewal_random_delay: "1h"
+
+ssl_certbot_deploy_hook: "/usr/local/sbin/adama-certbot-deploy-hook"
+
+
+# ------------------------------------------------------------
+# 9. Legacy Certbot renewal timers
+# ------------------------------------------------------------
+
+ssl_disable_apt_certbot_timer: true
+
+ssl_disable_snap_certbot_timer: true
+
+
+# ------------------------------------------------------------
+# 10. API Nginx gateway
+# ------------------------------------------------------------
+
+ssl_gateway_container: "laravel-nginx"
+
+ssl_gateway_service: "nginx"
+
+ssl_gateway_compose_project: "adama-revenue-api"
+
+ssl_gateway_compose_file: "/opt/adama-revenue-api/gateway/docker/compose.gateway.yml"
