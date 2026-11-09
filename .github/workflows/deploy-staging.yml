@@ -1,3 +1,4 @@
+
 name: Deploy Laravel Staging
 
 on:
@@ -83,6 +84,8 @@ jobs:
           test -f docker/compose.staging.yml
           test -f nginx/default.conf
           test -f public/index.php
+          test -f composer.json
+          test -f composer.lock
 
           tar \
             --exclude='.git' \
@@ -115,8 +118,15 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          test -n "$STAGING_HOST"
-          test -n "$STAGING_USER"
+          test -n "$STAGING_HOST" || {
+            echo "::error::STAGING_HOST is missing."
+            exit 1
+          }
+
+          test -n "$STAGING_USER" || {
+            echo "::error::STAGING_USER is missing."
+            exit 1
+          }
 
           scp \
             -i "$HOME/.ssh/id_ed25519" \
@@ -156,6 +166,7 @@ jobs:
           # ------------------------------------------------
 
           APP_ROOT="/opt/adama-revenue-api"
+
           SOURCE_DIR="$APP_ROOT/source-staging"
           ENV_FILE="$APP_ROOT/.env.staging"
           ARCHIVE="/tmp/laravel-staging-source.tar.gz"
@@ -191,10 +202,24 @@ jobs:
           # 1. Validate prerequisites
           # ------------------------------------------------
 
+          echo "Checking deployment prerequisites..."
+
           test -d "$APP_ROOT"
+          test -d "$SOURCE_DIR"
           test -s "$ENV_FILE"
           test -s "$ARCHIVE"
           test -s "$GATEWAY_COMPOSE_FILE"
+
+          test -w "$SOURCE_DIR" || {
+            echo "ERROR: Staging source directory is not writable."
+            echo "Check Ansible directory ownership and permissions."
+            exit 1
+          }
+
+          test -r "$ENV_FILE" || {
+            echo "ERROR: Staging environment file is not readable."
+            exit 1
+          }
 
           docker --version
           docker compose version
@@ -204,6 +229,8 @@ jobs:
           # ------------------------------------------------
           # 2. Ensure external gateway networks exist
           # ------------------------------------------------
+
+          echo "Checking Docker gateway networks..."
 
           for NETWORK in "$STAGING_NETWORK" "$PRODUCTION_NETWORK"; do
             if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
@@ -234,12 +261,36 @@ jobs:
           test -f "$EXTRACT_DIR/docker/compose.staging.yml"
           test -f "$EXTRACT_DIR/nginx/default.conf"
           test -f "$EXTRACT_DIR/public/index.php"
+          test -f "$EXTRACT_DIR/composer.json"
+          test -f "$EXTRACT_DIR/composer.lock"
 
           # ------------------------------------------------
-          # 4. Update staging source
+          # 4. Validate existing deployment before replacement
           # ------------------------------------------------
 
-          mkdir -p "$SOURCE_DIR"
+          echo "Preparing staging source replacement..."
+
+          # Remove the previous internal Nginx container
+          # before replacing its bind-mounted source directory.
+
+          if [ -f "$SOURCE_DIR/docker/compose.yml" ] && \
+             [ -f "$SOURCE_DIR/docker/compose.staging.yml" ]; then
+
+            "${COMPOSE[@]}" config -q
+
+            echo "Removing existing internal Nginx container..."
+
+            "${COMPOSE[@]}" rm -sf nginx
+
+          else
+            echo "No previous staging Nginx deployment found."
+          fi
+
+          # ------------------------------------------------
+          # 5. Update staging source
+          # ------------------------------------------------
+
+          echo "Replacing staging application source..."
 
           find "$SOURCE_DIR" \
             -mindepth 1 \
@@ -255,7 +306,7 @@ jobs:
           cd "$APP_ROOT"
 
           # ------------------------------------------------
-          # 5. Validate Compose configuration
+          # 6. Validate Compose configuration
           # ------------------------------------------------
 
           echo "Validating staging Compose configuration..."
@@ -263,7 +314,7 @@ jobs:
           "${COMPOSE[@]}" config -q
 
           # ------------------------------------------------
-          # 6. Build Laravel staging image
+          # 7. Build Laravel staging image
           # ------------------------------------------------
 
           echo "Building Laravel staging image..."
@@ -275,7 +326,7 @@ jobs:
             "$SOURCE_DIR"
 
           # ------------------------------------------------
-          # 7. Start staging PostgreSQL and Redis
+          # 8. Start staging PostgreSQL and Redis
           # ------------------------------------------------
 
           echo "Starting staging PostgreSQL and Redis..."
@@ -283,7 +334,7 @@ jobs:
           "${COMPOSE[@]}" up -d postgres redis
 
           # ------------------------------------------------
-          # 8. Wait for PostgreSQL readiness
+          # 9. Wait for PostgreSQL readiness
           # ------------------------------------------------
 
           echo "Waiting for staging PostgreSQL..."
@@ -320,7 +371,7 @@ jobs:
           fi
 
           # ------------------------------------------------
-          # 9. Run staging migrations
+          # 10. Run staging database migrations
           # ------------------------------------------------
 
           echo "Running staging database migrations..."
@@ -331,8 +382,24 @@ jobs:
             app \
             php artisan migrate --force
 
+          echo "Staging migrations completed."
+
           # ------------------------------------------------
-          # 10. Deploy staging application services
+          # 11. Run staging database seeders
+          # ------------------------------------------------
+
+          echo "Running staging database seeders..."
+
+          "${COMPOSE[@]}" run \
+            --rm \
+            --no-deps \
+            app \
+            php artisan db:seed --force
+
+          echo "Staging database seeders completed."
+
+          # ------------------------------------------------
+          # 12. Deploy staging application services
           # ------------------------------------------------
 
           echo "Deploying Laravel staging services..."
@@ -343,7 +410,7 @@ jobs:
             --scale app=1
 
           # ------------------------------------------------
-          # 11. Verify PHP-FPM health
+          # 13. Verify PHP-FPM health
           # ------------------------------------------------
 
           echo "Waiting for staging PHP-FPM health..."
@@ -387,8 +454,10 @@ jobs:
           fi
 
           # ------------------------------------------------
-          # 12. Verify internal Laravel Nginx
+          # 14. Verify internal Laravel Nginx
           # ------------------------------------------------
+
+          echo "Checking internal Laravel Nginx..."
 
           NGINX_ID="$("${COMPOSE[@]}" ps -q nginx)"
 
@@ -412,7 +481,7 @@ jobs:
           docker exec "$NGINX_ID" nginx -t
 
           # ------------------------------------------------
-          # 13. Verify shared gateway
+          # 15. Verify shared gateway
           # ------------------------------------------------
 
           echo "Checking shared Nginx gateway..."
@@ -434,7 +503,7 @@ jobs:
           docker exec "$GATEWAY_ID" nginx -t
 
           # ------------------------------------------------
-          # 14. Final deployment status
+          # 16. Final deployment status
           # ------------------------------------------------
 
           echo "=========================================="
@@ -455,7 +524,11 @@ jobs:
 
       - name: Staging deployment summary
         if: success()
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
         run: |
           echo "Laravel staging deployment completed."
-          echo "Server: ${{ secrets.STAGING_HOST }}"
+          echo "Server: $STAGING_HOST"
           echo "Project: adama-revenue-staging"
+          echo "Database migrations: executed"
+          echo "Database seeders: executed"
