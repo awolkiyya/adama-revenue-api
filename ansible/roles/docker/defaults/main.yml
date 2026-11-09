@@ -1,0 +1,27 @@
+---
+# Docker edition
+docker_edition: ce
+
+# Docker official repository packages
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Docker service
+docker_service_name: docker
+
+# Users allowed to manage Docker
+# Membership in the Docker group effectively grants root-level privileges.
+docker_users:
+  - buadmin
+
+# Docker daemon configuration
+docker_daemon_config:
+  log-driver: json-file
+  log-opts:
+    max-size: "10m"
+    max-file: "3"
+  live-restore: true

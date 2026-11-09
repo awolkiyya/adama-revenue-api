@@ -1,0 +1,28 @@
+---
+# SSH configuration
+
+security_ssh_port: 22
+
+# Keep password authentication enabled initially.
+# Disable only after SSH key authentication is verified.
+security_ssh_password_authentication: "yes"
+
+security_ssh_pubkey_authentication: "yes"
+
+security_ssh_permit_root_login: "no"
+
+security_ssh_max_auth_tries: 5
+
+security_ssh_login_grace_time: 30
+
+security_ssh_x11_forwarding: "no"
+
+security_ssh_client_alive_interval: 300
+
+security_ssh_client_alive_count_max: 2
+
+# Automatic security updates
+
+security_unattended_upgrades_enabled: true
+
+security_unattended_upgrades_reboot: false

@@ -43,6 +43,7 @@ class RevenueService extends Model
         'description',
         'service_type',
         'collection_mode',
+        'allow_multiple',
         'is_active',
         'created_by',
         'updated_by',
@@ -55,6 +56,7 @@ class RevenueService extends Model
     */
 
     protected $casts = [
+        'allow_multiple' => 'boolean',
         'is_active' => 'boolean',
     ];
 
@@ -136,7 +138,7 @@ class RevenueService extends Model
     }
 
     /**
-     * Assessments generated from this service
+     * Assessments generated from this service.
      */
     public function assessments(): HasMany
     {
@@ -157,10 +159,7 @@ class RevenueService extends Model
      */
     public function scopeActive(Builder $query): Builder
     {
-        return $query->where(
-            'is_active',
-            true
-        );
+        return $query->where('is_active', true);
     }
 
     /**
@@ -168,10 +167,7 @@ class RevenueService extends Model
      */
     public function scopeInactive(Builder $query): Builder
     {
-        return $query->where(
-            'is_active',
-            false
-        );
+        return $query->where('is_active', false);
     }
 
     /**
@@ -200,14 +196,8 @@ class RevenueService extends Model
             'accessRules',
             function (Builder $accessQuery) use ($user) {
                 $accessQuery
-                    ->where(
-                        'sector_id',
-                        $user->sector_id
-                    )
-                    ->where(
-                        'is_active',
-                        true
-                    );
+                    ->where('sector_id', $user->sector_id)
+                    ->where('is_active', true);
             }
         );
     }

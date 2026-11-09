@@ -12,7 +12,6 @@ WORKDIR /var/www
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
-    zip \
     unzip \
     libpng-dev \
     libonig-dev \

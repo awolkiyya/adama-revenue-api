@@ -1,0 +1,16 @@
+---
+# Remove all running and stopped Docker containers.
+docker_cleanup_remove_containers: true
+
+# Remove all unused Docker images.
+docker_cleanup_remove_images: true
+
+# Remove unused Docker networks.
+docker_cleanup_remove_networks: true
+
+# Remove unused Docker volumes.
+# WARNING: This permanently deletes PostgreSQL and other persistent data.
+docker_cleanup_remove_volumes: true
+
+# Remove Docker build cache.
+docker_cleanup_remove_build_cache: true

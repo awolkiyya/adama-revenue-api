@@ -1,0 +1,26 @@
+# ==========================================
+# Ansible managed SSH security configuration
+# ==========================================
+
+Port {{ security_ssh_port }}
+
+# Authentication
+PubkeyAuthentication {{ security_ssh_pubkey_authentication }}
+PasswordAuthentication {{ security_ssh_password_authentication }}
+
+# Root access
+PermitRootLogin {{ security_ssh_permit_root_login }}
+
+# Authentication restrictions
+MaxAuthTries {{ security_ssh_max_auth_tries }}
+LoginGraceTime {{ security_ssh_login_grace_time }}
+
+# Disable unnecessary features
+X11Forwarding {{ security_ssh_x11_forwarding }}
+
+# Connection management
+ClientAliveInterval {{ security_ssh_client_alive_interval }}
+ClientAliveCountMax {{ security_ssh_client_alive_count_max }}
+
+# Disable empty passwords
+PermitEmptyPasswords no

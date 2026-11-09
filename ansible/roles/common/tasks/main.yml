@@ -1,0 +1,70 @@
+
+---
+- name: Validate server timezone
+  ansible.builtin.assert:
+    that:
+      - server_timezone is string
+      - server_timezone | length > 0
+    fail_msg: "A valid server_timezone must be configured."
+
+- name: Update APT package cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ common_apt_cache_valid_time }}"
+
+- name: Upgrade installed packages
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: false
+  when: common_upgrade_packages | bool
+
+- name: Install essential system packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: false
+
+- name: Verify timezone information exists
+  ansible.builtin.stat:
+    path: "/usr/share/zoneinfo/{{ server_timezone }}"
+  register: common_timezone_file
+
+- name: Validate timezone information
+  ansible.builtin.assert:
+    that:
+      - common_timezone_file.stat.exists
+      - common_timezone_file.stat.isreg
+    fail_msg: "Timezone {{ server_timezone }} is not available on this server."
+
+- name: Configure server timezone
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ server_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+    owner: root
+    group: root
+
+- name: Configure timezone information
+  ansible.builtin.copy:
+    content: "{{ server_timezone }}\n"
+    dest: /etc/timezone
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Verify configured server timezone
+  ansible.builtin.command:
+    argv:
+      - timedatectl
+      - show
+      - --property=Timezone
+      - --value
+  register: common_timezone_result
+  changed_when: false
+
+- name: Confirm server timezone
+  ansible.builtin.assert:
+    that:
+      - common_timezone_result.stdout == server_timezone
+    fail_msg: "Server timezone configuration verification failed."

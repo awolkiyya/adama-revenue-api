@@ -1,0 +1,209 @@
+
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+# ------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------
+
+PROJECT_DIR={{ backup_project_dir | quote }}
+COMPOSE_FILE={{ backup_compose_file | quote }}
+POSTGRES_SERVICE={{ backup_postgres_service | quote }}
+
+BACKUP_DIR={{ backup_postgres_dir | quote }}
+LOG_FILE={{ backup_log_file | quote }}
+LOCK_FILE={{ backup_lock_file | quote }}
+
+RETENTION_DAYS={{ backup_retention_days | int }}
+
+TIMESTAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
+BACKUP_NAME="postgres-${TIMESTAMP}.dump"
+
+FINAL_FILE="${BACKUP_DIR}/${BACKUP_NAME}"
+TEMP_FILE="${BACKUP_DIR}/.${BACKUP_NAME}.tmp"
+CHECKSUM_FILE="${FINAL_FILE}.sha256"
+TEMP_CHECKSUM="${CHECKSUM_FILE}.tmp"
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
+
+log() {
+    local message="$1"
+
+    printf '[%s] %s\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        "$message" | tee -a "$LOG_FILE"
+}
+
+# ------------------------------------------------------------
+# Cleanup
+# ------------------------------------------------------------
+
+cleanup() {
+    rm -f "$TEMP_FILE" "$TEMP_CHECKSUM"
+}
+
+on_error() {
+    local exit_code=$?
+
+    log "ERROR: PostgreSQL backup failed at line ${BASH_LINENO[0]:-unknown} (exit ${exit_code})."
+
+    cleanup
+
+    exit "$exit_code"
+}
+
+trap on_error ERR
+trap cleanup EXIT
+
+# ------------------------------------------------------------
+# Pre-flight checks
+# ------------------------------------------------------------
+
+if [[ ! -d "$PROJECT_DIR" ]]; then
+    log "ERROR: Project directory does not exist: $PROJECT_DIR"
+    exit 1
+fi
+
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+    log "ERROR: Docker Compose file does not exist: $COMPOSE_FILE"
+    exit 1
+fi
+
+if [[ ! -d "$BACKUP_DIR" ]]; then
+    log "ERROR: Backup directory does not exist: $BACKUP_DIR"
+    exit 1
+fi
+
+if [[ ! -f "$LOG_FILE" ]]; then
+    log "ERROR: Backup log file does not exist: $LOG_FILE"
+    exit 1
+fi
+
+for command_name in docker sha256sum flock find awk grep chmod mv rm tee date; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        log "ERROR: Required command is unavailable: $command_name"
+        exit 1
+    fi
+done
+
+# ------------------------------------------------------------
+# Prevent concurrent backup executions
+# ------------------------------------------------------------
+
+exec 9>"$LOCK_FILE"
+
+if ! flock -n 9; then
+    log "Another PostgreSQL backup is already running. Skipping."
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# Docker Compose command
+# ------------------------------------------------------------
+
+COMPOSE=(
+    docker compose
+    --project-directory "$PROJECT_DIR"
+    -f "$COMPOSE_FILE"
+)
+
+log "Starting PostgreSQL backup."
+log "Compose project directory: $PROJECT_DIR"
+log "PostgreSQL service: $POSTGRES_SERVICE"
+
+# ------------------------------------------------------------
+# Verify PostgreSQL container is running
+# ------------------------------------------------------------
+
+if ! "${COMPOSE[@]}" ps --status running --services \
+    | grep -Fxq "$POSTGRES_SERVICE"; then
+
+    log "ERROR: PostgreSQL Compose service is not running."
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# Create PostgreSQL custom-format dump
+# ------------------------------------------------------------
+
+log "Creating PostgreSQL database dump."
+
+"${COMPOSE[@]}" exec -T "$POSTGRES_SERVICE" \
+    sh -ec '
+        : "${POSTGRES_USER:?POSTGRES_USER is not configured}"
+        : "${POSTGRES_DB:?POSTGRES_DB is not configured}"
+
+        exec pg_dump \
+            --username="$POSTGRES_USER" \
+            --dbname="$POSTGRES_DB" \
+            --format=custom \
+            --no-owner \
+            --no-acl
+    ' > "$TEMP_FILE"
+
+# ------------------------------------------------------------
+# Validate backup file
+# ------------------------------------------------------------
+
+if [[ ! -s "$TEMP_FILE" ]]; then
+    log "ERROR: Backup file is empty."
+    exit 1
+fi
+
+log "Verifying PostgreSQL dump."
+
+"${COMPOSE[@]}" exec -T "$POSTGRES_SERVICE" \
+    pg_restore --list < "$TEMP_FILE" >/dev/null
+
+log "PostgreSQL dump verification successful."
+
+# ------------------------------------------------------------
+# Generate checksum
+# ------------------------------------------------------------
+
+log "Generating SHA-256 checksum."
+
+CHECKSUM="$(sha256sum "$TEMP_FILE" | awk '{print $1}')"
+
+printf '%s  %s\n' \
+    "$CHECKSUM" \
+    "$BACKUP_NAME" > "$TEMP_CHECKSUM"
+
+# ------------------------------------------------------------
+# Publish completed backup atomically
+# ------------------------------------------------------------
+
+mv "$TEMP_FILE" "$FINAL_FILE"
+mv "$TEMP_CHECKSUM" "$CHECKSUM_FILE"
+
+chmod {{ backup_file_mode | quote }} "$FINAL_FILE" "$CHECKSUM_FILE"
+
+log "Backup completed successfully: $FINAL_FILE"
+log "Checksum file created: $CHECKSUM_FILE"
+
+# ------------------------------------------------------------
+# Retention cleanup
+# ------------------------------------------------------------
+
+log "Removing backups older than ${RETENTION_DAYS} days."
+
+find "$BACKUP_DIR" \
+    -maxdepth 1 \
+    -type f \
+    -name 'postgres-*.dump' \
+    -mtime "+${RETENTION_DAYS}" \
+    -print \
+    -delete
+
+find "$BACKUP_DIR" \
+    -maxdepth 1 \
+    -type f \
+    -name 'postgres-*.dump.sha256' \
+    -mtime "+${RETENTION_DAYS}" \
+    -delete
+
+log "PostgreSQL backup process finished successfully."

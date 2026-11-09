@@ -1,0 +1,153 @@
+
+---
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - AUTOMATED CERTIFICATE RENEWAL
+# Production only
+# ============================================================
+
+# 1. Ensure this task only runs in production.
+
+- name: Validate production renewal configuration
+  ansible.builtin.assert:
+    that:
+      - not (ssl_certbot_staging | bool)
+      - ssl_certbot_profile == "shortlived"
+    fail_msg: >-
+      Automatic production certificate renewal requires
+      the production ACME environment and shortlived profile.
+
+# 2. Discover installed systemd timer units.
+
+- name: List installed systemd timer units
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - list-unit-files
+      - --type=timer
+      - --no-legend
+      - --no-pager
+  register: ssl_installed_timer_units
+  changed_when: false
+
+# 3. Disable the APT Certbot timer when installed.
+
+- name: Disable APT Certbot renewal timer
+  ansible.builtin.systemd_service:
+    name: certbot.timer
+    enabled: false
+    state: stopped
+  when:
+    - ssl_disable_apt_certbot_timer | bool
+    - "'certbot.timer' in ssl_installed_timer_units.stdout"
+
+# 4. Disable the Snap Certbot timer when installed.
+
+- name: Disable Snap Certbot renewal timer
+  ansible.builtin.systemd_service:
+    name: snap.certbot.renew.timer
+    enabled: false
+    state: stopped
+  when:
+    - ssl_disable_snap_certbot_timer | bool
+    - "'snap.certbot.renew.timer' in ssl_installed_timer_units.stdout"
+
+# 5. Install the certificate deployment hook.
+
+- name: Install certificate deployment hook
+  ansible.builtin.template:
+    src: reload-nginx.sh.j2
+    dest: "{{ ssl_certbot_deploy_hook }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+# 6. Install the dedicated Certbot renewal service.
+
+- name: Install Certbot renewal systemd service
+  ansible.builtin.template:
+    src: certbot-renew.service.j2
+    dest: "/etc/systemd/system/{{ ssl_certbot_service }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd configuration
+
+# 7. Install the dedicated Certbot renewal timer.
+
+- name: Install Certbot renewal systemd timer
+  ansible.builtin.template:
+    src: certbot-renew.timer.j2
+    dest: "/etc/systemd/system/{{ ssl_certbot_timer }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd configuration
+
+# 8. Apply pending systemd configuration changes.
+
+- name: Apply systemd configuration changes
+  ansible.builtin.meta: flush_handlers
+
+# 9. Enable and start the custom renewal timer.
+
+- name: Enable and start Certbot renewal timer
+  ansible.builtin.systemd_service:
+    name: "{{ ssl_certbot_timer }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# 10. Verify the custom timer is enabled.
+
+- name: Check Certbot renewal timer status
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ ssl_certbot_timer }}"
+  register: ssl_renewal_timer_enabled
+  changed_when: false
+
+- name: Assert Certbot renewal timer is enabled
+  ansible.builtin.assert:
+    that:
+      - ssl_renewal_timer_enabled.stdout == "enabled"
+    fail_msg: >-
+      The Certbot renewal timer is not enabled:
+      {{ ssl_certbot_timer }}
+
+# 11. Verify the custom timer is active.
+
+- name: Check Certbot renewal timer activity
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ ssl_certbot_timer }}"
+  register: ssl_renewal_timer_active
+  changed_when: false
+
+- name: Assert Certbot renewal timer is active
+  ansible.builtin.assert:
+    that:
+      - ssl_renewal_timer_active.stdout == "active"
+    fail_msg: >-
+      The Certbot renewal timer is not active:
+      {{ ssl_certbot_timer }}
+
+# 12. Display renewal configuration.
+
+- name: Display Certbot renewal summary
+  ansible.builtin.debug:
+    msg:
+      - "Environment: Production"
+      - "Renewal service: {{ ssl_certbot_service }}"
+      - "Renewal timer: {{ ssl_certbot_timer }}"
+      - "Schedule: {{ ssl_certbot_renewal_calendar }}"
+      - "Randomized delay: {{ ssl_certbot_renewal_random_delay }}"
+      - "Certificate configuration: {{ ssl_config_dir }}"
+      - "Deployment hook: {{ ssl_certbot_deploy_hook }}"
+      - "APT timer handling: {{ ssl_disable_apt_certbot_timer }}"
+      - "Snap timer handling: {{ ssl_disable_snap_certbot_timer }}"
+      - "Timer enabled: {{ ssl_renewal_timer_enabled.stdout }}"
+      - "Timer active: {{ ssl_renewal_timer_active.stdout }}"

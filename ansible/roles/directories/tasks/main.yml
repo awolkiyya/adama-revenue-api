@@ -1,0 +1,32 @@
+
+---
+- name: Validate deployment directory configuration
+  ansible.builtin.assert:
+    that:
+      - deployment_base_dir is string
+      - deployment_directory_owner is string
+      - deployment_directory_group is string
+      - deployment_directories | length > 0
+    fail_msg: "Invalid deployment directory configuration."
+
+- name: Ensure deployment group exists
+  ansible.builtin.group:
+    name: "{{ deployment_directory_group }}"
+    state: present
+
+- name: Ensure deployment user exists
+  ansible.builtin.user:
+    name: "{{ deployment_directory_owner }}"
+    group: "{{ deployment_directory_group }}"
+    state: present
+
+- name: Create shared infrastructure and backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ deployment_directories }}"
+  loop_control:
+    label: "{{ item.path }}"

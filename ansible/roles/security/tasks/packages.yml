@@ -1,0 +1,9 @@
+---
+- name: Install security packages
+  ansible.builtin.apt:
+    name:
+      - openssh-server
+      - unattended-upgrades
+    state: present
+    update_cache: true
+    cache_valid_time: 3600

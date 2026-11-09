@@ -1,0 +1,8 @@
+---
+- name: Clean Docker resources on Laravel API server
+  hosts: laravel
+  become: true
+  gather_facts: true
+
+  roles:
+    - docker_cleanup

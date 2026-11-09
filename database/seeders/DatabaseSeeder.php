@@ -67,7 +67,10 @@ class DatabaseSeeder extends Seeder
             BankAccountSeeder::class,
 
             // payment provider
-            PaymentProviderSeeder::class
+            PaymentProviderSeeder::class,
+
+            FieldCollectorSeeder::class,
+
 
         ]);
     }

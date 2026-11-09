@@ -253,6 +253,76 @@ class SessionController extends Controller
     }
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | MOBILE
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get authenticated mobile user.
+     *
+     * Authentication:
+     *
+     *     Sanctum Personal Access Token
+     *
+     * Header:
+     *
+     *     Authorization: Bearer {token}
+     *
+     * Route:
+     *
+     *     GET /api/v1/auth/mobile/me
+     */
+    public function mobileMe(Request $request): JsonResponse
+    {
+        $start = microtime(true);
+
+        Log::info('AUTH MOBILE-ME: request started', [
+            'method' => $request->method(),
+            'path' => $request->path(),
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'auth_sanctum_check' => auth('sanctum')->check(),
+            'user_id' => $request->user('sanctum')?->id,
+        ]);
+
+        try {
+            $data = $this->sessionService->mobileUser($request);
+
+            $user = $data['user'] ?? null;
+
+            Log::info('AUTH MOBILE-ME: service completed', [
+                'authenticated' => $user !== null,
+                'user_id' => $user?->id,
+                'duration_ms' => round(
+                    (microtime(true) - $start) * 1000,
+                    2
+                ),
+            ]);
+
+            return ApiResponse::success(
+                $data['user'],
+                'User profile retrieved successfully.'
+            );
+
+        } catch (Throwable $e) {
+            Log::error('AUTH MOBILE-ME: exception', [
+                'exception' => get_class($e),
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'duration_ms' => round(
+                    (microtime(true) - $start) * 1000,
+                    2
+                ),
+            ]);
+
+            throw $e;
+        }
+    }
+
+
     /**
      * Logout current web session.
      *

@@ -1,0 +1,85 @@
+
+---
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - PRODUCTION SSL DIRECTORY STRUCTURE
+# ============================================================
+
+# 1. Create persistent SSL root directory.
+- name: Create SSL base directory
+  ansible.builtin.file:
+    path: "{{ ssl_base_dir }}"
+    state: directory
+    owner: "{{ ssl_owner }}"
+    group: "{{ ssl_group }}"
+    mode: "0750"
+
+# 2. Create ACME HTTP-01 challenge webroot.
+- name: Create ACME challenge webroot
+  ansible.builtin.file:
+    path: "{{ ssl_webroot_dir }}/.well-known/acme-challenge"
+    state: directory
+    owner: "{{ ssl_owner }}"
+    group: "{{ ssl_group }}"
+    mode: "0755"
+
+# 3. Create production Certbot configuration directory.
+- name: Create production Certbot configuration directory
+  ansible.builtin.file:
+    path: "{{ ssl_config_dir }}"
+    state: directory
+    owner: "{{ ssl_config_owner }}"
+    group: "{{ ssl_config_group }}"
+    mode: "0700"
+
+# 4. Create Certbot working directory.
+- name: Create Certbot working directory
+  ansible.builtin.file:
+    path: "{{ ssl_certbot_work_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# 5. Create Certbot log directory.
+- name: Create Certbot log directory
+  ansible.builtin.file:
+    path: "{{ ssl_certbot_logs_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# 6. Inspect persistent production SSL directories.
+- name: Inspect production SSL directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ ssl_base_dir }}"
+    - "{{ ssl_webroot_dir }}"
+    - "{{ ssl_webroot_dir }}/.well-known/acme-challenge"
+    - "{{ ssl_config_dir }}"
+    - "{{ ssl_certbot_work_dir }}"
+    - "{{ ssl_certbot_logs_dir }}"
+  register: ssl_directory_stats
+
+# 7. Verify required directories exist.
+- name: Verify production SSL directory structure
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: "Required production SSL directory is missing: {{ item.item }}"
+  loop: "{{ ssl_directory_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# 8. Display production SSL directory summary.
+- name: Display production SSL directory configuration
+  ansible.builtin.debug:
+    msg:
+      - "SSL root: {{ ssl_base_dir }}"
+      - "ACME webroot: {{ ssl_webroot_dir }}"
+      - "Production certificate configuration: {{ ssl_config_dir }}"
+      - "Certbot working directory: {{ ssl_certbot_work_dir }}"
+      - "Certbot logs directory: {{ ssl_certbot_logs_dir }}"
+      - "Production certificate permissions: 0700"

@@ -8,21 +8,19 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class CalculateDirectCollectionRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return auth()->check();
     }
 
     /**
-     * Validation rules.
+     * Validate the direct collection calculation request.
      *
-     * Dynamic fields are validated by DirectCollectionService
-     * because their definitions come from RevenueServiceField.
+     * Dynamic field definitions, field values, and the
+     * allow_multiple service restriction are validated by
+     * DirectCollectionInputService.
      *
-     * @return array<string, array<int, string>>
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
@@ -53,21 +51,28 @@ class CalculateDirectCollectionRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | Dynamic Service Fields
+            | Collection Entries
             |--------------------------------------------------------------------------
             |
-            | The actual fields depend on the selected revenue service.
-            | DirectCollectionService performs the detailed validation.
+            | Each entry contains its own independent set of
+            | dynamic field values.
             |
             */
 
-            'fields' => [
-                'sometimes',
+            'entries' => [
+                'required',
+                'array',
+                'min:1',
+            ],
+
+            'entries.*' => [
+                'required',
                 'array',
             ],
 
-            'fields.*' => [
-                'nullable',
+            'entries.*.fields' => [
+                'required',
+                'array',
             ],
 
             /*
@@ -84,33 +89,47 @@ class CalculateDirectCollectionRequest extends FormRequest
     }
 
     /**
-     * Prepare request data before validation.
+     * Normalize legacy single-entry request formats.
+     *
+     * Supported formats:
+     *
+     * 1. New format:
+     *    entries: [
+     *        ['fields' => [...]],
+     *        ['fields' => [...]],
+     *    ]
+     *
+     * 2. Legacy format:
+     *    fields: [...]
+     *
+     * 3. Legacy format:
+     *    inputs: [...]
      */
     protected function prepareForValidation(): void
     {
-        /*
-        |--------------------------------------------------------------------------
-        | Support legacy "inputs" key
-        |--------------------------------------------------------------------------
-        |
-        | The service supports both:
-        |
-        | fields
-        | inputs
-        |
-        | We normalize inputs -> fields here so the rest of the
-        | application has one canonical request structure.
-        |
-        */
-
-        if (
-            ! $this->has('fields')
-            && $this->has('inputs')
-        ) {
-            $this->merge([
-                'fields' => $this->input('inputs'),
-            ]);
+        // Preserve the new multi-entry format when supplied.
+        if ($this->has('entries')) {
+            return;
         }
+
+        $fields = $this->input('fields');
+
+        // Support the older "inputs" property.
+        if (! is_array($fields)) {
+            $fields = $this->input('inputs');
+        }
+
+        if (! is_array($fields)) {
+            return;
+        }
+
+        $this->merge([
+            'entries' => [
+                [
+                    'fields' => $fields,
+                ],
+            ],
+        ]);
     }
 
     /**
@@ -139,8 +158,26 @@ class CalculateDirectCollectionRequest extends FormRequest
             'revenue_service_id.exists' =>
                 'The selected revenue service could not be found.',
 
-            'fields.array' =>
-                'Service fields must be provided as an object or array.',
+            'entries.required' =>
+                'At least one collection entry is required.',
+
+            'entries.array' =>
+                'Collection entries must be provided as an array.',
+
+            'entries.min' =>
+                'At least one collection entry is required.',
+
+            'entries.*.required' =>
+                'Each collection entry is required.',
+
+            'entries.*.array' =>
+                'Each collection entry must be an object.',
+
+            'entries.*.fields.required' =>
+                'Fields are required for each collection entry.',
+
+            'entries.*.fields.array' =>
+                'Collection entry fields must be provided as an array.',
 
             'administrative_unit_id.uuid' =>
                 'The administrative unit ID must be a valid UUID.',

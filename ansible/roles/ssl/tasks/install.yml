@@ -1,0 +1,84 @@
+
+---
+# ============================================================
+# ADAMA MUNICIPAL REVENUE - CERTBOT INSTALLATION
+# PRODUCTION HTTPS / IP ADDRESS CERTIFICATE
+# ============================================================
+
+# 1. Install Snap package manager.
+- name: Install Snap package manager
+  ansible.builtin.apt:
+    name: snapd
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# 2. Ensure Snap service is running.
+- name: Ensure Snap service is enabled and running
+  ansible.builtin.service:
+    name: snapd
+    state: started
+    enabled: true
+
+# 3. Install Certbot using Snap.
+- name: Install Certbot Snap
+  community.general.snap:
+    name: "{{ ssl_certbot_snap_name }}"
+    channel: "{{ ssl_certbot_snap_channel }}"
+    classic: true
+    state: present
+
+# 4. Verify the Snap executable exists.
+- name: Check Certbot Snap executable
+  ansible.builtin.stat:
+    path: "{{ ssl_certbot_binary }}"
+  register: ssl_certbot_binary_stat
+
+- name: Verify Certbot Snap executable
+  ansible.builtin.assert:
+    that:
+      - ssl_certbot_binary_stat.stat.exists
+      - ssl_certbot_binary_stat.stat.executable
+    fail_msg: >-
+      Certbot Snap executable is missing or not executable:
+      {{ ssl_certbot_binary }}
+
+# 5. Read installed Certbot version.
+- name: Get Certbot Snap version
+  ansible.builtin.command:
+    argv:
+      - "{{ ssl_certbot_binary }}"
+      - "--version"
+  register: ssl_certbot_version
+  changed_when: false
+
+# 6. Extract installed version number.
+- name: Extract Certbot version number
+  ansible.builtin.set_fact:
+    ssl_certbot_installed_version: >-
+      {{ ssl_certbot_version.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') }}
+
+# 7. Verify minimum Certbot version.
+- name: Verify Certbot version supports IP certificates
+  ansible.builtin.assert:
+    that:
+      - ssl_certbot_installed_version is not none
+      - ssl_certbot_installed_version is version(ssl_certbot_min_version, '>=')
+    fail_msg: >-
+      Certbot {{ ssl_certbot_min_version }} or later is required
+      for the configured IP-address certificate workflow.
+      Installed version:
+      {{ ssl_certbot_version.stdout }}
+
+# 8. Display installation summary.
+- name: Display Certbot installation summary
+  ansible.builtin.debug:
+    msg:
+      - "Certbot executable: {{ ssl_certbot_binary }}"
+      - "Installed version: {{ ssl_certbot_version.stdout }}"
+      - "Minimum required version: {{ ssl_certbot_min_version }}"
+      - "Installation source: Snap"
+      - "Certificate IP: {{ ssl_certificate_ip }}"
+      - "Certificate profile: {{ ssl_certbot_profile }}"
+      - "ACME environment: Production"
+      - "Installation status: compatible"

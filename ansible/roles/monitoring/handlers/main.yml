@@ -1,0 +1,18 @@
+---
+- name: Restart Sysstat timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - sysstat-collect.timer
+    - sysstat-summary.timer
+- name: Include Docker monitoring
+  ansible.builtin.include_tasks: docker.yml
+  when:
+    - monitoring_enabled | bool
+    - monitoring_docker_enabled | bool
+- name: Include disk-space monitoring
+  ansible.builtin.include_tasks: disk.yml
+  when:
+    - monitoring_enabled | bool
+    - monitoring_disk_enabled | bool

@@ -16,6 +16,88 @@ class UpdateRevenueServiceRequest extends FormRequest
     }
 
     /**
+     * Prepare incoming data.
+     */
+    protected function prepareForValidation(): void
+    {
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Allow Multiple
+        |--------------------------------------------------------------------------
+        |
+        | This is a PATCH-style update.
+        |
+        | If allow_multiple is omitted, do not merge a default value.
+        | The existing database value must remain unchanged.
+        |
+        */
+
+        if ($this->exists('allow_multiple')) {
+            $allowMultiple = $this->input('allow_multiple');
+
+            if (!is_bool($allowMultiple)) {
+                $normalized = filter_var(
+                    $allowMultiple,
+                    FILTER_VALIDATE_BOOLEAN,
+                    FILTER_NULL_ON_FAILURE
+                );
+
+                if ($normalized !== null) {
+                    $this->merge([
+                        'allow_multiple' => $normalized,
+                    ]);
+                }
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Name
+        |--------------------------------------------------------------------------
+        */
+
+        if ($this->has('name') && is_string($this->name)) {
+            $this->merge([
+                'name' => trim($this->name),
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Description
+        |--------------------------------------------------------------------------
+        */
+
+        if ($this->exists('description')) {
+            $this->merge([
+                'description' => filled($this->description)
+                    ? trim($this->description)
+                    : null,
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Active Status
+        |--------------------------------------------------------------------------
+        */
+
+        if ($this->exists('is_active')) {
+            $isActive = filter_var(
+                $this->input('is_active'),
+                FILTER_VALIDATE_BOOLEAN,
+                FILTER_NULL_ON_FAILURE
+            );
+
+            if ($isActive !== null) {
+                $this->merge([
+                    'is_active' => $isActive,
+                ]);
+            }
+        }
+    }
+
+    /**
      * Validation rules.
      */
     public function rules(): array
@@ -24,7 +106,7 @@ class UpdateRevenueServiceRequest extends FormRequest
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve service ID safely
+        | Resolve Service ID Safely
         |--------------------------------------------------------------------------
         */
 
@@ -34,7 +116,7 @@ class UpdateRevenueServiceRequest extends FormRequest
 
         /*
         |--------------------------------------------------------------------------
-        | Resolve current revenue code
+        | Resolve Current Revenue Code
         |--------------------------------------------------------------------------
         |
         | Used by the unique service-name rule when revenue_code_id is not
@@ -46,11 +128,10 @@ class UpdateRevenueServiceRequest extends FormRequest
             ? $service->revenue_code_id
             : null;
 
-        $revenueCodeId =
-            $this->input(
-                'revenue_code_id',
-                $currentRevenueCodeId
-            );
+        $revenueCodeId = $this->input(
+            'revenue_code_id',
+            $currentRevenueCodeId
+        );
 
         return [
 
@@ -154,6 +235,24 @@ class UpdateRevenueServiceRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
+            | Multiple Collection Entries
+            |--------------------------------------------------------------------------
+            |
+            | Determines whether multiple entries are permitted for this
+            | service in one direct collection transaction.
+            |
+            | Optional during updates. If omitted, the existing value
+            | must be preserved.
+            |
+            */
+
+            'allow_multiple' => [
+                'sometimes',
+                'boolean',
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
             | Active Status
             |--------------------------------------------------------------------------
             */
@@ -167,8 +266,6 @@ class UpdateRevenueServiceRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Revenue Service Fields
             |--------------------------------------------------------------------------
-            |
-            | These are NOT arbitrary dynamic fields anymore.
             |
             | Each field must reference a canonical BaseField.
             |
@@ -252,16 +349,6 @@ class UpdateRevenueServiceRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Validation Rules
             |--------------------------------------------------------------------------
-            |
-            | Example:
-            |
-            | {
-            |     "min": 0,
-            |     "max": 10000,
-            |     "minLength": 2,
-            |     "maxLength": 100
-            | }
-            |
             */
 
             'fields.*.validation_rules' => [
@@ -272,22 +359,26 @@ class UpdateRevenueServiceRequest extends FormRequest
 
             'fields.*.validation_rules.min' => [
                 'sometimes',
+                'nullable',
                 'numeric',
             ],
 
             'fields.*.validation_rules.max' => [
                 'sometimes',
+                'nullable',
                 'numeric',
             ],
 
             'fields.*.validation_rules.minLength' => [
                 'sometimes',
+                'nullable',
                 'integer',
                 'min:0',
             ],
 
             'fields.*.validation_rules.maxLength' => [
                 'sometimes',
+                'nullable',
                 'integer',
                 'min:0',
             ],
@@ -301,15 +392,68 @@ class UpdateRevenueServiceRequest extends FormRequest
     {
         $validator->after(function ($validator) {
 
+            $service = $this->route('service');
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Effective Collection Configuration
+            |--------------------------------------------------------------------------
+            |
+            | Use incoming values when supplied.
+            | Otherwise, use the existing database values.
+            |
+            */
+
+            $currentCollectionMode = is_object($service)
+                ? $service->collection_mode
+                : null;
+
+            $currentAllowMultiple = is_object($service)
+                ? (bool) $service->allow_multiple
+                : false;
+
+            $effectiveCollectionMode = $this->input(
+                'collection_mode',
+                $currentCollectionMode
+            );
+
+            $effectiveAllowMultiple = $this->input(
+                'allow_multiple',
+                $currentAllowMultiple
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Multiple Collection Entries Consistency
+            |--------------------------------------------------------------------------
+            |
+            | Multiple entries are only supported when the service
+            | supports field collection.
+            |
+            */
+
+            if (
+                $effectiveAllowMultiple === true &&
+                $effectiveCollectionMode === 'ASSESSMENT_ONLY'
+            ) {
+                $validator->errors()->add(
+                    'allow_multiple',
+                    'Multiple collection entries can only be enabled for services that support field collection.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Fields
+            |--------------------------------------------------------------------------
+            */
+
             $fields = $this->input('fields', []);
 
             /*
             |--------------------------------------------------------------------------
-            | Nothing to validate if fields were not supplied.
+            | Nothing More to Validate if Fields Are Invalid
             |--------------------------------------------------------------------------
-            |
-            | Important for PATCH-style updates.
-            |
             */
 
             if (!is_array($fields)) {
@@ -329,8 +473,11 @@ class UpdateRevenueServiceRequest extends FormRequest
 
             foreach ($fields as $index => $field) {
 
-                $baseFieldId =
-                    $field['base_field_id'] ?? null;
+                if (!is_array($field)) {
+                    continue;
+                }
+
+                $baseFieldId = $field['base_field_id'] ?? null;
 
                 if (!$baseFieldId) {
                     continue;
@@ -345,7 +492,7 @@ class UpdateRevenueServiceRequest extends FormRequest
                 ) {
                     $validator->errors()->add(
                         "fields.$index.base_field_id",
-                        "This base field has already been added to this service."
+                        'This base field has already been added to this service.'
                     );
                 }
 
@@ -356,17 +503,17 @@ class UpdateRevenueServiceRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Duplicate Sort Order Detection
             |--------------------------------------------------------------------------
-            |
-            | Two service fields should not have the same position.
-            |
             */
 
             $sortOrders = [];
 
             foreach ($fields as $index => $field) {
 
-                $sortOrder =
-                    $field['sort_order'] ?? null;
+                if (!is_array($field)) {
+                    continue;
+                }
+
+                $sortOrder = $field['sort_order'] ?? null;
 
                 if ($sortOrder === null) {
                     continue;
@@ -381,7 +528,7 @@ class UpdateRevenueServiceRequest extends FormRequest
                 ) {
                     $validator->errors()->add(
                         "fields.$index.sort_order",
-                        "Duplicate field sort order is not allowed."
+                        'Duplicate field sort order is not allowed.'
                     );
                 }
 
@@ -399,32 +546,51 @@ class UpdateRevenueServiceRequest extends FormRequest
 
             foreach ($fields as $index => $field) {
 
-                $rules =
-                    $field['validation_rules'] ?? null;
+                if (!is_array($field)) {
+                    continue;
+                }
+
+                $rules = $field['validation_rules'] ?? null;
 
                 if (!is_array($rules)) {
                     continue;
                 }
 
+                $min = $rules['min'] ?? null;
+                $max = $rules['max'] ?? null;
+
                 if (
-                    isset($rules['min']) &&
-                    isset($rules['max']) &&
-                    $rules['min'] > $rules['max']
+                    $min !== null &&
+                    $max !== null &&
+                    is_numeric($min) &&
+                    is_numeric($max) &&
+                    $min > $max
                 ) {
                     $validator->errors()->add(
                         "fields.$index.validation_rules",
-                        "Minimum value cannot be greater than maximum value."
+                        'Minimum value cannot be greater than maximum value.'
                     );
                 }
 
+                /*
+                |--------------------------------------------------------------------------
+                | String Length Rule Consistency
+                |--------------------------------------------------------------------------
+                */
+
+                $minLength = $rules['minLength'] ?? null;
+                $maxLength = $rules['maxLength'] ?? null;
+
                 if (
-                    isset($rules['minLength']) &&
-                    isset($rules['maxLength']) &&
-                    $rules['minLength'] > $rules['maxLength']
+                    $minLength !== null &&
+                    $maxLength !== null &&
+                    is_numeric($minLength) &&
+                    is_numeric($maxLength) &&
+                    $minLength > $maxLength
                 ) {
                     $validator->errors()->add(
                         "fields.$index.validation_rules",
-                        "Minimum length cannot be greater than maximum length."
+                        'Minimum length cannot be greater than maximum length.'
                     );
                 }
             }
@@ -434,23 +600,21 @@ class UpdateRevenueServiceRequest extends FormRequest
             | Collection Mode Business Rules
             |--------------------------------------------------------------------------
             |
-            | If fields are explicitly supplied as part of an update,
-            | validate the desired configuration.
+            | Validate the effective configuration rather than assuming
+            | that every field must be supplied in a PATCH request.
             |
             */
 
             if (
-                $this->filled('collection_mode')
-                &&
+                $this->exists('fields') &&
                 in_array(
-                    $this->collection_mode,
+                    $effectiveCollectionMode,
                     [
                         'FIELD_COLLECTION',
                         'BOTH',
                     ],
                     true
-                )
-                &&
+                ) &&
                 empty($fields)
             ) {
                 $validator->errors()->add(
@@ -466,10 +630,8 @@ class UpdateRevenueServiceRequest extends FormRequest
             */
 
             if (
-                $this->input('service_type') === 'ASSESSMENT'
-                &&
-                $this->has('fields')
-                &&
+                $this->input('service_type') === 'ASSESSMENT' &&
+                $this->exists('fields') &&
                 empty($fields)
             ) {
                 $validator->errors()->add(
@@ -552,6 +714,15 @@ class UpdateRevenueServiceRequest extends FormRequest
 
             'collection_mode.in' =>
                 'Invalid collection mode selected.',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Multiple Collection Entries
+            |--------------------------------------------------------------------------
+            */
+
+            'allow_multiple.boolean' =>
+                'Multiple collection configuration must be true or false.',
 
             /*
             |--------------------------------------------------------------------------
@@ -648,7 +819,6 @@ class UpdateRevenueServiceRequest extends FormRequest
 
             'fields.*.validation_rules.maxLength.integer' =>
                 'Maximum length must be an integer.',
-
         ];
     }
 }

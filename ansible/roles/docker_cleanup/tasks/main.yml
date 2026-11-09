@@ -1,0 +1,54 @@
+---
+- name: Validate Docker cleanup configuration
+  ansible.builtin.assert:
+    that:
+      - docker_cleanup_remove_containers is boolean
+      - docker_cleanup_remove_images is boolean
+      - docker_cleanup_remove_networks is boolean
+      - docker_cleanup_remove_volumes is boolean
+      - docker_cleanup_remove_build_cache is boolean
+    fail_msg: "Docker cleanup configuration must use boolean values."
+
+- name: Verify Docker is available
+  ansible.builtin.command:
+    cmd: docker info
+  changed_when: false
+
+- name: Get all Docker containers
+  ansible.builtin.command:
+    cmd: docker ps -aq
+  register: docker_cleanup_all_containers
+  changed_when: false
+  when: docker_cleanup_remove_containers | bool
+
+- name: Remove all running and stopped Docker containers
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'rm', '-f'] + docker_cleanup_all_containers.stdout_lines }}"
+  when:
+    - docker_cleanup_remove_containers | bool
+    - docker_cleanup_all_containers.stdout_lines | length > 0
+  changed_when: true
+
+- name: Remove all unused Docker images
+  ansible.builtin.command:
+    cmd: docker image prune -a -f
+  when: docker_cleanup_remove_images | bool
+  changed_when: true
+
+- name: Remove unused Docker networks
+  ansible.builtin.command:
+    cmd: docker network prune -f
+  when: docker_cleanup_remove_networks | bool
+  changed_when: true
+
+- name: Remove all unused Docker volumes
+  ansible.builtin.command:
+    cmd: docker volume prune -a -f
+  when: docker_cleanup_remove_volumes | bool
+  changed_when: true
+
+- name: Remove Docker build cache
+  ansible.builtin.command:
+    cmd: docker builder prune -a -f
+  when: docker_cleanup_remove_build_cache | bool
+  changed_when: true

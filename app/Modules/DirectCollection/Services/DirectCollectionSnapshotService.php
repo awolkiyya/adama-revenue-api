@@ -6,7 +6,6 @@ namespace App\Modules\DirectCollection\Services;
 
 use App\Models\InterestRule;
 use App\Models\PenaltyRule;
-use App\Models\RevenueService;
 use App\Models\RevenueServiceField;
 use App\Models\TariffRule;
 use App\Models\TariffVersion;
@@ -20,49 +19,36 @@ class DirectCollectionSnapshotService
      *
      * @param Collection<int, RevenueServiceField> $fields
      * @param array<string,mixed> $inputs
+     * @return array<string,array<string,mixed>>
      */
     public function buildInputSnapshot(
         Collection $fields,
-        array $inputs
+        array $inputs,
     ): array {
         $snapshot = [];
 
         foreach ($fields as $field) {
-            $fieldId =
-                (string) $field->id;
+            $fieldId = (string) $field->id;
 
-            if (
-                ! array_key_exists(
-                    $fieldId,
-                    $inputs
-                )
-            ) {
+            if (! array_key_exists($fieldId, $inputs)) {
                 continue;
             }
 
             $snapshot[$fieldId] = [
-                'field_id' =>
-                    $fieldId,
+                'field_id' => $fieldId,
 
-                'field_code' =>
-                    $field->field_code
-                    ?? null,
+                'field_code' => $field->field_code ?? null,
 
                 'field_label' =>
                     $field->field_label
                     ?? $field->label
                     ?? null,
 
-                'data_type' =>
-                    $field->data_type
-                    ?? null,
+                'data_type' => $field->data_type ?? null,
 
-                'input_type' =>
-                    $field->input_type
-                    ?? null,
+                'input_type' => $field->input_type ?? null,
 
-                'value' =>
-                    $inputs[$fieldId],
+                'value' => $inputs[$fieldId],
             ];
         }
 
@@ -72,9 +58,15 @@ class DirectCollectionSnapshotService
     /**
      * Build the authoritative calculation snapshot.
      *
+     * The due_date parameter is retained for backward compatibility
+     * with callers that may still require due-date snapshots.
+     *
+     * Direct collection should pass null and should not use due dates.
+     *
      * @param array<string,mixed> $result
      * @param array<string,mixed> $values
      * @param array<string,mixed> $inputs
+     * @return array<string,mixed>
      */
     public function buildCalculationSnapshot(
         array $result,
@@ -94,95 +86,77 @@ class DirectCollectionSnapshotService
                 ?? $rule->calculation_type
                 ?? null,
 
-            'amount' =>
-                $amount,
+            'amount' => $amount,
 
-            'currency' =>
-                $currency,
+            'currency' => $currency,
 
-            'tariff_version_id' =>
-                (string) $version->id,
+            'tariff_version_id' => (string) $version->id,
 
-            'tariff_rule_id' =>
-                (string) $rule->id,
+            'tariff_rule_id' => (string) $rule->id,
 
-            'penalty_rule_id' =>
-                $penaltyRule?->id
-                    ? (string) $penaltyRule->id
-                    : null,
+            'penalty_rule_id' => $penaltyRule?->id
+                ? (string) $penaltyRule->id
+                : null,
 
-            'interest_rule_id' =>
-                $interestRule?->id
-                    ? (string) $interestRule->id
-                    : null,
-
-            'due_date' =>
-                $dueDate?->toDateString(),
-
-            'quantity' =>
-                $result['quantity']
-                ?? null,
-
-            'unit' =>
-                $result['unit']
-                ?? null,
-
-            'unit_price' =>
-                isset($result['unit_price'])
-                    ? $this->decimal(
-                        $result['unit_price']
-                    )
-                    : null,
-
-            'minimum_amount' =>
-                isset($result['minimum_amount'])
-                    ? $this->decimal(
-                        $result['minimum_amount']
-                    )
-                    : null,
-
-            'maximum_amount' =>
-                isset($result['maximum_amount'])
-                    ? $this->decimal(
-                        $result['maximum_amount']
-                    )
-                    : null,
-
-            'rounding_rule' =>
-                $result['rounding_rule']
-                ?? null,
-
-            'formula' =>
-                $result['formula']
-                ?? null,
+            'interest_rule_id' => $interestRule?->id
+                ? (string) $interestRule->id
+                : null,
 
             /*
             |--------------------------------------------------------------------------
-            | Original submitted values
+            | Quantity and Unit
             |--------------------------------------------------------------------------
             */
 
-            'inputs' =>
-                $inputs,
+            'quantity' => $result['quantity'] ?? null,
+
+            'unit' => $result['unit'] ?? null,
+
+            'unit_price' => isset($result['unit_price'])
+                ? $this->decimal($result['unit_price'])
+                : null,
 
             /*
             |--------------------------------------------------------------------------
-            | Values resolved for tariff calculation
+            | Calculation Constraints
             |--------------------------------------------------------------------------
             */
 
-            'resolved_values' =>
-                $values,
+            'minimum_amount' => isset($result['minimum_amount'])
+                ? $this->decimal($result['minimum_amount'])
+                : null,
+
+            'maximum_amount' => isset($result['maximum_amount'])
+                ? $this->decimal($result['maximum_amount'])
+                : null,
+
+            'rounding_rule' => $result['rounding_rule'] ?? null,
+
+            'formula' => $result['formula'] ?? null,
 
             /*
             |--------------------------------------------------------------------------
-            | Calculator metadata
+            | Original Submitted Values
             |--------------------------------------------------------------------------
             */
 
-            'provider_metadata' =>
-                $result['metadata']
-                ?? null,
+            'inputs' => $inputs,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Values Resolved for Tariff Calculation
+            |--------------------------------------------------------------------------
+            */
+
+            'resolved_values' => $values,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Calculator Metadata
+            |--------------------------------------------------------------------------
+            */
+
+            'provider_metadata' => $result['metadata'] ?? null,
 
             'calculated_at' =>
                 $result['calculated_at']
@@ -190,9 +164,28 @@ class DirectCollectionSnapshotService
         ];
     }
 
-    protected function decimal(
-        mixed $value
-    ): string {
+    /**
+     * Build a due-date-aware snapshot for callers that explicitly need it.
+     *
+     * Do not use this for direct collection.
+     *
+     * @param array<string,mixed> $snapshot
+     * @return array<string,mixed>
+     */
+    public function addDueDateToSnapshot(
+        array $snapshot,
+        ?Carbon $dueDate,
+    ): array {
+        $snapshot['due_date'] = $dueDate?->toDateString();
+
+        return $snapshot;
+    }
+
+    /**
+     * Format numeric values as fixed-point decimals.
+     */
+    protected function decimal(mixed $value): string
+    {
         if (! is_numeric($value)) {
             throw new \InvalidArgumentException(
                 'Expected a numeric decimal value.'

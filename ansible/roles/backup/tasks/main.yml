@@ -1,0 +1,69 @@
+---
+- name: Validate backup configuration
+  ansible.builtin.assert:
+    that:
+      - backup_project_dir | length > 0
+      - backup_compose_file | length > 0
+      - backup_postgres_service | length > 0
+      - backup_postgres_dir | length > 0
+      - backup_retention_days | int >= 1
+      - backup_schedule_hour | int >= 0
+      - backup_schedule_hour | int <= 23
+      - backup_schedule_minute | int >= 0
+      - backup_schedule_minute | int <= 59
+    fail_msg: "Invalid PostgreSQL backup configuration."
+
+- name: Install backup system packages
+  ansible.builtin.apt:
+    name: "{{ backup_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure cron service is enabled and running
+  ansible.builtin.service:
+    name: cron
+    state: started
+    enabled: true
+
+- name: Create PostgreSQL backup directory
+  ansible.builtin.file:
+    path: "{{ backup_postgres_dir }}"
+    state: directory
+    owner: "{{ backup_owner }}"
+    group: "{{ backup_group }}"
+    mode: "{{ backup_directory_mode }}"
+
+- name: Ensure backup log file exists
+  ansible.builtin.file:
+    path: "{{ backup_log_file }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Install PostgreSQL backup script
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: "{{ backup_script_path }}"
+    owner: root
+    group: root
+    mode: "0700"
+  notify: Validate backup script
+
+- name: Configure scheduled PostgreSQL backup
+  ansible.builtin.cron:
+    name: "{{ backup_cron_job_name }}"
+    user: "{{ backup_cron_user }}"
+    minute: "{{ backup_schedule_minute }}"
+    hour: "{{ backup_schedule_hour }}"
+    day: "{{ backup_schedule_day }}"
+    month: "{{ backup_schedule_month }}"
+    weekday: "{{ backup_schedule_weekday }}"
+    job: "{{ backup_script_path }}"
+    state: present
+
+- name: Flush backup handlers
+  ansible.builtin.meta: flush_handlers

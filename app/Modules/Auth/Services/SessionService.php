@@ -15,14 +15,6 @@ class SessionService
 
     /**
      * Get authenticated web user.
-     *
-     * Authentication:
-     *
-     *     Laravel web session
-     *
-     * Cookie:
-     *
-     *     laravel_session
      */
     public function webUser(Request $request): array
     {
@@ -63,7 +55,6 @@ class SessionService
         ];
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | MOBILE
@@ -74,11 +65,9 @@ class SessionService
      * Get authenticated mobile user.
      *
      * Authentication:
-     *
      *     Sanctum personal access token
      *
      * Header:
-     *
      *     Authorization: Bearer {token}
      */
     public function mobileUser(Request $request): array
@@ -94,38 +83,9 @@ class SessionService
         $this->loadUserRelations($user);
 
         return [
-            'user' => new AuthUserResource(
-                $user,
-                $request->bearerToken()
-            ),
+            'user' => new AuthUserResource($user),
         ];
     }
-
-    /**
-     * Get current mobile authentication information.
-     */
-    public function mobileSessionInfo(Request $request): array
-    {
-        $user = $request->user('sanctum');
-
-        if (!$user) {
-            return [
-                'authenticated' => false,
-                'user' => null,
-            ];
-        }
-
-        $this->loadUserRelations($user);
-
-        return [
-            'authenticated' => true,
-            'user' => new AuthUserResource(
-                $user,
-                $request->bearerToken()
-            ),
-        ];
-    }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -138,48 +98,18 @@ class SessionService
      */
     private function loadUserRelations($user): void
     {
-        /*
-        |--------------------------------------------------------------------------
-        | Common Relations
-        |--------------------------------------------------------------------------
-        */
-
         $relations = [
             'administrativeUnit.parent.parent',
             'avatar',
         ];
 
-        /*
-        |--------------------------------------------------------------------------
-        | Employee
-        |--------------------------------------------------------------------------
-        |
-        | Employees use Spatie roles and permissions.
-        |
-        */
-
         if ($user->user_type === 'employee') {
             $relations[] = 'roles.permissions';
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Citizen
-        |--------------------------------------------------------------------------
-        |
-        | Citizens use citizen account/profile.
-        |
-        */
-
         if ($user->user_type === 'citizen') {
             $relations[] = 'citizenAccount.citizen.avatar';
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Load Relations
-        |--------------------------------------------------------------------------
-        */
 
         $user->load($relations);
     }

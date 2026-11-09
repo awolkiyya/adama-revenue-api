@@ -302,7 +302,7 @@ public function paginate(Request $request)
             return $query;
         }
 
-        /*
+       /*
         |--------------------------------------------------------------------------
         | REVENUE COLLECTOR
         |--------------------------------------------------------------------------
@@ -312,7 +312,7 @@ public function paginate(Request $request)
         | Therefore:
         |
         | - sector service access is NOT checked
-        | - only collection-capable services are returned
+        | - only field-collection-capable services are returned
         |
         */
         if ($user->hasRole('REVENUE_COLLECTOR')) {
@@ -320,8 +320,8 @@ public function paginate(Request $request)
             return $query->whereIn(
                 'collection_mode',
                 [
-                    'COLLECTION_ONLY',
-                    'ASSESSMENT_AND_COLLECTION',
+                    'FIELD_COLLECTION',
+                    'BOTH',
                 ]
             );
         }
@@ -484,207 +484,229 @@ public function paginate(Request $request)
     }
 
     /**
-     * Create Revenue Service.
-     *
-     * The revenue service and its configured fields are created
-     * inside the same database transaction.
-     */
-    public function create(array $data): RevenueService
-    {
-        return DB::transaction(function () use ($data) {
+ * Create Revenue Service.
+ *
+ * The revenue service and its configured fields are created
+ * inside the same database transaction.
+ */
+public function create(array $data): RevenueService
+{
+    return DB::transaction(function () use ($data) {
 
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Revenue Code
-            |--------------------------------------------------------------------------
-            */
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Revenue Code
+        |--------------------------------------------------------------------------
+        */
 
+        $this->validateRevenueCode(
+            $data['revenue_code_id']
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Collection Configuration
+        |--------------------------------------------------------------------------
+        |
+        | Multiple entries are only supported for services
+        | that support field collection.
+        |
+        */
+
+        $this->validateCollectionConfiguration(
+            collectionMode: $data['collection_mode'],
+            allowMultiple: (bool) ($data['allow_multiple'] ?? false),
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Extract Service Fields
+        |--------------------------------------------------------------------------
+        |
+        | `fields` belongs to revenue_service_fields,
+        | not revenue_services.
+        |
+        */
+
+        $fields = $data['fields'] ?? [];
+
+        unset($data['fields']);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Default Multiple Entry Configuration
+        |--------------------------------------------------------------------------
+        */
+
+        $data['allow_multiple'] = $data['allow_multiple'] ?? false;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Audit
+        |--------------------------------------------------------------------------
+        */
+
+        $data['created_by'] = auth()->id();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Create Service
+        |--------------------------------------------------------------------------
+        */
+
+        $service = RevenueService::create($data);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Create Service Fields
+        |--------------------------------------------------------------------------
+        */
+
+        if (!empty($fields)) {
+            $this->syncFields(
+                $service,
+                $fields
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Return Fresh Service
+        |--------------------------------------------------------------------------
+        */
+
+        return $service->fresh([
+            'revenueCode',
+            'fields.baseField',
+        ]);
+    });
+}
+
+/**
+ * Update Revenue Service.
+ *
+ * Service fields are synchronized only when `fields`
+ * is explicitly present in the update data.
+ */
+public function update(
+    RevenueService $service,
+    array $data
+): RevenueService {
+    return DB::transaction(function () use ($service, $data) {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Prevent Updating Deleted Service
+        |--------------------------------------------------------------------------
+        */
+
+        if ($service->trashed()) {
+            throw ValidationException::withMessages([
+                'service' => 'Deleted service cannot be updated.',
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Effective Collection Configuration
+        |--------------------------------------------------------------------------
+        |
+        | Use incoming values when provided.
+        | Otherwise, preserve existing database values.
+        |
+        */
+
+        $this->validateCollectionConfiguration(
+            collectionMode: $data['collection_mode']
+                ?? $service->collection_mode,
+
+            allowMultiple: (bool) (
+                $data['allow_multiple']
+                ?? $service->allow_multiple
+            ),
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Revenue Code Changed
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            array_key_exists('revenue_code_id', $data) &&
+            $data['revenue_code_id'] !== $service->revenue_code_id
+        ) {
             $this->validateRevenueCode(
                 $data['revenue_code_id']
             );
+        }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Extract Service Fields
-            |--------------------------------------------------------------------------
-            |
-            | `fields` belongs to revenue_service_fields,
-            | not revenue_services.
-            |
-            */
+        /*
+        |--------------------------------------------------------------------------
+        | Extract Fields
+        |--------------------------------------------------------------------------
+        |
+        | Do not send fields into RevenueService::update().
+        |
+        */
 
-            $fields = $data['fields'] ?? [];
+        $hasFields = array_key_exists('fields', $data);
 
-            unset($data['fields']);
+        $fields = $data['fields'] ?? [];
 
-            /*
-            |--------------------------------------------------------------------------
-            | Audit
-            |--------------------------------------------------------------------------
-            */
+        unset($data['fields']);
 
-            $data['created_by'] = auth()->id();
+        /*
+        |--------------------------------------------------------------------------
+        | Audit
+        |--------------------------------------------------------------------------
+        */
 
-            /*
-            |--------------------------------------------------------------------------
-            | Create Service
-            |--------------------------------------------------------------------------
-            */
+        $data['updated_by'] = auth()->id();
 
-            $service = RevenueService::create(
-                $data
-            );
+        /*
+        |--------------------------------------------------------------------------
+        | Update Service
+        |--------------------------------------------------------------------------
+        |
+        | allow_multiple is updated only when supplied.
+        | If omitted, the existing database value is preserved.
+        |
+        */
 
-            /*
-            |--------------------------------------------------------------------------
-            | Create Service Fields
-            |--------------------------------------------------------------------------
-            */
+        if (!empty($data)) {
+            $service->update($data);
+        }
 
-            if (!empty($fields)) {
+        /*
+        |--------------------------------------------------------------------------
+        | Synchronize Service Fields
+        |--------------------------------------------------------------------------
+        |
+        | Only synchronize fields when the caller explicitly
+        | supplied the `fields` property.
+        |
+        */
 
-                $this->syncFields(
-                    $service,
-                    $fields
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Return Fresh Service
-            |--------------------------------------------------------------------------
-            */
-
-            return $service->fresh([
-                'revenueCode',
-                'fields.baseField',
-            ]);
-        });
-    }
-
-    /**
-     * Update Revenue Service.
-     *
-     * Service fields are synchronized when `fields`
-     * is present in the request.
-     */
-    public function update(
-        RevenueService $service,
-        array $data
-    ): RevenueService {
-        return DB::transaction(
-            function () use (
+        if ($hasFields) {
+            $this->syncFields(
                 $service,
-                $data
-            ) {
+                $fields
+            );
+        }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Prevent Updating Deleted Service
-                |--------------------------------------------------------------------------
-                */
+        /*
+        |--------------------------------------------------------------------------
+        | Return Fresh Service
+        |--------------------------------------------------------------------------
+        */
 
-                if ($service->trashed()) {
-
-                    throw ValidationException::withMessages([
-                        'service' =>
-                            'Deleted service cannot be updated.',
-                    ]);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Revenue Code Changed
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    array_key_exists(
-                        'revenue_code_id',
-                        $data
-                    )
-                    &&
-                    $data['revenue_code_id']
-                        !==
-                    $service->revenue_code_id
-                ) {
-
-                    $this->validateRevenueCode(
-                        $data['revenue_code_id']
-                    );
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Extract Fields
-                |--------------------------------------------------------------------------
-                |
-                | Do not send fields into RevenueService::update().
-                |
-                */
-
-                $hasFields = array_key_exists(
-                    'fields',
-                    $data
-                );
-
-                $fields = $data['fields'] ?? [];
-
-                unset($data['fields']);
-
-                /*
-                |--------------------------------------------------------------------------
-                | Audit
-                |--------------------------------------------------------------------------
-                */
-
-                $data['updated_by'] =
-                    auth()->id();
-
-                /*
-                |--------------------------------------------------------------------------
-                | Update Service
-                |--------------------------------------------------------------------------
-                */
-
-                if (!empty($data)) {
-
-                    $service->update(
-                        $data
-                    );
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Synchronize Service Fields
-                |--------------------------------------------------------------------------
-                |
-                | Only synchronize fields when the caller explicitly
-                | supplied the `fields` property.
-                |
-                */
-
-                if ($hasFields) {
-
-                    $this->syncFields(
-                        $service,
-                        $fields
-                    );
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Return Fresh Service
-                |--------------------------------------------------------------------------
-                */
-
-                return $service->fresh([
-                    'revenueCode',
-                    'fields.baseField',
-                ]);
-            }
-        );
-    }
+        return $service->fresh([
+            'revenueCode',
+            'fields.baseField',
+        ]);
+    });
+}
 
    
     /**
@@ -974,5 +996,26 @@ public function paginate(Request $request)
         */
 
         return $service->forceDelete();
+    }
+
+    /**
+     * Validate revenue service collection configuration.
+     *
+     * Multiple entries are only supported for services
+     * that support field collection.
+     */
+    private function validateCollectionConfiguration(
+        string $collectionMode,
+        bool $allowMultiple
+    ): void {
+        if (
+            $allowMultiple &&
+            $collectionMode === 'ASSESSMENT_ONLY'
+        ) {
+            throw ValidationException::withMessages([
+                'allow_multiple' =>
+                    'Multiple collection entries can only be enabled for services that support field collection.',
+            ]);
+        }
     }
 }
