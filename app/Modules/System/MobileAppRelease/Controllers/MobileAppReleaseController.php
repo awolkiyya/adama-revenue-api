@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
+use Illuminate\Validation\Rule;
 
 class MobileAppReleaseController extends Controller
 {
@@ -182,36 +183,78 @@ class MobileAppReleaseController extends Controller
         }
     }
 
+ 
     /**
-     * Return the latest published release.
+     * Return the latest published release for a specific mobile application.
+     *
+     * Example:
+     * GET /api/v1/mobile-app-releases/latest?app_type=field_collector
      */
-    public function latest(): JsonResponse
+    public function latest(Request $request): JsonResponse
     {
         $startedAt = microtime(true);
 
         try {
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Application Type
+            |--------------------------------------------------------------------------
+            */
+
+            $validated = $request->validate([
+                'app_type' => [
+                    'required',
+                    'string',
+                    'max:50',
+                    Rule::in(array_keys(config('mobile_apps.types', []))),
+                ],
+            ]);
+
+            $appType = $validated['app_type'];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Retrieve Latest Published Release For This Application
+            |--------------------------------------------------------------------------
+            */
+
             $release = MobileAppRelease::query()
-                ->with(['creator', 'apkFile'])
-                ->latestRelease()
-                ->orderByDesc('version_code')
+                ->with([
+                    'creator',
+                    'apkFile',
+                ])
+                ->where('app_type', $appType)
+                ->where('status', 'published')
+                ->where('is_latest', true)
                 ->first();
 
             if ($release === null) {
                 Log::warning(
-                    'Mobile app release controller: no published release available.'
+                    'Mobile app release controller: no published release available.',
+                    [
+                        'app_type' => $appType,
+                    ]
                 );
 
                 return ApiResponse::notFound(
-                    'No published mobile app release is available.'
+                    "No published release is available for the {$appType} application."
                 );
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Log Successful Retrieval
+            |--------------------------------------------------------------------------
+            */
 
             Log::info(
                 'Mobile app release controller: latest release retrieved.',
                 [
                     'release_id' => $release->getKey(),
+                    'app_type' => $release->app_type,
                     'version_name' => $release->version_name,
                     'version_code' => $release->version_code,
+                    'is_latest' => $release->is_latest,
                     'is_downloadable' => $release->isDownloadable(),
                     'duration_ms' => round(
                         (microtime(true) - $startedAt) * 1000,
@@ -226,6 +269,7 @@ class MobileAppReleaseController extends Controller
             );
         } catch (Throwable $exception) {
             $this->logFailure('latest', $exception, [
+                'app_type' => $request->input('app_type'),
                 'duration_ms' => round(
                     (microtime(true) - $startedAt) * 1000,
                     2
@@ -235,6 +279,7 @@ class MobileAppReleaseController extends Controller
             throw $exception;
         }
     }
+
 
     /**
      * Display a single release.

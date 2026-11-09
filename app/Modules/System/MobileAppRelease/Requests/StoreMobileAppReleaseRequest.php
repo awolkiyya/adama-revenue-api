@@ -9,25 +9,60 @@ class StoreMobileAppReleaseRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return true;
+        return $this->user() !== null;
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Prepare Input
+    |--------------------------------------------------------------------------
+    */
 
     protected function prepareForValidation(): void
     {
-        if ($this->has('is_mandatory')) {
-            $value = $this->input('is_mandatory');
+        if ($this->exists('is_mandatory')) {
+            $value = filter_var(
+                $this->input('is_mandatory'),
+                FILTER_VALIDATE_BOOLEAN,
+                FILTER_NULL_ON_FAILURE
+            );
 
-            if ($value === 'true' || $value === '1') {
-                $this->merge(['is_mandatory' => true]);
-            } elseif ($value === 'false' || $value === '0') {
-                $this->merge(['is_mandatory' => false]);
+            if ($value !== null) {
+                $this->merge([
+                    'is_mandatory' => $value,
+                ]);
             }
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Validation Rules
+    |--------------------------------------------------------------------------
+    */
+
     public function rules(): array
     {
         return [
+            /*
+            |--------------------------------------------------------------------------
+            | Application
+            |--------------------------------------------------------------------------
+            */
+
+            'app_type' => [
+                'required',
+                'string',
+                'max:50',
+                Rule::in(array_keys(config('mobile_apps.types', []))),
+            ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Release Version
+            |--------------------------------------------------------------------------
+            */
+
             'version_name' => [
                 'required',
                 'string',
@@ -38,31 +73,65 @@ class StoreMobileAppReleaseRequest extends FormRequest
                 'required',
                 'integer',
                 'min:1',
-                Rule::unique('mobile_app_releases', 'version_code'),
+                Rule::unique('mobile_app_releases', 'version_code')
+                    ->where('app_type', $this->input('app_type')),
             ],
+
+            /*
+            |--------------------------------------------------------------------------
+            | Release Information
+            |--------------------------------------------------------------------------
+            */
 
             'release_notes' => [
                 'nullable',
                 'string',
             ],
 
+            /*
+            |--------------------------------------------------------------------------
+            | Update Policy
+            |--------------------------------------------------------------------------
+            */
+
             'is_mandatory' => [
                 'sometimes',
                 'boolean',
             ],
 
+            /*
+            |--------------------------------------------------------------------------
+            | APK Upload
+            |--------------------------------------------------------------------------
+            */
+
             'apk' => [
                 'required',
                 'file',
                 'extensions:apk',
-                'max:204800',
+                'max:' . config('mobile_apps.apk.max_size', 204800),
             ],
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Custom Validation Messages
+    |--------------------------------------------------------------------------
+    */
+
     public function messages(): array
     {
         return [
+            'app_type.required' =>
+                'Please select the mobile application.',
+
+            'app_type.in' =>
+                'The selected mobile application is not supported.',
+
+            'app_type.max' =>
+                'The application type cannot exceed 50 characters.',
+
             'version_name.required' =>
                 'The release version name is required.',
 
@@ -79,7 +148,7 @@ class StoreMobileAppReleaseRequest extends FormRequest
                 'The Android version code must be at least 1.',
 
             'version_code.unique' =>
-                'This version code already exists. Please use a different version code.',
+                'This version code already exists for the selected application.',
 
             'release_notes.string' =>
                 'Release notes must be valid text.',
