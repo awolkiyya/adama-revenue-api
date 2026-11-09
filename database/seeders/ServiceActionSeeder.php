@@ -80,29 +80,29 @@ class ServiceActionSeeder extends Seeder
 
 
         foreach ($actions as $action) {
-
-            DB::table('service_actions')->updateOrInsert(
-
-                [
-                    'code' => $action['code']
-                ],
-
-                [
-                    'id' => Str::uuid(),
-
-                    'name' => $action['name'],
-
-                    'description' => $action['description'],
-
-                    'is_active' => true,
-
-                    'updated_at' => now(),
-
+            $existing = DB::table('service_actions')
+                ->where('code', $action['code'])
+                ->first();
+        
+            $values = [
+                'name' => $action['name'],
+                'description' => $action['description'],
+                'is_active' => true,
+                'updated_at' => now(),
+            ];
+        
+            if ($existing) {
+                DB::table('service_actions')
+                    ->where('id', $existing->id)
+                    ->update($values);
+            } else {
+                DB::table('service_actions')->insert([
+                    'id' => (string) Str::uuid(),
+                    'code' => $action['code'],
+                    ...$values,
                     'created_at' => now(),
-                ]
-
-            );
-
+                ]);
+            }
         }
 
     }

@@ -14,64 +14,110 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Authorization Foundation
+        |--------------------------------------------------------------------------
+        |
+        | Permissions must exist before roles are assigned permissions.
+        |
+        */
+
         $this->call([
-
-            /*
-            |--------------------------------------------------------------------------
-            | Authorization
-            |--------------------------------------------------------------------------
-            */
-
             PermissionSeeder::class,
             RoleSeeder::class,
             RolePermissionSeeder::class,
+        ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Administrative Structure
-            |--------------------------------------------------------------------------
-            */
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Administrative Structure
+        |--------------------------------------------------------------------------
+        |
+        | Administrative units must exist before clusters and sectors.
+        |
+        */
 
+        $this->call([
             AdministrativeUnitSeeder::class,
-            SystemAdminSeeder::class,
             ClusterSeeder::class,
             SectorSeeder::class,
-
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue Foundation
-            |--------------------------------------------------------------------------
-            */
-
-            RevenueCategorySeeder::class,
-            MeasurementUnitSeeder::class,
-            BaseFieldSeeder::class,
-
-            /*
-            |--------------------------------------------------------------------------
-            | Revenue Global Configuration
-            |--------------------------------------------------------------------------
-            */
-
-            RevenueSettingSeeder::class,
-
-            /*
-            |--------------------------------------------------------------------------
-            | Citizens
-            |--------------------------------------------------------------------------
-            */
-
-            CitizenSeeder::class,
-
-            // Bank Account
-            BankAccountSeeder::class,
-
-            // payment provider
-            PaymentProviderSeeder::class,
-
-            FieldCollectorSeeder::class,
-
-
         ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Revenue Foundation
+        |--------------------------------------------------------------------------
+        |
+        | Measurement units must exist before base fields.
+        |
+        */
+
+        $this->call([
+            MeasurementUnitSeeder::class,
+            RevenueCategorySeeder::class,
+            BaseFieldSeeder::class,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. Revenue Actions and Configuration
+        |--------------------------------------------------------------------------
+        */
+
+        $this->call([
+            ServiceActionSeeder::class,
+            RevenueSettingSeeder::class,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. Payment Configuration
+        |--------------------------------------------------------------------------
+        */
+
+        $this->call([
+            PaymentProviderSeeder::class,
+            BankAccountSeeder::class,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. System Administrators
+        |--------------------------------------------------------------------------
+        */
+
+        $this->call([
+            SystemAdminSeeder::class,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Field Collectors
+        |--------------------------------------------------------------------------
+        |
+        | Requires roles and administrative units to exist.
+        |
+        */
+
+        $this->call([
+            FieldCollectorSeeder::class,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 8. Demo / Development Data
+        |--------------------------------------------------------------------------
+        |
+        | These seeders create sample records.
+        | Do not execute them in production.
+        |
+        */
+
+        if (app()->environment(['local', 'testing', 'staging'])) {
+            $this->call([
+                CitizenSeeder::class,
+            ]);
+        }
     }
 }
