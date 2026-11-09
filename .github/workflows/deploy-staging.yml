@@ -1,4 +1,3 @@
-
 name: Deploy Laravel Staging
 
 on:
@@ -7,12 +6,6 @@ on:
       - staging
 
   workflow_dispatch:
-    inputs:
-      run_seeders:
-        description: 'Run DatabaseSeeder after migrations'
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -155,7 +148,6 @@ jobs:
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER }}
-          RUN_SEEDERS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeders || false }}
         run: |
           set -Eeuo pipefail
 
@@ -171,7 +163,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
             "$STAGING_USER@$STAGING_HOST" \
-            "RUN_SEEDERS='$RUN_SEEDERS' bash -se" <<'REMOTE' | tee "$DEPLOYMENT_LOG"
+            'bash -se' <<'REMOTE' | tee "$DEPLOYMENT_LOG"
 
           set -Eeuo pipefail
 
@@ -195,25 +187,6 @@ jobs:
 
           export IMAGE
 
-          # ------------------------------------------------
-          # Validate seeding input
-          # ------------------------------------------------
-
-          RUN_SEEDERS="${RUN_SEEDERS:-false}"
-
-          case "$RUN_SEEDERS" in
-            true|false)
-              ;;
-            *)
-              echo "ERROR: Invalid RUN_SEEDERS value."
-              exit 1
-              ;;
-          esac
-
-          # ------------------------------------------------
-          # Docker Compose command
-          # ------------------------------------------------
-
           COMPOSE=(
             docker compose
             --env-file "$ENV_FILE"
@@ -231,7 +204,6 @@ jobs:
           echo "Project: $PROJECT"
           echo "Source: $SOURCE_DIR"
           echo "Image: $IMAGE"
-          echo "Run seeders: $RUN_SEEDERS"
 
           # ------------------------------------------------
           # Deployment failure diagnostics
@@ -352,7 +324,7 @@ jobs:
           echo "Source extracted successfully."
 
           # ------------------------------------------------
-          # 4. Prepare staging source replacement
+          # 4. Remove previous internal Nginx
           # ------------------------------------------------
 
           echo ""
@@ -363,17 +335,13 @@ jobs:
 
             "${COMPOSE[@]}" config -q
 
-            echo "Stopping existing background services..."
-
-            "${COMPOSE[@]}" stop worker scheduler || true
-
             echo "Removing previous internal Nginx container..."
 
             "${COMPOSE[@]}" rm -sf nginx
 
           else
 
-            echo "No previous staging deployment found."
+            echo "No previous staging Nginx deployment found."
 
           fi
 
@@ -479,25 +447,19 @@ jobs:
           echo "Staging infrastructure is healthy."
 
           # ------------------------------------------------
-          # 9. Start Laravel, migrate, seed, and activate
+          # 9. Start all staging application services
           # ------------------------------------------------
 
           echo ""
-          echo "[9/10] Deploying Laravel staging application..."
-
-          # ------------------------------------------------
-          # 9.1 Start Laravel application only
-          # ------------------------------------------------
-
-          echo "Starting Laravel application container..."
+          echo "[9/10] Deploying Laravel staging services..."
 
           "${COMPOSE[@]}" up \
             -d \
-            --no-deps \
-            app
+            --remove-orphans \
+            --scale app=1
 
           # ------------------------------------------------
-          # 9.2 Verify application health
+          # Verify PHP-FPM
           # ------------------------------------------------
 
           wait_for_healthy app 30
@@ -506,71 +468,11 @@ jobs:
 
           test -n "$APP_ID"
 
-          echo "Laravel application is healthy."
+          echo "PHP-FPM is healthy."
 
           # ------------------------------------------------
-          # 9.3 Verify database connectivity
+          # Verify application services
           # ------------------------------------------------
-
-          echo ""
-          echo "Checking database connectivity..."
-
-          "${COMPOSE[@]}" exec -T app \
-            php artisan db:show
-
-          echo "Database connection verified."
-
-          # ------------------------------------------------
-          # 9.4 Run database migrations
-          # ------------------------------------------------
-
-          echo ""
-          echo "Running database migrations..."
-
-          "${COMPOSE[@]}" exec -T app \
-            php artisan migrate --force
-
-          echo "Database migrations completed successfully."
-
-          # ------------------------------------------------
-          # 9.5 Optionally run database seeders
-          # ------------------------------------------------
-
-          echo ""
-          echo "Checking seeder execution option..."
-
-          if [ "$RUN_SEEDERS" = "true" ]; then
-
-            echo "Manual seeding requested."
-
-            "${COMPOSE[@]}" exec -T app \
-              php artisan db:seed --force
-
-            echo "Database seeders completed successfully."
-
-          else
-
-            echo "Database seeding skipped."
-
-          fi
-
-          # ------------------------------------------------
-          # 9.6 Start remaining application services
-          # ------------------------------------------------
-
-          echo ""
-          echo "Starting Nginx, worker, and scheduler..."
-
-          "${COMPOSE[@]}" up \
-            -d \
-            --remove-orphans \
-            --scale app=1
-
-          # ------------------------------------------------
-          # 9.7 Verify application services
-          # ------------------------------------------------
-
-          wait_for_healthy app 30
 
           verify_running() {
 
@@ -612,19 +514,17 @@ jobs:
           verify_running scheduler
 
           # ------------------------------------------------
-          # 9.8 Verify internal Nginx configuration
+          # Verify internal Nginx configuration
           # ------------------------------------------------
 
           echo "Testing internal Laravel Nginx..."
 
           NGINX_ID="$("${COMPOSE[@]}" ps -q nginx)"
 
-          test -n "$NGINX_ID"
-
           docker exec "$NGINX_ID" nginx -t
 
           # ------------------------------------------------
-          # 9.9 Verify shared gateway
+          # Verify shared gateway
           # ------------------------------------------------
 
           echo "Checking shared Nginx gateway..."
@@ -667,17 +567,15 @@ jobs:
 
           echo "Project: $PROJECT"
           echo "Image: $IMAGE"
-          echo "Migrations: completed"
-          echo "Seeders executed: $RUN_SEEDERS"
           echo "Finished: $(date -Is)"
 
           echo "STAGING_DEPLOYMENT_SUCCESS"
 
           REMOTE
 
-          # --------------------------------------------------
+          # ------------------------------------------------
           # Verify remote success marker
-          # --------------------------------------------------
+          # ------------------------------------------------
 
           if ! grep -Fxq "STAGING_DEPLOYMENT_SUCCESS" "$DEPLOYMENT_LOG"; then
 
@@ -704,7 +602,6 @@ jobs:
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           DEPLOYMENT_SUCCESS: ${{ steps.staging_deployment.outputs.deployment_success }}
-          RUN_SEEDERS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeders || false }}
         run: |
           set -Eeuo pipefail
 
@@ -716,7 +613,7 @@ jobs:
 
           echo "Server: $STAGING_HOST"
           echo "Project: adama-revenue-staging"
-          echo "Database migrations: completed"
-          echo "Database seeders executed: $RUN_SEEDERS"
+          echo "Database migrations: not executed"
+          echo "Database seeders: not executed"
           echo "Remote health checks: passed"
           echo "Deployment success marker: verified"
