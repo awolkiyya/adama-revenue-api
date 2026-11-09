@@ -457,8 +457,11 @@ jobs:
           if "${COMPOSE[@]}" run \
             --rm \
             --no-deps \
+            -T \
+            --interactive=false \
             app \
-            php artisan migrate --force
+            php artisan migrate --force \
+            </dev/null
           then
 
             MIGRATION_EXIT_CODE=0
@@ -502,8 +505,11 @@ jobs:
           if "${COMPOSE[@]}" run \
             --rm \
             --no-deps \
+            -T \
+            --interactive=false \
             app \
-            php artisan db:seed --force
+            php artisan db:seed --force \
+            </dev/null
           then
 
             SEEDER_EXIT_CODE=0
