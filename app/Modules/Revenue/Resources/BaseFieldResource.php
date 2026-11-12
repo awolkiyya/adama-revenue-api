@@ -75,7 +75,7 @@ class BaseFieldResource extends JsonResource
             |
             */
 
-            'input_source' => $this->input_source ?? 'MANUAL',
+            'input_source' => $this->input_source,
 
             /*
             |--------------------------------------------------------------------------

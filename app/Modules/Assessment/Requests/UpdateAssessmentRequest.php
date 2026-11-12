@@ -204,6 +204,12 @@ class UpdateAssessmentRequest extends FormRequest
             |
             */
 
+            'files' => [
+                'sometimes',
+                'nullable',
+                'array',
+            ],
+            
             'files.*' => [
                 'nullable',
                 'file',

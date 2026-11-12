@@ -10,158 +10,258 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Log;
 
 class RevenueServiceService
 {
    
+
+
+
+
+
 /**
- * Paginated revenue services.
+ * Paginated revenue services with detailed diagnostic logging.
  *
- * Supported query params (all optional):
+ * Supported pagination parameters:
+ * - page / per_page
+ * - offset / limit
  *
- * - search:            string   — matches service name, revenue code, or code name
- * - revenue_domain:    string   — RevenueCategory.revenue_domain
- * - code:              string   — RevenueCode UUID (revenue_codes.id)
- * - collection_mode:   string   — further filters the user's allowed modes
- * - is_active:         bool     — RevenueService.is_active
- * - page:              int      — page number
- * - per_page:          int      — page size, defaults to 20
- *
- * Workflow access:
- *
- * - SYSTEM_ADMIN:
- *      Can access all revenue services.
- *
- * - REVENUE_COLLECTOR:
- *      Can access collection-capable services:
- *          COLLECTION_ONLY
- *          ASSESSMENT_AND_COLLECTION
- *
- *      Sector service access rules are not applied.
- *
- * - Other users:
- *      Can access assessment-capable services:
- *          ASSESSMENT_ONLY
- *          ASSESSMENT_AND_COLLECTION
- *
- *      An active service access rule for the user's sector is required.
+ * Searchable fields:
+ * - Revenue service name
+ * - Revenue code
+ * - Revenue code name
+ * - Revenue category name
  */
 public function paginate(Request $request)
 {
     $user = auth()->user();
 
-    $query = RevenueService::query();
+    try {
 
-    /*
-    |--------------------------------------------------------------------------
-    | User Workflow / Access Scope
-    |--------------------------------------------------------------------------
-    |
-    | SYSTEM_ADMIN
-    |     → all services
-    |
-    | REVENUE_COLLECTOR
-    |     → collection-capable services
-    |
-    | Other users
-    |     → assessment-capable services
-    |     → sector access required
-    |
-    */
-    $this->applyUserScope(
-        $query,
-        $user
-    );
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Request Information
+        |--------------------------------------------------------------------------
+        */
 
-    /*
-    |--------------------------------------------------------------------------
-    | Relationships
-    |--------------------------------------------------------------------------
-    */
+        Log::info('Revenue Services: Pagination started', [
+            'user_id' => $user?->id,
+            'user_roles' => $user && method_exists($user, 'getRoleNames')
+                ? $user->getRoleNames()->all()
+                : [],
+            'sector_id' => $user?->sector_id,
+            'query_parameters' => $request->query(),
+            'search' => $request->input('search'),
+            'database_connection' => DB::connection()->getDriverName(),
+            'database_name' => DB::connection()->getDatabaseName(),
+        ]);
 
-    $query->with([
-        'revenueCode.category',
-        'fields.baseField.measurementUnit',
-        'fields.baseField.options',
-    ]);
+        $query = RevenueService::query();
 
-    /*
-    |--------------------------------------------------------------------------
-    | Field Count
-    |--------------------------------------------------------------------------
-    */
+        /*
+        |--------------------------------------------------------------------------
+        | 2. User Workflow / Access Scope
+        |--------------------------------------------------------------------------
+        */
 
-    $query->withCount('fields');
+        Log::info('Revenue Services: Applying user access scope', [
+            'user_id' => $user?->id,
+            'roles' => $user && method_exists($user, 'getRoleNames')
+                ? $user->getRoleNames()->all()
+                : [],
+            'sector_id' => $user?->sector_id,
+        ]);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Search
-    |--------------------------------------------------------------------------
-    |
-    | Matches:
-    | - service name
-    | - revenue code
-    | - revenue code name
-    |
-    */
-    $query->when(
-        $request->filled('search'),
-        function (Builder $query) use ($request) {
+        $this->applyUserScope($query, $user);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Relationships
+        |--------------------------------------------------------------------------
+        */
+
+        $query->with([
+            'revenueCode.category',
+            'fields.baseField.measurementUnit',
+            'fields.baseField.options',
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. Field Count
+        |--------------------------------------------------------------------------
+        */
+
+        $query->withCount('fields');
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. Search
+        |--------------------------------------------------------------------------
+        */
+
+        if ($request->filled('search')) {
+
             $search = trim(
                 $request->string('search')->toString()
             );
 
-            $query->where(
-                function (Builder $inner) use ($search) {
-                    $inner
-                        ->where(
+            if ($search !== '') {
+
+                $searchTerm = "%{$search}%";
+
+                Log::info('Revenue Services: Search initiated', [
+                    'search' => $search,
+                    'search_pattern' => $searchTerm,
+                    'search_length' => strlen($search),
+                ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Diagnostic A: Matching Revenue Codes
+                |--------------------------------------------------------------------------
+                |
+                | This query intentionally runs independently of the user's
+                | workflow scope to determine whether the revenue code exists.
+                |
+                */
+
+                $matchingRevenueCodes = DB::table('revenue_codes')
+                    ->whereNull('deleted_at')
+                    ->whereRaw(
+                        'CAST(revenue_codes.code AS TEXT) ILIKE ?',
+                        [$searchTerm]
+                    )
+                    ->get([
+                        'id',
+                        'code',
+                        'name',
+                        'category_id',
+                    ]);
+
+                Log::info('Revenue Services: Revenue code search results', [
+                    'search' => $search,
+                    'match_count' => $matchingRevenueCodes->count(),
+                    'matching_codes' => $matchingRevenueCodes->toArray(),
+                ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Diagnostic B: Associated Revenue Services
+                |--------------------------------------------------------------------------
+                |
+                | This query intentionally ignores the user's workflow scope.
+                | It helps distinguish missing services from access restrictions.
+                |
+                */
+
+                $matchingServices = RevenueService::query()
+                    ->whereHas(
+                        'revenueCode',
+                        function (Builder $codeQuery) use ($searchTerm) {
+
+                            $codeQuery->whereRaw(
+                                'CAST(revenue_codes.code AS TEXT) ILIKE ?',
+                                [$searchTerm]
+                            );
+                        }
+                    )
+                    ->get([
+                        'id',
+                        'name',
+                        'revenue_code_id',
+                        'collection_mode',
+                        'is_active',
+                    ]);
+
+                Log::info('Revenue Services: Services matching revenue code', [
+                    'search' => $search,
+                    'match_count' => $matchingServices->count(),
+                    'matching_services' => $matchingServices->toArray(),
+                ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Actual Search Query
+                |--------------------------------------------------------------------------
+                */
+
+                $query->where(
+                    function (Builder $inner) use ($searchTerm) {
+
+                        // Revenue service name.
+                        $inner->where(
                             'name',
-                            'like',
-                            "%{$search}%"
-                        )
-                        ->orWhereHas(
+                            'ILIKE',
+                            $searchTerm
+                        );
+
+                        // Revenue code, code name, and category name.
+                        $inner->orWhereHas(
                             'revenueCode',
-                            function (Builder $codeQuery) use ($search) {
+                            function (Builder $codeQuery) use ($searchTerm) {
+
                                 $codeQuery
-                                    ->where(
-                                        'code',
-                                        'like',
-                                        "%{$search}%"
+                                    ->whereRaw(
+                                        'CAST(revenue_codes.code AS TEXT) ILIKE ?',
+                                        [$searchTerm]
                                     )
                                     ->orWhere(
                                         'name',
-                                        'like',
-                                        "%{$search}%"
+                                        'ILIKE',
+                                        $searchTerm
+                                    )
+                                    ->orWhereHas(
+                                        'category',
+                                        function (Builder $categoryQuery) use ($searchTerm) {
+
+                                            $categoryQuery->where(
+                                                'name',
+                                                'ILIKE',
+                                                $searchTerm
+                                            );
+                                        }
                                     );
                             }
                         );
-                }
-            );
-        }
-    );
+                    }
+                );
 
-    /*
-    |--------------------------------------------------------------------------
-    | Revenue Domain
-    |--------------------------------------------------------------------------
-    |
-    | RevenueService
-    |      ↓
-    | RevenueCode
-    |      ↓
-    | RevenueCategory
-    |
-    */
-    $query->when(
-        $request->filled('revenue_domain'),
-        function (Builder $query) use ($request) {
+                Log::info('Revenue Services: Search filters applied', [
+                    'search' => $search,
+                ]);
+
+            } else {
+
+                Log::info('Revenue Services: Empty search ignored');
+            }
+
+        } else {
+
+            Log::info('Revenue Services: No search parameter provided');
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. Revenue Domain
+        |--------------------------------------------------------------------------
+        */
+
+        if ($request->filled('revenue_domain')) {
+
             $revenueDomain = $request
                 ->string('revenue_domain')
                 ->toString();
 
+            Log::info('Revenue Services: Revenue domain filter', [
+                'revenue_domain' => $revenueDomain,
+            ]);
+
             $query->whereHas(
                 'revenueCode.category',
                 function (Builder $categoryQuery) use ($revenueDomain) {
+
                     $categoryQuery->where(
                         'revenue_domain',
                         $revenueDomain
@@ -169,99 +269,225 @@ public function paginate(Request $request)
                 }
             );
         }
-    );
 
-    /*
-    |--------------------------------------------------------------------------
-    | Revenue Code
-    |--------------------------------------------------------------------------
-    |
-    | The frontend sends the selected RevenueCode UUID, for example:
-    |
-    | code=01a0a718-17fe-7281-b796-93d0cff856a2
-    |
-    | Filter by the related RevenueCode primary key, not its human-readable
-    | code column.
-    |
-    */
-    $query->when(
-        $request->filled('code'),
-        function (Builder $query) use ($request) {
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Revenue Code UUID
+        |--------------------------------------------------------------------------
+        |
+        | The code parameter represents the RevenueCode UUID, not its
+        | human-readable code such as 1778.
+        |
+        */
+
+        if ($request->filled('code')) {
+
             $codeId = $request->input('code');
+
+            Log::info('Revenue Services: Revenue code UUID filter', [
+                'code_id' => $codeId,
+            ]);
 
             $query->whereHas(
                 'revenueCode',
                 function (Builder $codeQuery) use ($codeId) {
+
                     $codeQuery->whereKey($codeId);
                 }
             );
         }
-    );
 
-    /*
-    |--------------------------------------------------------------------------
-    | Collection Mode
-    |--------------------------------------------------------------------------
-    |
-    | This filter narrows the authorized workflow scope. It does not grant
-    | access to services outside that scope.
-    |
-    */
-    $query->when(
-        $request->filled('collection_mode'),
-        function (Builder $query) use ($request) {
+        /*
+        |--------------------------------------------------------------------------
+        | 8. Collection Mode
+        |--------------------------------------------------------------------------
+        */
+
+        if ($request->filled('collection_mode')) {
+
             $collectionMode = $request
                 ->string('collection_mode')
                 ->toString();
+
+            Log::info('Revenue Services: Collection mode filter', [
+                'collection_mode' => $collectionMode,
+            ]);
 
             $query->where(
                 'collection_mode',
                 $collectionMode
             );
         }
-    );
 
-    /*
-    |--------------------------------------------------------------------------
-    | Active Status
-    |--------------------------------------------------------------------------
-    |
-    | Supports true, false, "true", "false", "1", and "0".
-    |
-    */
-    $query->when(
-        $request->has('is_active'),
-        function (Builder $query) use ($request) {
+        /*
+        |--------------------------------------------------------------------------
+        | 9. Active Status
+        |--------------------------------------------------------------------------
+        */
+
+        if ($request->has('is_active')) {
+
+            $isActive = $request->boolean('is_active');
+
+            Log::info('Revenue Services: Active status filter', [
+                'is_active' => $isActive,
+                'raw_value' => $request->input('is_active'),
+            ]);
+
             $query->where(
                 'is_active',
-                $request->boolean('is_active')
+                $isActive
             );
         }
-    );
 
-    /*
-    |--------------------------------------------------------------------------
-    | Ordering
-    |--------------------------------------------------------------------------
-    */
+        /*
+        |--------------------------------------------------------------------------
+        | 10. Ordering
+        |--------------------------------------------------------------------------
+        */
 
-    $query->latest();
+        $query->latest();
 
-    /*
-    |--------------------------------------------------------------------------
-    | Pagination
-    |--------------------------------------------------------------------------
-    */
+        /*
+        |--------------------------------------------------------------------------
+        | 11. Pagination Configuration
+        |--------------------------------------------------------------------------
+        |
+        | Supports both:
+        |
+        | Laravel:
+        | ?page=1&per_page=20
+        |
+        | Flutter:
+        | ?offset=0&limit=20
+        |
+        | If both formats are supplied, page/per_page take precedence.
+        |
+        */
 
-    $perPage = $request->integer('per_page', 20);
+        $perPage = $request->integer(
+            'per_page',
+            $request->integer('limit', 20)
+        );
 
-    // Prevent invalid or excessively large page sizes.
-    $perPage = max(1, min($perPage, 100));
+        $perPage = max(1, min($perPage, 100));
 
-    return $query
-        ->paginate($perPage)
-        ->withQueryString();
+        if ($request->filled('page')) {
+
+            $page = max(1, $request->integer('page', 1));
+
+        } else {
+
+            $offset = max(0, $request->integer('offset', 0));
+
+            $page = (int) floor($offset / $perPage) + 1;
+        }
+
+        Log::info('Revenue Services: Pagination parameters resolved', [
+            'requested_page' => $request->input('page'),
+            'requested_per_page' => $request->input('per_page'),
+            'requested_offset' => $request->input('offset'),
+            'requested_limit' => $request->input('limit'),
+            'resolved_page' => $page,
+            'resolved_per_page' => $perPage,
+            'resolved_offset' => ($page - 1) * $perPage,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 12. Generated SQL
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info('Revenue Services: Generated SQL', [
+            'sql' => $query->toSql(),
+            'bindings' => $query->getBindings(),
+            'page' => $page,
+            'per_page' => $perPage,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 13. Execute Pagination
+        |--------------------------------------------------------------------------
+        */
+
+        $result = $query->paginate(
+            $perPage,
+            ['*'],
+            'page',
+            $page
+        )->withQueryString();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 14. Pagination Results
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info('Revenue Services: Pagination completed', [
+            'user_id' => $user?->id,
+            'search' => $request->input('search'),
+
+            'total' => $result->total(),
+            'count' => $result->count(),
+
+            'current_page' => $result->currentPage(),
+            'last_page' => $result->lastPage(),
+            'per_page' => $result->perPage(),
+
+            'returned_services' => $result->getCollection()
+                ->map(function ($service) {
+
+                    return [
+                        'id' => $service->id,
+                        'name' => $service->name,
+
+                        'revenue_code_id' => $service->revenue_code_id,
+                        'revenue_code' => $service->revenueCode?->code,
+                        'revenue_code_name' => $service->revenueCode?->name,
+
+                        'category_name' => $service
+                            ->revenueCode
+                            ?->category
+                            ?->name,
+
+                        'collection_mode' => $service->collection_mode,
+                        'is_active' => $service->is_active,
+                        'fields_count' => $service->fields_count,
+                    ];
+                })
+                ->values()
+                ->toArray(),
+        ]);
+
+        return $result;
+
+    } catch (\Throwable $exception) {
+
+        /*
+        |--------------------------------------------------------------------------
+        | 15. Exception Logging
+        |--------------------------------------------------------------------------
+        */
+
+        Log::error('Revenue Services: Pagination failed', [
+            'user_id' => $user?->id,
+            'query_parameters' => $request->query(),
+
+            'exception' => get_class($exception),
+            'message' => $exception->getMessage(),
+            'file' => $exception->getFile(),
+            'line' => $exception->getLine(),
+            'trace' => $exception->getTraceAsString(),
+        ]);
+
+        throw $exception;
+    }
 }
+
+
+
 
 
     /**

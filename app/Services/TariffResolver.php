@@ -15,11 +15,19 @@ use App\Models\RevenueServiceField;
 use App\Models\TariffRule;
 use App\Models\TariffVersion;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
 
 class TariffResolver
 {
+    /**
+     * Cached option ordering, indexed by base-field UUID and normalized value.
+     *
+     * @var array<string, array<string, int>>
+     */
+    private array $orderedOptionOrderCache = [];
+
     /*
     |--------------------------------------------------------------------------
     | Constants
@@ -1605,6 +1613,46 @@ class TariffResolver
                         '<=',
                     ),
 
+                'ordered_greater_than' =>
+                    $this->compareOrdered(
+                        actual: $actual,
+                        expected: $expected,
+                        operator: '>',
+                        baseFieldId: $this->resolveOrderedFieldId(
+                            $resolvedField,
+                        ),
+                    ),
+
+                'ordered_greater_than_or_equal' =>
+                    $this->compareOrdered(
+                        actual: $actual,
+                        expected: $expected,
+                        operator: '>=',
+                        baseFieldId: $this->resolveOrderedFieldId(
+                            $resolvedField,
+                        ),
+                    ),
+
+                'ordered_less_than' =>
+                    $this->compareOrdered(
+                        actual: $actual,
+                        expected: $expected,
+                        operator: '<',
+                        baseFieldId: $this->resolveOrderedFieldId(
+                            $resolvedField,
+                        ),
+                    ),
+
+                'ordered_less_than_or_equal' =>
+                    $this->compareOrdered(
+                        actual: $actual,
+                        expected: $expected,
+                        operator: '<=',
+                        baseFieldId: $this->resolveOrderedFieldId(
+                            $resolvedField,
+                        ),
+                    ),
+
                 'in' =>
                     $this->valueIn(
                         $actual,
@@ -2384,6 +2432,150 @@ class TariffResolver
                     (string) $expected
                 )
             );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ORDERED CATEGORICAL COMPARISON
+    |--------------------------------------------------------------------------
+    |
+    | Ordered categorical comparisons use base_field_options.sort_order.
+    | They are deliberately separate from numeric comparisons because values
+    | such as G+2, POOR, GOOD, and EXCELLENT are not numeric quantities.
+    |
+    | The tariff rule must explicitly use one of:
+    |
+    | ordered_greater_than
+    | ordered_greater_than_or_equal
+    | ordered_less_than
+    | ordered_less_than_or_equal
+    |
+    */
+
+    /**
+     * Resolve the BaseField UUID for an ordered condition.
+     *
+     * Conditions may reference a BaseField by UUID or by code.
+     */
+    private function resolveOrderedFieldId(array $resolvedField): ?string
+    {
+        $fieldId = $resolvedField['id'] ?? null;
+
+        if (
+            is_string($fieldId)
+            && trim($fieldId) !== ''
+        ) {
+            return trim($fieldId);
+        }
+
+        $fieldCode = $resolvedField['code'] ?? null;
+
+        if (
+            !is_string($fieldCode)
+            || trim($fieldCode) === ''
+        ) {
+            return null;
+        }
+
+        $fieldCode = strtoupper(trim($fieldCode));
+
+        $baseFieldId = BaseField::query()
+            ->whereRaw('UPPER(code) = ?', [$fieldCode])
+            ->value('id');
+
+        return $baseFieldId !== null
+            ? (string) $baseFieldId
+            : null;
+    }
+
+    /**
+     * Compare two option values using their configured sort_order.
+     */
+    private function compareOrdered(
+        mixed $actual,
+        mixed $expected,
+        string $operator,
+        ?string $baseFieldId,
+    ): bool {
+        if ($baseFieldId === null || trim($baseFieldId) === '') {
+            return false;
+        }
+
+        $actualOrder = $this->getOrderedOptionSortOrder(
+            $baseFieldId,
+            $actual,
+        );
+
+        $expectedOrder = $this->getOrderedOptionSortOrder(
+            $baseFieldId,
+            $expected,
+        );
+
+        if ($actualOrder === null || $expectedOrder === null) {
+            return false;
+        }
+
+        return match ($operator) {
+            '>' => $actualOrder > $expectedOrder,
+            '>=' => $actualOrder >= $expectedOrder,
+            '<' => $actualOrder < $expectedOrder,
+            '<=' => $actualOrder <= $expectedOrder,
+            default => throw new RuntimeException(
+                "Unsupported ordered comparison operator [{$operator}].",
+            ),
+        };
+    }
+
+    /**
+     * Get the configured sort_order for an option value.
+     *
+     * Soft-deleted options are intentionally excluded.
+     */
+    private function getOrderedOptionSortOrder(
+        string $baseFieldId,
+        mixed $value,
+    ): ?int {
+        if (
+            $value === null
+            || is_array($value)
+            || is_object($value)
+            || is_bool($value)
+        ) {
+            return null;
+        }
+
+        $normalizedValue = strtoupper(trim((string) $value));
+
+        if ($normalizedValue === '') {
+            return null;
+        }
+
+        if (!array_key_exists($baseFieldId, $this->orderedOptionOrderCache)) {
+            $options = DB::table('base_field_options')
+                ->where('base_field_id', $baseFieldId)
+                ->whereNull('deleted_at')
+                ->get([
+                    'value',
+                    'sort_order',
+                ]);
+
+            $ordering = [];
+
+            foreach ($options as $option) {
+                $optionValue = strtoupper(trim((string) $option->value));
+
+                if ($optionValue === '') {
+                    continue;
+                }
+
+                $ordering[$optionValue] = (int) $option->sort_order;
+            }
+
+            $this->orderedOptionOrderCache[$baseFieldId] = $ordering;
+        }
+
+        return $this->orderedOptionOrderCache[$baseFieldId][$normalizedValue]
+            ?? null;
     }
 
     /*

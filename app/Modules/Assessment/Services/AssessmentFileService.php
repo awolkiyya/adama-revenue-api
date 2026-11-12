@@ -8,7 +8,6 @@ use App\Models\AssessmentServiceValue;
 use App\Models\File;
 use App\Services\Storage\StorageService;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
 use Throwable;
@@ -20,29 +19,26 @@ class AssessmentFileService
     ) {
     }
 
-    /**
-     * ============================================================
-     * STORE UPLOADED FILES
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | STORE UPLOADED FILES
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Store files submitted for a dynamic service field.
      *
      * Supported values:
-     *
      * - UploadedFile
      * - UploadedFile[]
      * - {"__file": "multipart-field-name"}
      * - [{"__file": "multipart-field-name"}]
+     * - {"__existingFile": "existing-file-uuid"}
      * - Existing file UUID
      * - Existing file UUID[]
      *
-     * FILE:
-     *     Returns one file database ID.
-     *
-     * MULTI_FILE:
-     *     Returns an array of file database IDs.
+     * FILE returns one file database ID.
+     * MULTI_FILE returns an array of file database IDs.
      */
     public function storeUploadedFiles(
         AssessmentServiceModel $assessmentService,
@@ -50,36 +46,117 @@ class AssessmentFileService
         mixed $value,
         string $inputType
     ): mixed {
-        $inputType = strtoupper(
-            trim($inputType)
-        );
+        $inputType = strtoupper(trim($inputType));
+
+        if (! in_array($inputType, ['FILE', 'MULTI_FILE'], true)) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    'Unsupported file input type.',
+                ],
+            ]);
+        }
 
         $isMultiple = $inputType === 'MULTI_FILE';
 
+        if ($value === null || $value === '') {
+            throw ValidationException::withMessages([
+                'services' => [
+                    'No file was supplied.',
+                ],
+            ]);
+        }
+
         /*
         |--------------------------------------------------------------------------
-        | Normalize Submitted Values
+        | NORMALIZE INPUT
         |--------------------------------------------------------------------------
-        |
-        | FILE:
-        |     One value
-        |
-        | MULTI_FILE:
-        |     Multiple values
-        |
         */
 
-        $values = $isMultiple
-            ? (is_array($value) ? $value : [$value])
-            : [$value];
+        if ($isMultiple) {
+            if (
+                is_array($value)
+                && (
+                    array_key_exists('__file', $value)
+                    || array_key_exists('__existingFile', $value)
+                )
+            ) {
+                $values = [$value];
+            } elseif (is_array($value)) {
+                $values = array_values($value);
+            } else {
+                $values = [$value];
+            }
+        } else {
+            /*
+            |--------------------------------------------------------------------------
+            | SINGLE FILE
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                is_array($value)
+                && array_key_exists('__existingFile', $value)
+            ) {
+                $existingFileId = $value['__existingFile'];
+
+                if (
+                    ! is_string($existingFileId)
+                    || trim($existingFileId) === ''
+                ) {
+                    throw ValidationException::withMessages([
+                        'services' => [
+                            'Invalid existing file reference.',
+                        ],
+                    ]);
+                }
+
+                // Preserve one existing file reference.
+                $values = [trim($existingFileId)];
+            } elseif (
+                is_array($value)
+                && array_key_exists('__file', $value)
+            ) {
+                // New multipart upload reference.
+                $values = [$value];
+            } elseif (is_array($value)) {
+                // A single-file field may arrive as ['UUID'].
+                if (
+                    count($value) === 1
+                    && array_is_list($value)
+                ) {
+                    $values = [array_values($value)[0]];
+                } else {
+                    throw ValidationException::withMessages([
+                        'services' => [
+                            'Only one file can be supplied for this field.',
+                        ],
+                    ]);
+                }
+            } else {
+                $values = [$value];
+            }
+        }
 
         $storedFileIds = [];
 
+        /*
+        |--------------------------------------------------------------------------
+        | PROCESS FILES
+        |--------------------------------------------------------------------------
+        */
+
         foreach ($values as $fileValue) {
+            if ($fileValue === null || $fileValue === '') {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'An empty file value was supplied.',
+                    ],
+                ]);
+            }
 
             /*
             |--------------------------------------------------------------------------
-            | Resolve Multipart Reference
+            | RESOLVE MULTIPART REFERENCE
             |--------------------------------------------------------------------------
             */
 
@@ -89,12 +166,11 @@ class AssessmentFileService
 
             /*
             |--------------------------------------------------------------------------
-            | New Uploaded File
+            | NEW UPLOADED FILE
             |--------------------------------------------------------------------------
             */
 
             if ($fileValue instanceof UploadedFile) {
-
                 if (! $fileValue->isValid()) {
                     throw ValidationException::withMessages([
                         'services' => [
@@ -115,7 +191,7 @@ class AssessmentFileService
 
             /*
             |--------------------------------------------------------------------------
-            | Existing File Reference
+            | EXISTING FILE REFERENCE
             |--------------------------------------------------------------------------
             */
 
@@ -123,9 +199,7 @@ class AssessmentFileService
                 is_string($fileValue)
                 && trim($fileValue) !== ''
             ) {
-                $file = $this->resolveExistingFile(
-                    $fileValue
-                );
+                $file = $this->resolveExistingFile($fileValue);
 
                 $this->assertFileCanBeAttached(
                     $file,
@@ -139,7 +213,7 @@ class AssessmentFileService
 
             /*
             |--------------------------------------------------------------------------
-            | Invalid Value
+            | INVALID VALUE
             |--------------------------------------------------------------------------
             */
 
@@ -152,167 +226,144 @@ class AssessmentFileService
 
         /*
         |--------------------------------------------------------------------------
-        | Return Correct Value Shape
+        | RETURN CORRECT VALUE SHAPE
         |--------------------------------------------------------------------------
         */
 
+        $storedFileIds = array_values(
+            array_unique($storedFileIds)
+        );
+
         if ($isMultiple) {
-            return array_values(
-                array_unique($storedFileIds)
-            );
+            return $storedFileIds;
         }
 
         return $storedFileIds[0] ?? null;
     }
 
-    /**
-     * ============================================================
-     * RESOLVE UPLOADED FILE REFERENCE
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE UPLOADED FILE REFERENCE
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Resolve frontend multipart file reference.
      *
      * Frontend:
-     *
-     * {
-     *     "__file": "file__FIELD_ID__FIELD_CODE"
-     * }
+     * {"__file": "file__FIELD_ID__FIELD_CODE"}
      *
      * Multipart request:
-     *
      * file__FIELD_ID__FIELD_CODE = UploadedFile
+     *
+     * Existing-file references are resolved in storeUploadedFiles().
      */
     protected function resolveUploadedFileReference(
         mixed $value
     ): mixed {
-        /*
-        |--------------------------------------------------------------------------
-        | Already an UploadedFile
-        |--------------------------------------------------------------------------
-        */
-
         if ($value instanceof UploadedFile) {
+            return $value;
+        }
+
+        if (! is_array($value)) {
             return $value;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | File Reference Object
+        | EXISTING FILE MARKER
         |--------------------------------------------------------------------------
         */
 
-        if (is_array($value)) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Single File Reference
-            |--------------------------------------------------------------------------
-            */
+        if (array_key_exists('__existingFile', $value)) {
+            $existingFileId = $value['__existingFile'];
 
             if (
-                isset($value['__file'])
-                && is_string($value['__file'])
+                ! is_string($existingFileId)
+                || trim($existingFileId) === ''
             ) {
-                $fieldName = trim(
-                    $value['__file']
-                );
-
-                if ($fieldName === '') {
-                    throw ValidationException::withMessages([
-                        'services' => [
-                            'The uploaded file reference cannot be empty.',
-                        ],
-                    ]);
-                }
-
-                $uploadedFile = request()->file(
-                    $fieldName
-                );
-
-                if (
-                    ! $uploadedFile instanceof UploadedFile
-                ) {
-                    throw ValidationException::withMessages([
-                        'services' => [
-                            "The referenced uploaded file [{$fieldName}] was not found.",
-                        ],
-                    ]);
-                }
-
-                return $uploadedFile;
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'Invalid existing file reference.',
+                    ],
+                ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Direct UploadedFile Inside Array
-            |--------------------------------------------------------------------------
-            */
-
-            if (count($value) === 1) {
-                $firstValue = array_values(
-                    $value
-                )[0];
-
-                if ($firstValue instanceof UploadedFile) {
-                    return $firstValue;
-                }
-            }
+            return trim($existingFileId);
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Nothing To Resolve
+        | MULTIPART FILE REFERENCE
         |--------------------------------------------------------------------------
         */
+
+        if (
+            array_key_exists('__file', $value)
+            && is_string($value['__file'])
+        ) {
+            $fieldName = trim($value['__file']);
+
+            if ($fieldName === '') {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'The uploaded file reference cannot be empty.',
+                    ],
+                ]);
+            }
+
+            $uploadedFile = request()->file($fieldName);
+
+            if (! $uploadedFile instanceof UploadedFile) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        "The referenced uploaded file [{$fieldName}] was not found.",
+                    ],
+                ]);
+            }
+
+            return $uploadedFile;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | DIRECT UPLOADEDFILE INSIDE ARRAY
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            count($value) === 1
+            && array_is_list($value)
+        ) {
+            $firstValue = array_values($value)[0];
+
+            if ($firstValue instanceof UploadedFile) {
+                return $firstValue;
+            }
+        }
 
         return $value;
     }
 
-    /**
-     * ============================================================
-     * UPLOAD
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | UPLOAD
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Upload a new assessment file.
-     *
-     * The actual storage operation is delegated to StorageService.
      */
     public function uploadAssessmentFile(
         AssessmentServiceModel $assessmentService,
         UploadedFile $uploadedFile
     ): File {
         try {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Uploaded File
-            |--------------------------------------------------------------------------
-            */
-
             if (! $uploadedFile->isValid()) {
                 throw new RuntimeException(
                     'The uploaded file is invalid.'
                 );
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | StorageService
-            |--------------------------------------------------------------------------
-            |
-            | StorageService::upload() is responsible for:
-            |
-            | - generating the stored filename
-            | - creating the date directory
-            | - calculating SHA-256 hash
-            | - storing the physical file
-            | - creating the File registry record
-            |
-            */
 
             return $this->storageService->upload(
                 uploadedFile: $uploadedFile,
@@ -321,13 +372,9 @@ class AssessmentFileService
                 category: 'ASSESSMENT',
                 visibility: 'private'
             );
-
         } catch (ValidationException $e) {
-
             throw $e;
-
         } catch (Throwable $e) {
-
             report($e);
 
             throw new RuntimeException(
@@ -337,26 +384,19 @@ class AssessmentFileService
         }
     }
 
-    /**
-     * ============================================================
-     * RESOLVE EXISTING FILE
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE EXISTING FILE
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Resolve an existing file by UUID or database ID.
-     *
-     * StorageService::find() supports both:
-     *
-     * - public UUID
-     * - database primary key
      */
     protected function resolveExistingFile(
         string $reference
     ): File {
-        $reference = trim(
-            $reference
-        );
+        $reference = trim($reference);
 
         if ($reference === '') {
             throw ValidationException::withMessages([
@@ -366,9 +406,7 @@ class AssessmentFileService
             ]);
         }
 
-        $file = $this->storageService->find(
-            $reference
-        );
+        $file = $this->storageService->find($reference);
 
         if (! $file) {
             throw ValidationException::withMessages([
@@ -381,11 +419,11 @@ class AssessmentFileService
         return $file;
     }
 
-    /**
-     * ============================================================
-     * ATTACH FILES
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | ATTACH FILES
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Attach stored files to an assessment service value.
@@ -397,18 +435,18 @@ class AssessmentFileService
         if ($fileIds === null) {
             return;
         }
-    
+
         $ids = is_array($fileIds)
             ? $fileIds
             : [$fileIds];
-    
+
         foreach ($ids as $fileId) {
             if (! $fileId) {
                 continue;
             }
-    
+
             $file = File::query()->find($fileId);
-    
+
             if (! $file) {
                 throw ValidationException::withMessages([
                     'services' => [
@@ -416,32 +454,34 @@ class AssessmentFileService
                     ],
                 ]);
             }
-    
-            if (
-                strtoupper((string) $file->status) !== 'READY'
-            ) {
+
+            if (strtoupper((string) $file->status) !== 'READY') {
                 throw ValidationException::withMessages([
                     'services' => [
                         "File [{$fileId}] is not ready for attachment.",
                     ],
                 ]);
             }
-    
+
             /*
-             * If the file is already attached to this value,
-             * nothing needs to be changed.
-             */
+            |--------------------------------------------------------------------------
+            | ALREADY ATTACHED TO THIS VALUE
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $file->fileable_type === $value->getMorphClass()
                 && (string) $file->fileable_id === (string) $value->getKey()
             ) {
                 continue;
             }
-    
+
             /*
-             * Do not allow a file already owned by another model
-             * to be silently reassigned.
-             */
+            |--------------------------------------------------------------------------
+            | PREVENT REASSIGNMENT
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $file->fileable_id !== null
                 || $file->fileable_type !== null
@@ -452,22 +492,23 @@ class AssessmentFileService
                     ],
                 ]);
             }
-    
+
             /*
-             * Attach the file through the polymorphic
-             * fileable relationship.
-             */
+            |--------------------------------------------------------------------------
+            | ATTACH THROUGH POLYMORPHIC RELATIONSHIP
+            |--------------------------------------------------------------------------
+            */
+
             $file->fileable()->associate($value);
             $file->save();
         }
     }
-    
 
-    /**
-     * ============================================================
-     * COLLECT FILES
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | COLLECT FILES
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Collect all file IDs currently attached to an assessment.
@@ -478,7 +519,7 @@ class AssessmentFileService
         return AssessmentServiceValue::query()
             ->whereHas(
                 'assessmentService',
-                function ($query) use ($assessment) {
+                function ($query) use ($assessment): void {
                     $query->where(
                         'assessment_id',
                         $assessment->id
@@ -491,23 +532,83 @@ class AssessmentFileService
                 static function (
                     AssessmentServiceValue $value
                 ) {
-                    return $value->files
-                        ->pluck('id');
+                    return $value->files->pluck('id');
                 }
             )
             ->map(
-                static fn ($id) => (string) $id
+                static fn ($id): string => (string) $id
             )
             ->unique()
             ->values()
             ->all();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | COLLECT EXISTING FILE VALUES
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * ============================================================
-     * FIND OBSOLETE FILES
-     * ============================================================
+     * Collect existing file values by assessment service order
+     * and revenue service field ID.
+     *
+     * This must be called BEFORE removeAssessmentServices().
      */
+    public function collectAssessmentFileValues(
+        Assessment $assessment
+    ): array {
+        $services = AssessmentServiceModel::query()
+            ->where('assessment_id', $assessment->id)
+            ->with('values.files')
+            ->orderBy('service_order')
+            ->get();
+
+        $result = [];
+
+        foreach ($services as $assessmentService) {
+            $fieldValues = [];
+
+            foreach ($assessmentService->values as $value) {
+                $fileIds = $value->files
+                    ->pluck('id')
+                    ->map(
+                        static fn ($id): string => (string) $id
+                    )
+                    ->values()
+                    ->all();
+
+                if ($fileIds === []) {
+                    continue;
+                }
+
+                $fieldId = strtolower(
+                    trim((string) $value->revenue_service_field_id)
+                );
+
+                $fieldValues[$fieldId] = strtoupper(
+                    (string) $value->input_type
+                ) === 'MULTI_FILE'
+                    ? $fileIds
+                    : $fileIds[0];
+            }
+
+            if ($fieldValues !== []) {
+                $result[(int) $assessmentService->service_order] = [
+                    'service_id' => (string) $assessmentService->service_id,
+                    'fields' => $fieldValues,
+                ];
+            }
+        }
+
+        return $result;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND OBSOLETE FILES
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Find files that existed before service replacement but
@@ -525,53 +626,43 @@ class AssessmentFileService
         );
     }
 
-    /**
-     * ============================================================
-     * REMOVE ASSESSMENT SERVICES
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | REMOVE ASSESSMENT SERVICES
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Remove all services and values belonging to an assessment.
      *
-     * Database records are removed here.
-     * Physical files are cleaned separately afterward.
+     * File registry records and physical files are preserved here.
+     * Only their polymorphic ownership is detached.
+     * Physical cleanup is handled separately after commit.
      */
     public function removeAssessmentServices(
         Assessment $assessment
     ): void {
         $services = AssessmentServiceModel::query()
-            ->where(
-                'assessment_id',
-                $assessment->id
-            )
+            ->where('assessment_id', $assessment->id)
             ->with('values.files')
             ->get();
 
         foreach ($services as $assessmentService) {
-
             foreach ($assessmentService->values as $value) {
-
                 /*
                 |--------------------------------------------------------------------------
-                | Preserve File Records For Cleanup
+                | DETACH FILES
                 |--------------------------------------------------------------------------
-                |
-                | The File model uses a polymorphic relationship.
-                | We remove the ownership here.
-                |
                 */
 
                 foreach ($value->files as $file) {
-
                     $file->fileable()->dissociate();
-
                     $file->save();
                 }
 
                 /*
                 |--------------------------------------------------------------------------
-                | Remove Value
+                | REMOVE VALUE
                 |--------------------------------------------------------------------------
                 */
 
@@ -580,7 +671,7 @@ class AssessmentFileService
 
             /*
             |--------------------------------------------------------------------------
-            | Remove Assessment Service
+            | REMOVE ASSESSMENT SERVICE
             |--------------------------------------------------------------------------
             */
 
@@ -588,11 +679,11 @@ class AssessmentFileService
         }
     }
 
-    /**
-     * ============================================================
-     * CLEANUP
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | CLEANUP OBSOLETE FILES
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Clean up files that are no longer referenced.
@@ -605,31 +696,15 @@ class AssessmentFileService
         }
 
         $files = File::query()
-            ->whereIn(
-                'id',
-                $fileIds
-            )
+            ->whereIn('id', $fileIds)
             ->get();
 
         foreach ($files as $file) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Never delete referenced files.
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $this->fileIsStillReferenced(
-                    $file
-                )
-            ) {
+            if ($this->fileIsStillReferenced($file)) {
                 continue;
             }
 
-            $this->deleteFile(
-                $file
-            );
+            $this->deleteFile($file);
         }
     }
 
@@ -644,96 +719,58 @@ class AssessmentFileService
         }
 
         $files = File::query()
-            ->whereIn(
-                'id',
-                $fileIds
-            )
+            ->whereIn('id', $fileIds)
             ->get();
 
         foreach ($files as $file) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Never delete referenced files.
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $this->fileIsStillReferenced(
-                    $file
-                )
-            ) {
+            if ($this->fileIsStillReferenced($file)) {
                 continue;
             }
 
-            $this->deleteFile(
-                $file
-            );
+            $this->deleteFile($file);
         }
     }
 
-    /**
-     * ============================================================
-     * FILE REFERENCE
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | FILE REFERENCE
+    |--------------------------------------------------------------------------
+    */
 
     /**
-     * Determine whether a file is still attached to any value.
+     * Determine whether a file is still attached to a record.
      */
     protected function fileIsStillReferenced(
         File $file
     ): bool {
-        return DB::table(
-            'assessment_service_value_file'
-        )
-            ->where(
-                'file_id',
-                $file->id
-            )
-            ->exists();
+        return $file->fileable_type !== null
+            && $file->fileable_id !== null;
     }
 
-    /**
-     * ============================================================
-     * DELETE
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Delete the physical file and its database record.
-     *
-     * Delegates to StorageService::delete().
      */
     protected function deleteFile(
         File $file
     ): void {
         try {
-
-            $this->storageService->delete(
-                $file
-            );
-
+            $this->storageService->delete($file);
         } catch (Throwable $e) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Do Not Break Main Workflow
-            |--------------------------------------------------------------------------
-            |
-            | File cleanup is secondary to the assessment operation.
-            |
-            */
-
             report($e);
         }
     }
 
-    /**
-     * ============================================================
-     * ATTACHMENT VALIDATION
-     * ============================================================
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | ATTACHMENT VALIDATION
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Ensure an existing file can be attached to the assessment.
@@ -744,7 +781,7 @@ class AssessmentFileService
     ): void {
         /*
         |--------------------------------------------------------------------------
-        | Basic File State
+        | BASIC FILE STATE
         |--------------------------------------------------------------------------
         */
 
@@ -766,15 +803,11 @@ class AssessmentFileService
 
         /*
         |--------------------------------------------------------------------------
-        | File Status
+        | FILE STATUS
         |--------------------------------------------------------------------------
         */
 
-        if (
-            strtoupper(
-                (string) $file->status
-            ) !== 'READY'
-        ) {
+        if (strtoupper((string) $file->status) !== 'READY') {
             throw ValidationException::withMessages([
                 'services' => [
                     'The selected file is not ready for attachment.',
@@ -784,7 +817,7 @@ class AssessmentFileService
 
         /*
         |--------------------------------------------------------------------------
-        | Ownership
+        | OWNERSHIP
         |--------------------------------------------------------------------------
         |
         | Existing files can only be attached by the user who
@@ -794,8 +827,7 @@ class AssessmentFileService
 
         if (
             $file->uploaded_by !== null
-            && (string) $file->uploaded_by
-                !== (string) auth()->id()
+            && (string) $file->uploaded_by !== (string) auth()->id()
         ) {
             throw ValidationException::withMessages([
                 'services' => [
