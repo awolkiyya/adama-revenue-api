@@ -281,4 +281,60 @@ public function show(
             'Tariff rule deactivated successfully'
         );
     }
+
+
+
+    /**
+     * Copy formula configuration from one tariff rule to another.
+     */
+    public function copyFormula(
+        Request $request,
+        TariffVersion $tariffVersion,
+        TariffRule $destinationRule
+    ): JsonResponse {
+        $validated = $request->validate([
+            'source_rule_id' => [
+                'required',
+                'uuid',
+                'exists:tariff_rules,id',
+            ],
+
+            'options' => [
+                'required',
+                'array',
+            ],
+
+            'options.variables' => [
+                'required',
+                'boolean',
+            ],
+
+            'options.expression' => [
+                'required',
+                'boolean',
+            ],
+
+            'options.conditions' => [
+                'required',
+                'boolean',
+            ],
+
+            'overwrite' => [
+                'required',
+                'boolean',
+            ],
+        ]);
+
+        $rule = $this->service->copyFormula(
+            $tariffVersion,
+            $destinationRule,
+            $validated
+        );
+
+        return ApiResponse::updated(
+            new TariffRuleResource($rule),
+            'Formula configuration copied successfully'
+        );
+    }
+
 }

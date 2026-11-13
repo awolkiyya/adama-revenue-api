@@ -7,6 +7,7 @@ use App\Models\TariffFormulaVariable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class TariffFormulaVariableService
 {
@@ -255,5 +256,88 @@ class TariffFormulaVariableService
                 'Formula variable not found for this tariff rule.'
             );
         }
+    }
+
+    /**
+     * Copy formula variables from one tariff rule to another.
+     *
+     * When overwrite is true, existing destination variables
+     * are deleted before copying the source variables.
+     */
+    public function copy(
+        TariffRule $sourceRule,
+        TariffRule $destinationRule,
+        bool $overwrite = false
+    ): Collection {
+        return DB::transaction(function () use (
+            $sourceRule,
+            $destinationRule,
+            $overwrite
+        ) {
+            if ($sourceRule->id === $destinationRule->id) {
+                throw ValidationException::withMessages([
+                    'source_rule_id' => [
+                        'Source and destination tariff rules must be different.',
+                    ],
+                ]);
+            }
+
+            $sourceVariables = $sourceRule
+                ->formulaVariables()
+                ->get();
+
+            $destinationVariables = $destinationRule
+                ->formulaVariables();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Check existing destination variables
+            |--------------------------------------------------------------------------
+            */
+
+            if (!$overwrite && $destinationVariables->exists()) {
+                throw ValidationException::withMessages([
+                    'overwrite' => [
+                        'The destination tariff rule already has formula variables. Enable overwrite to replace them.',
+                    ],
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Remove existing destination variables
+            |--------------------------------------------------------------------------
+            */
+
+            if ($overwrite) {
+                $destinationVariables->delete();
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Copy source variables
+            |--------------------------------------------------------------------------
+            */
+
+            foreach ($sourceVariables as $variable) {
+                $destinationRule->formulaVariables()->create([
+                    'id' => Str::uuid(),
+                    'code' => $variable->code,
+                    'variable_name' => $variable->variable_name,
+                    'label' => $variable->label,
+                    'source_type' => $variable->source_type,
+                    'base_field_id' => $variable->base_field_id,
+                    'default_value' => $variable->default_value,
+                    'data_type' => $variable->data_type,
+                    'is_required' => $variable->is_required,
+                    'sort_order' => $variable->sort_order,
+                ]);
+            }
+
+            return $destinationRule
+                ->formulaVariables()
+                ->with('baseField')
+                ->get();
+        });
     }
 }
