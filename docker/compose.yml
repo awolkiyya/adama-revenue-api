@@ -1,3 +1,4 @@
+
 services:
   app:
     image: ${IMAGE:?IMAGE is required}
@@ -96,8 +97,8 @@ services:
       - "80"
 
     volumes:
-      - ../nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../public:/var/www/public:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./public:/var/www/public:ro
       - laravel-storage:/var/www/storage:ro
 
     depends_on:
