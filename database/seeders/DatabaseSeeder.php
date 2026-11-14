@@ -56,7 +56,6 @@ class DatabaseSeeder extends Seeder
         $this->call([
             MeasurementUnitSeeder::class,
             RevenueCategorySeeder::class,
-            BaseFieldSeeder::class,
         ]);
 
         /*
@@ -66,20 +65,9 @@ class DatabaseSeeder extends Seeder
         */
 
         $this->call([
-            ServiceActionSeeder::class,
             RevenueSettingSeeder::class,
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | 5. Payment Configuration
-        |--------------------------------------------------------------------------
-        */
-
-        $this->call([
-            PaymentProviderSeeder::class,
-            BankAccountSeeder::class,
-        ]);
 
         /*
         |--------------------------------------------------------------------------
@@ -103,21 +91,5 @@ class DatabaseSeeder extends Seeder
         $this->call([
             FieldCollectorSeeder::class,
         ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 8. Demo / Development Data
-        |--------------------------------------------------------------------------
-        |
-        | These seeders create sample records.
-        | Do not execute them in production.
-        |
-        */
-
-        if (app()->environment(['local', 'testing', 'staging'])) {
-            $this->call([
-                CitizenSeeder::class,
-            ]);
-        }
     }
 }

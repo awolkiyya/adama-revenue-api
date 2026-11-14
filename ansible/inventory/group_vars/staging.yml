@@ -1,0 +1,66 @@
+
+---
+# ==========================================================
+# LARAVEL RUNTIME - STAGING
+# ==========================================================
+
+laravel_runtime_enabled: true
+
+laravel_runtime_project_dir: /opt/adama-revenue-api/source-staging
+laravel_runtime_project_name: adama-revenue-staging
+
+laravel_runtime_compose_file: docker/compose.yml
+laravel_runtime_env_file: /opt/adama-revenue-api/.env.staging
+laravel_runtime_override_file: docker/compose.staging.yml
+
+laravel_runtime_image: adama-revenue-api:staging
+
+# ==========================================================
+# POSTGRESQL BACKUP - STAGING
+# ==========================================================
+
+backup_enabled: true
+
+backup_project_dir: "{{ laravel_runtime_project_dir }}"
+backup_compose_project: "{{ laravel_runtime_project_name }}"
+
+backup_compose_file: "{{ laravel_runtime_project_dir }}/{{ laravel_runtime_compose_file }}"
+backup_compose_override_file: "{{ laravel_runtime_project_dir }}/{{ laravel_runtime_override_file }}"
+backup_env_file: "{{ laravel_runtime_env_file }}"
+
+backup_postgres_service: postgres
+
+# Backup storage
+backup_root_dir: /var/backups/adama-revenue-api/staging
+backup_postgres_dir: "{{ backup_root_dir }}/postgresql"
+
+backup_owner: root
+backup_group: root
+backup_directory_mode: "0700"
+backup_file_mode: "0600"
+
+# Schedule: daily at 02:00
+backup_schedule_minute: "0"
+backup_schedule_hour: "2"
+backup_schedule_day: "*"
+backup_schedule_month: "*"
+backup_schedule_weekday: "*"
+
+# Retention
+backup_retention_days: 7
+
+# Script and logging
+backup_script_path: /usr/local/sbin/adama-revenue-staging-backup
+backup_log_file: /var/log/adama-revenue-staging-backup.log
+backup_lock_file: /var/lock/adama-revenue-staging-backup.lock
+
+# Cron
+backup_cron_job_name: adama-revenue-staging-postgresql-backup
+backup_cron_user: root
+
+# Required system packages
+backup_packages:
+  - cron
+  - util-linux
+  - coreutils
+  - findutils

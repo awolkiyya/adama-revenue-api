@@ -2,79 +2,88 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
-use App\Models\Sector;
 use App\Models\Cluster;
+use App\Models\Sector;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use RuntimeException;
 
 class SectorSeeder extends Seeder
 {
     public function run(): void
     {
-        /**
-         * =====================================================
-         * GET CLUSTERS
-         * =====================================================
-         */
-        $bulchiinsa = Cluster::where('code', 'BUL')->first();
-        $dinagdee = Cluster::where('code', 'DIN')->first();
-        $hawasummaa = Cluster::where('code', 'HAW')->first();
+        /*
+        |--------------------------------------------------------------------------
+        | Get Adama City Clusters
+        |--------------------------------------------------------------------------
+        */
 
-        if (!$bulchiinsa || !$dinagdee || !$hawasummaa) {
-            $this->command->error('Clusters not found. Please seed clusters first.');
-            return;
+        $clusters = Cluster::query()
+            ->whereHas('city', function ($query) {
+                $query->where('name', 'Adama')
+                    ->where('level', 'CITY');
+            })
+            ->whereIn('code', ['BUL', 'DIN', 'HAW'])
+            ->get()
+            ->keyBy('code');
+
+        foreach (['BUL', 'DIN', 'HAW'] as $code) {
+            if (!$clusters->has($code)) {
+                throw new RuntimeException(
+                    "Cluster '{$code}' was not found. Please seed clusters first."
+                );
+            }
         }
 
-        /**
-         * =====================================================
-         * SECTORS
-         * =====================================================
-         */
+        $bulchiinsa = $clusters->get('BUL');
+        $dinagdee = $clusters->get('DIN');
+        $hawasummaa = $clusters->get('HAW');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Sector Reference Data
+        |--------------------------------------------------------------------------
+        */
+
         $sectors = [
+            /*
+            |--------------------------------------------------------------------------
+            | Dinagdee Cluster
+            |--------------------------------------------------------------------------
+            */
 
+            [
+                'cluster_id' => $dinagdee->id,
+                'name' => 'Dhaabbata Bishaanii fi Dhangala’aa',
+                'code' => 'WTR',
+                'description' => 'Water and Sewerage Authority',
+            ],
+            [
+                'cluster_id' => $dinagdee->id,
+                'name' => 'Waajjira Galii',
+                'code' => 'REV',
+                'description' => 'Revenue Office',
+            ],
 
-                /**
-                 * =====================================================
-                 * DINAGDEE CLUSTER (12)
-                 * =====================================================
-                 */
+            /*
+            |--------------------------------------------------------------------------
+            | Hawaasummaa Cluster
+            |--------------------------------------------------------------------------
+            */
 
-                [
-                    'cluster_id' => $dinagdee->id,
-                    'name' => 'Dhaabbata Bishaanii fi Dhangala’aa',
-                    'code' => 'WTR',
-                    'description' => 'Water and Sewerage Authority',
-                ],
-
-
-                [
-                    'cluster_id' => $dinagdee->id,
-                    'name' => 'Waajjira Galii',
-                    'code' => 'REV',
-                    'description' => 'Revenue Office',
-                ],
-
-
-            /**
-             * =====================================================
-             * HAWAASUMMAA CLUSTER (16)
-             * =====================================================
-             */
-
-            
             [
                 'cluster_id' => $hawasummaa->id,
                 'name' => 'Waajjira Lafaa',
                 'code' => 'LAND',
                 'description' => 'Land Administration Office',
             ],
-            
             [
                 'cluster_id' => $hawasummaa->id,
                 'name' => 'Waajjira Geejjibaa',
                 'code' => 'TRN',
                 'description' => 'Transport Office',
             ],
-            
             [
                 'cluster_id' => $hawasummaa->id,
                 'name' => 'Waajjira Mana Qopheessaa',
@@ -87,29 +96,53 @@ class SectorSeeder extends Seeder
                 'code' => 'CON',
                 'description' => 'Construction Office',
             ],
-
         ];
 
-        /**
-         * =====================================================
-         * INSERT / UPDATE
-         * =====================================================
-         */
-        foreach ($sectors as $sector) {
+        /*
+        |--------------------------------------------------------------------------
+        | Insert Missing Sectors
+        |--------------------------------------------------------------------------
+        |
+        | Existing sector UUIDs and administrator-managed fields
+        | must never be overwritten by routine seeding.
+        |
+        */
 
-            Sector::updateOrCreate(
-                [
+        $created = 0;
+        $existing = 0;
+
+        DB::transaction(function () use (
+            $sectors,
+            &$created,
+            &$existing
+        ) {
+            foreach ($sectors as $sector) {
+
+                $exists = Sector::query()
+                    ->where('cluster_id', $sector['cluster_id'])
+                    ->where('code', $sector['code'])
+                    ->exists();
+
+                if ($exists) {
+                    $existing++;
+                    continue;
+                }
+
+                Sector::query()->create([
+                    'id' => (string) Str::uuid(),
                     'cluster_id' => $sector['cluster_id'],
-                    'code' => $sector['code'],
-                ],
-                [
                     'name' => $sector['name'],
+                    'code' => $sector['code'],
                     'description' => $sector['description'],
                     'is_active' => true,
-                ]
-            );
-        }
+                ]);
 
-        $this->command->info('34 sectors seeded successfully.');
+                $created++;
+            }
+        });
+
+        $this->command?->info(
+            "Sector seeding completed. Created: {$created}, Existing: {$existing}."
+        );
     }
 }

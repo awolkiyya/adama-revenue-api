@@ -12,7 +12,24 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('mobile_app_releases', function (Blueprint $table) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Primary Key
+            |--------------------------------------------------------------------------
+            */
+
             $table->uuid('id')->primary();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Application
+            |--------------------------------------------------------------------------
+            */
+
+            $table->string('app_type', 50)
+                ->default('field_collector');
+
             /*
             |--------------------------------------------------------------------------
             | Release Version
@@ -20,17 +37,8 @@ return new class extends Migration
             */
 
             $table->string('version_name', 50);
-            $table->unsignedBigInteger('version_code')->unique();
 
-            /*
-            |--------------------------------------------------------------------------
-            | APK File
-            |--------------------------------------------------------------------------
-            */
-
-            $table->string('apk_path');
-            $table->unsignedBigInteger('apk_size')->nullable();
-            $table->string('apk_sha256', 64)->nullable();
+            $table->unsignedBigInteger('version_code');
 
             /*
             |--------------------------------------------------------------------------
@@ -47,6 +55,7 @@ return new class extends Migration
             */
 
             $table->boolean('is_latest')->default(false);
+
             $table->boolean('is_mandatory')->default(false);
 
             /*
@@ -84,11 +93,23 @@ return new class extends Migration
 
             /*
             |--------------------------------------------------------------------------
-            | Indexes
+            | Indexes and Constraints
             |--------------------------------------------------------------------------
             */
 
-            $table->index(['status', 'is_latest']);
+            // Each application maintains independent version codes.
+            $table->unique(
+                ['app_type', 'version_code'],
+                'mobile_releases_app_version_unique'
+            );
+
+            // Efficient application-specific release queries.
+            $table->index(
+                ['app_type', 'status', 'is_latest'],
+                'mobile_releases_app_status_latest_index'
+            );
+
+            // Published release lookup.
             $table->index('published_at');
         });
     }

@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Foundation\Inspiring;
@@ -8,7 +9,17 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
+/*
+|--------------------------------------------------------------------------
+| Revenue Management
+|--------------------------------------------------------------------------
+|
+| Calculate overdue invoice balances daily at 00:10 Ethiopia time.
+|
+*/
+
 Schedule::command('revenue:calculate-overdue-balances')
-    ->everyMinute()
-    ->withoutOverlapping()
+    ->dailyAt('00:10')
+    ->timezone('Africa/Addis_Ababa')
+    ->withoutOverlapping(60)
     ->onOneServer();

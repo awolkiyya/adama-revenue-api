@@ -24,6 +24,8 @@ class MobileAppReleaseResource extends JsonResource
 
             'id' => (string) $this->getKey(),
 
+            'app_type' => $this->app_type,
+
             /*
             |--------------------------------------------------------------------------
             | Release Information

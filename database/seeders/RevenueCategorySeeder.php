@@ -11,11 +11,6 @@ class RevenueCategorySeeder extends Seeder
     public function run(): void
     {
         $categories = [
-            /*
-            |--------------------------------------------------------------------------
-            | 1701 - 1719
-            |--------------------------------------------------------------------------
-            */
             [
                 'revenue_domain' => 'TAX',
                 'name' => 'Galii Taaksii Mana Gopheessaa',
@@ -24,12 +19,6 @@ class RevenueCategorySeeder extends Seeder
                 'description' => 'Galii gibira mana jireenyaa fi mana hojii irraa argamu',
                 'sort_order' => 1,
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | 1720 - 1729
-            |--------------------------------------------------------------------------
-            */
             [
                 'revenue_domain' => 'RENT',
                 'name' => 'Galii Kiraarraa Argamu',
@@ -38,12 +27,6 @@ class RevenueCategorySeeder extends Seeder
                 'description' => 'Galii kiraa lafa, mana mootummaa fi qabeenya mootummaa irraa argamu',
                 'sort_order' => 2,
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | 1731 - 1734
-            |--------------------------------------------------------------------------
-            */
             [
                 'revenue_domain' => 'INVESTMENT',
                 'name' => 'Galii Investimantii',
@@ -52,12 +35,6 @@ class RevenueCategorySeeder extends Seeder
                 'description' => 'Galii invastimantii fi bu’aa qabeenya mootummaa irraa argamu',
                 'sort_order' => 3,
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | 1740 - 1749
-            |--------------------------------------------------------------------------
-            */
             [
                 'revenue_domain' => 'SERVICE',
                 'name' => 'Kaffaltii Tajaajilaa',
@@ -66,12 +43,6 @@ class RevenueCategorySeeder extends Seeder
                 'description' => 'Kaffaltii tajaajiloota mootummaa irraa argamu',
                 'sort_order' => 4,
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | 1750 - 1789
-            |--------------------------------------------------------------------------
-            */
             [
                 'revenue_domain' => 'SALE',
                 'name' => 'Galii Gurgurtaa Tajaajilaa fi Meeshaawwanii',
@@ -80,12 +51,6 @@ class RevenueCategorySeeder extends Seeder
                 'description' => 'Galii gurgurtaa meeshaalee fi tajaajiloota mootummaa',
                 'sort_order' => 5,
             ],
-
-            /*
-            |--------------------------------------------------------------------------
-            | 1790 - 1799
-            |--------------------------------------------------------------------------
-            */
             [
                 'revenue_domain' => 'CAPITAL',
                 'name' => 'Galii Kaapitaalaa',
@@ -96,16 +61,30 @@ class RevenueCategorySeeder extends Seeder
             ],
         ];
 
-        DB::transaction(function () use ($categories): void {
+        $created = 0;
+        $existingCount = 0;
+
+        DB::transaction(function () use (
+            $categories,
+            &$created,
+            &$existingCount
+        ) {
             foreach ($categories as $category) {
+
                 $existing = DB::table('revenue_categories')
                     ->where('revenue_domain', $category['revenue_domain'])
                     ->where('start_code', $category['start_code'])
-                    ->first();
+                    ->exists();
+
+                if ($existing) {
+                    $existingCount++;
+                    continue;
+                }
 
                 $now = now();
 
-                $values = [
+                DB::table('revenue_categories')->insert([
+                    'id' => (string) Str::uuid(),
                     'revenue_domain' => $category['revenue_domain'],
                     'name' => $category['name'],
                     'start_code' => $category['start_code'],
@@ -113,25 +92,16 @@ class RevenueCategorySeeder extends Seeder
                     'description' => $category['description'],
                     'sort_order' => $category['sort_order'],
                     'is_active' => true,
+                    'created_at' => $now,
                     'updated_at' => $now,
-                ];
+                ]);
 
-                if ($existing) {
-                    DB::table('revenue_categories')
-                        ->where('id', $existing->id)
-                        ->update($values);
-                } else {
-                    DB::table('revenue_categories')->insert([
-                        'id' => (string) Str::uuid(),
-                        ...$values,
-                        'created_at' => $now,
-                    ]);
-                }
+                $created++;
             }
         });
 
         $this->command?->info(
-            count($categories) . ' revenue categories seeded successfully.'
+            "Revenue categories seeding completed. Created: {$created}, Existing: {$existingCount}."
         );
     }
 }

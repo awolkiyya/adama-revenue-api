@@ -41,8 +41,12 @@ class MobileAppRelease extends Model
     */
 
     protected $fillable = [
+        'app_type',
         'version_name',
         'version_code',
+        'apk_path',
+        'apk_size',
+        'apk_sha256',
         'release_notes',
         'is_latest',
         'is_mandatory',
@@ -61,6 +65,7 @@ class MobileAppRelease extends Model
     {
         return [
             'version_code' => 'integer',
+            'apk_size' => 'integer',
             'is_latest' => 'boolean',
             'is_mandatory' => 'boolean',
             'published_at' => 'datetime',
@@ -89,26 +94,18 @@ class MobileAppRelease extends Model
      */
     public function creator(): BelongsTo
     {
-        return $this->belongsTo(
-            User::class,
-            'created_by'
-        );
+        return $this->belongsTo(User::class, 'created_by');
     }
 
     /**
      * APK file associated with this release.
-     *
-     * The file must use the mobile_app_release collection.
      */
     public function apkFile(): MorphOne
     {
         return $this->morphOne(
             File::class,
             'fileable'
-        )->where(
-            'collection',
-            'mobile_app_release'
-        );
+        )->where('collection', 'mobile_app_release');
     }
 
     /*
@@ -116,6 +113,16 @@ class MobileAppRelease extends Model
     | Query Scopes
     |--------------------------------------------------------------------------
     */
+
+    /**
+     * Filter releases by application type.
+     */
+    public function scopeForApp(
+        Builder $query,
+        string $appType
+    ): Builder {
+        return $query->where('app_type', $appType);
+    }
 
     /**
      * Scope to published releases.
@@ -131,8 +138,20 @@ class MobileAppRelease extends Model
     public function scopeLatestRelease(Builder $query): Builder
     {
         return $query
-            ->where('status', 'published')
+            ->published()
             ->where('is_latest', true);
+    }
+
+    /**
+     * Latest published release for a specific application.
+     */
+    public function scopeLatestForApp(
+        Builder $query,
+        string $appType
+    ): Builder {
+        return $query
+            ->forApp($appType)
+            ->latestRelease();
     }
 
     /*

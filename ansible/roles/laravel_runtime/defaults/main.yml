@@ -1,0 +1,49 @@
+---
+# ==========================================================
+# LARAVEL RUNTIME CONFIGURATION
+# ==========================================================
+
+laravel_runtime_enabled: true
+
+# ==========================================================
+# DOCKER COMPOSE CONFIGURATION
+# ==========================================================
+
+laravel_runtime_project_dir: ""
+laravel_runtime_project_name: ""
+
+laravel_runtime_compose_file: docker/compose.yml
+laravel_runtime_env_file: ""
+laravel_runtime_override_file: ""
+
+laravel_runtime_image: ""
+
+# ==========================================================
+# APPLICATION SERVICE
+# ==========================================================
+
+laravel_runtime_app_service: app
+
+laravel_runtime_app_wait_timeout: 180
+
+# ==========================================================
+# QUEUE WORKER
+# ==========================================================
+
+laravel_runtime_queue_enabled: true
+laravel_runtime_queue_service: worker
+laravel_runtime_queue_stop_timeout: 120
+
+# ==========================================================
+# SCHEDULER
+# ==========================================================
+
+laravel_runtime_scheduler_enabled: true
+laravel_runtime_scheduler_service: scheduler
+laravel_runtime_scheduler_stop_timeout: 30
+
+# ==========================================================
+# VALIDATION
+# ==========================================================
+
+laravel_runtime_validate_compose: true

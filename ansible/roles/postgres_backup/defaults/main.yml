@@ -1,0 +1,60 @@
+
+---
+# ==========================================================
+# POSTGRESQL BACKUP - DEFAULT CONFIGURATION
+# ==========================================================
+
+# Backup is disabled unless explicitly enabled per environment.
+backup_enabled: false
+
+# Docker Compose configuration
+backup_project_dir: ""
+backup_compose_project: ""
+backup_compose_file: ""
+backup_compose_override_file: ""
+backup_env_file: ""
+
+# PostgreSQL
+backup_postgres_service: postgres
+
+# Backup storage
+backup_root_dir: ""
+backup_postgres_dir: ""
+
+backup_owner: root
+backup_group: root
+
+backup_directory_mode: "0700"
+backup_file_mode: "0600"
+
+# Backup schedule
+backup_schedule_minute: "0"
+backup_schedule_hour: "1"
+backup_schedule_day: "*"
+backup_schedule_month: "*"
+backup_schedule_weekday: "*"
+
+# Backup retention
+backup_retention_days: 30
+
+# Backup script
+backup_script_path: /usr/local/sbin/adama-revenue-postgresql-backup
+
+# Logging
+backup_log_file: /var/log/adama-revenue-postgresql-backup.log
+
+# Lock file
+backup_lock_file: /var/lock/adama-revenue-postgresql-backup.lock
+
+# Cron
+backup_cron_job_name: adama-revenue-postgresql-backup
+backup_cron_user: root
+
+# Required system packages
+backup_packages:
+  - cron
+  - util-linux
+  - coreutils
+  - findutils
+  - grep
+  - gawk

@@ -1,0 +1,200 @@
+
+---
+# ==========================================================
+# POSTGRESQL BACKUP ROLE
+# ==========================================================
+
+# ----------------------------------------------------------
+# ENABLED: CONFIGURE POSTGRESQL BACKUPS
+# ----------------------------------------------------------
+
+- name: Configure PostgreSQL backups
+  when: backup_enabled | bool
+  block:
+
+    # ------------------------------------------------------
+    # VALIDATE CONFIGURATION
+    # ------------------------------------------------------
+
+    - name: Validate backup configuration
+      ansible.builtin.assert:
+        that:
+          - backup_project_dir | length > 0
+          - backup_compose_project | length > 0
+          - backup_compose_file | length > 0
+          - backup_compose_override_file | length > 0
+          - backup_env_file | length > 0
+          - backup_postgres_service | length > 0
+          - backup_postgres_dir | length > 0
+          - backup_script_path | length > 0
+          - backup_log_file | length > 0
+          - backup_lock_file | length > 0
+          - backup_cron_job_name | length > 0
+          - backup_cron_user | length > 0
+          - backup_retention_days | int >= 1
+          - backup_schedule_hour | int >= 0
+          - backup_schedule_hour | int <= 23
+          - backup_schedule_minute | int >= 0
+          - backup_schedule_minute | int <= 59
+        fail_msg: "Invalid PostgreSQL backup configuration."
+
+    # ------------------------------------------------------
+    # CHECK REQUIRED CONFIGURATION FILES
+    # ------------------------------------------------------
+
+    - name: Check Docker Compose backup configuration files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ backup_compose_file }}"
+        - "{{ backup_compose_override_file }}"
+        - "{{ backup_env_file }}"
+      register: backup_config_files
+
+    - name: Assert Docker Compose backup configuration files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Required backup configuration file is missing: {{ item.item }}"
+      loop: "{{ backup_config_files.results }}"
+
+    # ------------------------------------------------------
+    # INSTALL REQUIRED PACKAGES
+    # ------------------------------------------------------
+
+    - name: Install PostgreSQL backup system packages
+      ansible.builtin.apt:
+        name: "{{ backup_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # ------------------------------------------------------
+    # CHECK DOCKER COMPOSE
+    # ------------------------------------------------------
+
+    - name: Check Docker Compose availability
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - version
+      register: backup_docker_compose_version
+      changed_when: false
+
+    # ------------------------------------------------------
+    # VALIDATE DOCKER COMPOSE CONFIGURATION
+    # ------------------------------------------------------
+
+    - name: Validate Docker Compose backup configuration
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --env-file
+          - "{{ backup_env_file }}"
+          - --project-directory
+          - "{{ backup_project_dir }}"
+          - -p
+          - "{{ backup_compose_project }}"
+          - -f
+          - "{{ backup_compose_file }}"
+          - -f
+          - "{{ backup_compose_override_file }}"
+          - config
+          - -q
+      register: backup_compose_validation
+      changed_when: false
+
+    # ------------------------------------------------------
+    # ENSURE CRON SERVICE IS RUNNING
+    # ------------------------------------------------------
+
+    - name: Ensure cron service is enabled and running
+      ansible.builtin.service:
+        name: cron
+        state: started
+        enabled: true
+
+    # ------------------------------------------------------
+    # CREATE BACKUP DIRECTORY
+    # ------------------------------------------------------
+
+    - name: Create PostgreSQL backup directory
+      ansible.builtin.file:
+        path: "{{ backup_postgres_dir }}"
+        state: directory
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+        mode: "{{ backup_directory_mode }}"
+
+    # ------------------------------------------------------
+    # CREATE BACKUP LOG FILE
+    # ------------------------------------------------------
+
+    - name: Ensure backup log file exists
+      ansible.builtin.file:
+        path: "{{ backup_log_file }}"
+        state: touch
+        owner: root
+        group: root
+        mode: "0600"
+        modification_time: preserve
+        access_time: preserve
+
+    # ------------------------------------------------------
+    # INSTALL BACKUP SCRIPT
+    # ------------------------------------------------------
+
+    - name: Install PostgreSQL backup script
+      ansible.builtin.template:
+        src: backup.sh.j2
+        dest: "{{ backup_script_path }}"
+        owner: root
+        group: root
+        mode: "0700"
+      notify: Validate backup script
+
+    # ------------------------------------------------------
+    # CONFIGURE BACKUP CRON JOB
+    # ------------------------------------------------------
+
+    - name: Configure scheduled PostgreSQL backup
+      ansible.builtin.cron:
+        name: "{{ backup_cron_job_name }}"
+        user: "{{ backup_cron_user }}"
+        minute: "{{ backup_schedule_minute }}"
+        hour: "{{ backup_schedule_hour }}"
+        day: "{{ backup_schedule_day }}"
+        month: "{{ backup_schedule_month }}"
+        weekday: "{{ backup_schedule_weekday }}"
+        job: "{{ backup_script_path }}"
+        state: present
+
+    # ------------------------------------------------------
+    # EXECUTE PENDING HANDLERS
+    # ------------------------------------------------------
+
+    - name: Flush backup handlers
+      ansible.builtin.meta: flush_handlers
+
+
+# ----------------------------------------------------------
+# DISABLED: REMOVE SCHEDULE AND INSTALLED SCRIPT
+# ----------------------------------------------------------
+
+- name: Disable PostgreSQL backups
+  when: not (backup_enabled | bool)
+  block:
+
+    - name: Remove scheduled PostgreSQL backup cron job
+      ansible.builtin.cron:
+        name: "{{ backup_cron_job_name }}"
+        user: "{{ backup_cron_user }}"
+        state: absent
+
+    - name: Remove installed PostgreSQL backup script
+      ansible.builtin.file:
+        path: "{{ backup_script_path }}"
+        state: absent

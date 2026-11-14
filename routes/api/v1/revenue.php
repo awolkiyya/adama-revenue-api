@@ -259,6 +259,24 @@ Route::prefix('revenue')
     [TariffVersionController::class, 'duplicate']
     )->name('tariff-versions.duplicate');
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | Copy Tariff Formula Configuration
+    |--------------------------------------------------------------------------
+    |
+    | POST /revenue/tariff-versions/{tariffVersion}/tariff-rules/{destinationRule}/copy-formula
+    |
+    | Copies selected formula configuration from a source tariff rule
+    | to a destination tariff rule within the same tariff version.
+    |
+    */
+
+    Route::post(
+        'tariff-versions/{tariffVersion}/tariff-rules/{destinationRule}/copy-formula',
+        [TariffRuleController::class, 'copyFormula']
+    )->name('tariff-rules.copy-formula');
+
     /*
     |--------------------------------------------------------------------------
     | Tariff Version CRUD

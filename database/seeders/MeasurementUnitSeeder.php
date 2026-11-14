@@ -2,19 +2,16 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
-use Illuminate\Support\Str;
 use App\Models\MeasurementUnit;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class MeasurementUnitSeeder extends Seeder
 {
-    /**
-     * Run the database seeds.
-     */
     public function run(): void
     {
         $units = [
-
             /*
             |--------------------------------------------------------------------------
             | General Units
@@ -25,48 +22,38 @@ class MeasurementUnitSeeder extends Seeder
                 'code' => 'PCS',
                 'name' => 'Piece',
                 'symbol' => 'pcs',
-                'description' => 'Individual countable item'
+                'description' => 'Individual countable item',
             ],
-
             [
                 'code' => 'M2',
                 'name' => 'Square Meter',
                 'symbol' => 'm²',
-                'description' => 'Used for land and building area'
+                'description' => 'Used for land and building area',
             ],
-
             [
                 'code' => 'M3',
                 'name' => 'Cubic Meter',
                 'symbol' => 'm³',
-                'description' => 'Volume measurement'
+                'description' => 'Volume measurement',
             ],
-
-
             [
                 'code' => 'KM',
                 'name' => 'Kilometer',
                 'symbol' => 'km',
-                'description' => 'Distance measurement'
+                'description' => 'Distance measurement',
             ],
-
-
             [
                 'code' => 'KG',
                 'name' => 'Kilogram',
                 'symbol' => 'kg',
-                'description' => 'Weight measurement'
+                'description' => 'Weight measurement',
             ],
-
-
             [
                 'code' => 'L',
                 'name' => 'Liter',
                 'symbol' => 'L',
-                'description' => 'Liquid measurement'
+                'description' => 'Liquid measurement',
             ],
-
-
 
             /*
             |--------------------------------------------------------------------------
@@ -78,27 +65,20 @@ class MeasurementUnitSeeder extends Seeder
                 'code' => 'DAY',
                 'name' => 'Day',
                 'symbol' => 'day',
-                'description' => 'Daily calculation period'
+                'description' => 'Daily calculation period',
             ],
-
-
             [
                 'code' => 'MONTH',
                 'name' => 'Month',
                 'symbol' => 'month',
-                'description' => 'Monthly calculation period'
+                'description' => 'Monthly calculation period',
             ],
-
-
             [
                 'code' => 'YEAR',
                 'name' => 'Year',
                 'symbol' => 'year',
-                'description' => 'Yearly calculation period'
+                'description' => 'Yearly calculation period',
             ],
-
-
-
 
             /*
             |--------------------------------------------------------------------------
@@ -110,26 +90,20 @@ class MeasurementUnitSeeder extends Seeder
                 'code' => 'PERSON',
                 'name' => 'Person',
                 'symbol' => 'person',
-                'description' => 'Number of people or employees'
+                'description' => 'Number of people or employees',
             ],
-
-
             [
                 'code' => 'VEHICLE',
                 'name' => 'Vehicle',
                 'symbol' => 'vehicle',
-                'description' => 'Vehicle count'
+                'description' => 'Vehicle count',
             ],
-
-
             [
                 'code' => 'LICENSE',
                 'name' => 'License',
                 'symbol' => 'license',
-                'description' => 'License or permit count'
+                'description' => 'License or permit count',
             ],
-
-
 
             /*
             |--------------------------------------------------------------------------
@@ -141,29 +115,45 @@ class MeasurementUnitSeeder extends Seeder
                 'code' => 'PERCENT',
                 'name' => 'Percentage',
                 'symbol' => '%',
-                'description' => 'Percentage calculation'
+                'description' => 'Percentage calculation',
             ],
-
         ];
 
+        $created = 0;
+        $existing = 0;
 
+        DB::transaction(function () use (
+            $units,
+            &$created,
+            &$existing
+        ) {
+            foreach ($units as $index => $unit) {
 
-        foreach ($units as $index => $unit) {
-            $measurementUnit = MeasurementUnit::firstOrNew([
-                'code' => $unit['code'],
-            ]);
-        
-            $measurementUnit->name = $unit['name'];
-            $measurementUnit->symbol = $unit['symbol'];
-            $measurementUnit->description = $unit['description'];
-            $measurementUnit->is_active = true;
-            $measurementUnit->sort_order = $index + 1;
-        
-            if (!$measurementUnit->exists) {
+                $measurementUnit = MeasurementUnit::query()
+                    ->firstOrNew([
+                        'code' => $unit['code'],
+                    ]);
+
+                if ($measurementUnit->exists) {
+                    $existing++;
+                    continue;
+                }
+
                 $measurementUnit->id = (string) Str::uuid();
+                $measurementUnit->name = $unit['name'];
+                $measurementUnit->symbol = $unit['symbol'];
+                $measurementUnit->description = $unit['description'];
+                $measurementUnit->is_active = true;
+                $measurementUnit->sort_order = $index + 1;
+
+                $measurementUnit->save();
+
+                $created++;
             }
-        
-            $measurementUnit->save();
-        }
+        });
+
+        $this->command?->info(
+            "Measurement units seeding completed. Created: {$created}, Existing: {$existing}."
+        );
     }
 }

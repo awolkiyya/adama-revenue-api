@@ -235,8 +235,8 @@ class StoreTariffRuleRequest extends FormRequest
             | [
             |     {
             |         "fieldId": "...",
-            |         "operator": "less_than_or_equal",
-            |         "value": "105"
+            |         "operator": "ordered_greater_than_or_equal",
+            |         "value": "G+1"
             |     }
             | ]
             |--------------------------------------------------------------------------
@@ -261,13 +261,24 @@ class StoreTariffRuleRequest extends FormRequest
             'conditions.*.operator' => [
                 'required',
                 Rule::in([
+
+                    // Exact comparisons
                     'equals',
                     'not_equals',
                     'contains',
+
+                    // Numeric comparisons
                     'greater_than',
                     'greater_than_or_equal',
                     'less_than',
                     'less_than_or_equal',
+
+                    // Ordered categorical comparisons
+                    // Uses base_field_options.sort_order
+                    'ordered_greater_than',
+                    'ordered_greater_than_or_equal',
+                    'ordered_less_than',
+                    'ordered_less_than_or_equal',
                 ]),
             ],
 
