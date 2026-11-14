@@ -1,8 +1,0 @@
----
-- name: Validate backup script
-  ansible.builtin.command:
-    argv:
-      - bash
-      - -n
-      - "{{ backup_script_path }}"
-  changed_when: false

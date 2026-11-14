@@ -1,7 +1,7 @@
 services:
   app:
     env_file:
-      - ../../.env.staging
+      - /opt/adama-revenue-api/.env.staging
 
     environment:
       APP_ENV: staging
@@ -9,7 +9,7 @@ services:
 
   worker:
     env_file:
-      - ../../.env.staging
+      - /opt/adama-revenue-api/.env.staging
 
     environment:
       APP_ENV: staging
@@ -17,7 +17,7 @@ services:
 
   scheduler:
     env_file:
-      - ../../.env.staging
+      - /opt/adama-revenue-api/.env.staging
 
     environment:
       APP_ENV: staging

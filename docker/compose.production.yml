@@ -1,7 +1,7 @@
 services:
   app:
     env_file:
-      - ../../.env.production
+      - /opt/adama-revenue-api/.env.production
 
     environment:
       APP_ENV: production
@@ -9,7 +9,7 @@ services:
 
   worker:
     env_file:
-      - ../../.env.production
+      - /opt/adama-revenue-api/.env.production
 
     environment:
       APP_ENV: production
@@ -17,7 +17,7 @@ services:
 
   scheduler:
     env_file:
-      - ../../.env.production
+      - /opt/adama-revenue-api/.env.production
 
     environment:
       APP_ENV: production

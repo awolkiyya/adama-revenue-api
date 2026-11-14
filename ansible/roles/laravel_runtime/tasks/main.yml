@@ -1,0 +1,293 @@
+---
+# ==========================================================
+# VALIDATE RUNTIME CONFIGURATION
+# ==========================================================
+
+- name: Validate Laravel runtime configuration
+  ansible.builtin.assert:
+    that:
+      - laravel_runtime_project_dir | length > 0
+      - laravel_runtime_project_name | length > 0
+      - laravel_runtime_compose_file | length > 0
+      - laravel_runtime_env_file | length > 0
+      - laravel_runtime_override_file | length > 0
+      - laravel_runtime_image | length > 0
+      - laravel_runtime_app_service | length > 0
+      - laravel_runtime_queue_service | length > 0
+      - laravel_runtime_scheduler_service | length > 0
+      - laravel_runtime_app_service != laravel_runtime_queue_service
+      - laravel_runtime_app_service != laravel_runtime_scheduler_service
+      - laravel_runtime_queue_service != laravel_runtime_scheduler_service
+    fail_msg: "Laravel runtime configuration is incomplete or contains conflicting service names."
+  when: laravel_runtime_enabled | bool
+
+
+# ==========================================================
+# VALIDATE PROJECT DIRECTORY
+# ==========================================================
+
+- name: Check Laravel Compose project directory
+  ansible.builtin.stat:
+    path: "{{ laravel_runtime_project_dir }}"
+  register: laravel_runtime_project_stat
+  when: laravel_runtime_enabled | bool
+
+- name: Verify Laravel Compose project directory
+  ansible.builtin.assert:
+    that:
+      - laravel_runtime_project_stat.stat.exists
+      - laravel_runtime_project_stat.stat.isdir
+    fail_msg: "Laravel Compose project directory does not exist."
+  when: laravel_runtime_enabled | bool
+
+
+# ==========================================================
+# VALIDATE ENVIRONMENT FILE
+# ==========================================================
+
+- name: Check Laravel Compose environment file
+  ansible.builtin.stat:
+    path: "{{ laravel_runtime_env_file }}"
+  register: laravel_runtime_env_stat
+  when: laravel_runtime_enabled | bool
+
+- name: Verify Laravel Compose environment file
+  ansible.builtin.assert:
+    that:
+      - laravel_runtime_env_stat.stat.exists
+      - laravel_runtime_env_stat.stat.isreg
+    fail_msg: "Laravel Compose environment file does not exist."
+  when: laravel_runtime_enabled | bool
+
+
+# ==========================================================
+# VALIDATE BASE COMPOSE FILE
+# ==========================================================
+
+- name: Check Laravel base Compose file
+  ansible.builtin.stat:
+    path: "{{ laravel_runtime_project_dir }}/{{ laravel_runtime_compose_file }}"
+  register: laravel_runtime_compose_stat
+  when: laravel_runtime_enabled | bool
+
+- name: Verify Laravel base Compose file
+  ansible.builtin.assert:
+    that:
+      - laravel_runtime_compose_stat.stat.exists
+      - laravel_runtime_compose_stat.stat.isreg
+    fail_msg: "Laravel base Compose file does not exist."
+  when: laravel_runtime_enabled | bool
+
+
+# ==========================================================
+# VALIDATE ENVIRONMENT OVERRIDE FILE
+# ==========================================================
+
+- name: Check Laravel environment override file
+  ansible.builtin.stat:
+    path: "{{ laravel_runtime_project_dir }}/{{ laravel_runtime_override_file }}"
+  register: laravel_runtime_override_stat
+  when: laravel_runtime_enabled | bool
+
+- name: Verify Laravel environment override file
+  ansible.builtin.assert:
+    that:
+      - laravel_runtime_override_stat.stat.exists
+      - laravel_runtime_override_stat.stat.isreg
+    fail_msg: "Laravel environment override file does not exist."
+  when: laravel_runtime_enabled | bool
+
+
+# ==========================================================
+# VALIDATE DOCKER COMPOSE CONFIGURATION
+# ==========================================================
+
+- name: Validate Docker Compose configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -p
+      - "{{ laravel_runtime_project_name }}"
+      - --env-file
+      - "{{ laravel_runtime_env_file }}"
+      - -f
+      - "{{ laravel_runtime_compose_file }}"
+      - -f
+      - "{{ laravel_runtime_override_file }}"
+      - config
+      - --quiet
+    chdir: "{{ laravel_runtime_project_dir }}"
+  environment:
+    IMAGE: "{{ laravel_runtime_image }}"
+  changed_when: false
+  when:
+    - laravel_runtime_enabled | bool
+    - laravel_runtime_validate_compose | bool
+
+
+# ==========================================================
+# STOP DISABLED RUNTIME SERVICES
+# ==========================================================
+
+- name: Stop Laravel queue worker when disabled
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -p
+      - "{{ laravel_runtime_project_name }}"
+      - --env-file
+      - "{{ laravel_runtime_env_file }}"
+      - -f
+      - "{{ laravel_runtime_compose_file }}"
+      - -f
+      - "{{ laravel_runtime_override_file }}"
+      - stop
+      - --timeout
+      - "{{ laravel_runtime_queue_stop_timeout | string }}"
+      - "{{ laravel_runtime_queue_service }}"
+    chdir: "{{ laravel_runtime_project_dir }}"
+  environment:
+    IMAGE: "{{ laravel_runtime_image }}"
+  register: laravel_runtime_queue_stop_result
+  changed_when: "'Stopped' in laravel_runtime_queue_stop_result.stdout"
+  when:
+    - laravel_runtime_enabled | bool
+    - not (laravel_runtime_queue_enabled | bool)
+
+
+- name: Stop Laravel scheduler when disabled
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -p
+      - "{{ laravel_runtime_project_name }}"
+      - --env-file
+      - "{{ laravel_runtime_env_file }}"
+      - -f
+      - "{{ laravel_runtime_compose_file }}"
+      - -f
+      - "{{ laravel_runtime_override_file }}"
+      - stop
+      - --timeout
+      - "{{ laravel_runtime_scheduler_stop_timeout | string }}"
+      - "{{ laravel_runtime_scheduler_service }}"
+    chdir: "{{ laravel_runtime_project_dir }}"
+  environment:
+    IMAGE: "{{ laravel_runtime_image }}"
+  register: laravel_runtime_scheduler_stop_result
+  changed_when: "'Stopped' in laravel_runtime_scheduler_stop_result.stdout"
+  when:
+    - laravel_runtime_enabled | bool
+    - not (laravel_runtime_scheduler_enabled | bool)
+
+
+# ==========================================================
+# DEPLOY / UPDATE LARAVEL APPLICATION
+# ==========================================================
+
+- name: Start or update Laravel application
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -p
+      - "{{ laravel_runtime_project_name }}"
+      - --env-file
+      - "{{ laravel_runtime_env_file }}"
+      - -f
+      - "{{ laravel_runtime_compose_file }}"
+      - -f
+      - "{{ laravel_runtime_override_file }}"
+      - up
+      - -d
+      - --no-deps
+      - --wait
+      - --wait-timeout
+      - "{{ laravel_runtime_app_wait_timeout | string }}"
+      - "{{ laravel_runtime_app_service }}"
+    chdir: "{{ laravel_runtime_project_dir }}"
+  environment:
+    IMAGE: "{{ laravel_runtime_image }}"
+  register: laravel_runtime_app_up_result
+  changed_when: >-
+    'Created' in laravel_runtime_app_up_result.stdout or
+    'Recreated' in laravel_runtime_app_up_result.stdout or
+    'Started' in laravel_runtime_app_up_result.stdout
+  when: laravel_runtime_enabled | bool
+
+
+# ==========================================================
+# DEPLOY / UPDATE QUEUE WORKER
+# ==========================================================
+
+- name: Start or update Laravel queue worker
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -p
+      - "{{ laravel_runtime_project_name }}"
+      - --env-file
+      - "{{ laravel_runtime_env_file }}"
+      - -f
+      - "{{ laravel_runtime_compose_file }}"
+      - -f
+      - "{{ laravel_runtime_override_file }}"
+      - up
+      - -d
+      - --no-deps
+      - --wait
+      - --wait-timeout
+      - "60"
+      - "{{ laravel_runtime_queue_service }}"
+    chdir: "{{ laravel_runtime_project_dir }}"
+  environment:
+    IMAGE: "{{ laravel_runtime_image }}"
+  register: laravel_runtime_queue_up_result
+  changed_when: >-
+    'Created' in laravel_runtime_queue_up_result.stdout or
+    'Recreated' in laravel_runtime_queue_up_result.stdout or
+    'Started' in laravel_runtime_queue_up_result.stdout
+  when:
+    - laravel_runtime_enabled | bool
+    - laravel_runtime_queue_enabled | bool
+
+
+# ==========================================================
+# DEPLOY / UPDATE SCHEDULER
+# ==========================================================
+
+- name: Start or update Laravel scheduler
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -p
+      - "{{ laravel_runtime_project_name }}"
+      - --env-file
+      - "{{ laravel_runtime_env_file }}"
+      - -f
+      - "{{ laravel_runtime_compose_file }}"
+      - -f
+      - "{{ laravel_runtime_override_file }}"
+      - up
+      - -d
+      - --no-deps
+      - --wait
+      - --wait-timeout
+      - "60"
+      - "{{ laravel_runtime_scheduler_service }}"
+    chdir: "{{ laravel_runtime_project_dir }}"
+  environment:
+    IMAGE: "{{ laravel_runtime_image }}"
+  register: laravel_runtime_scheduler_up_result
+  changed_when: >-
+    'Created' in laravel_runtime_scheduler_up_result.stdout or
+    'Recreated' in laravel_runtime_scheduler_up_result.stdout or
+    'Started' in laravel_runtime_scheduler_up_result.stdout
+  when:
+    - laravel_runtime_enabled | bool
+    - laravel_runtime_scheduler_enabled | bool

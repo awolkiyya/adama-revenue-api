@@ -1,3 +1,4 @@
+
 ---
 - name: Provision Laravel API server
   hosts: laravel
@@ -10,8 +11,17 @@
     - firewall
     - docker
     - directories
-    - backup
+
+    - role: postgres_backup
+      tags:
+        - postgres_backup
+
     - monitoring
+
+    - role: laravel_runtime
+      tags:
+        - laravel_runtime
+
     - role: ssl
       tags:
         - ssl
