@@ -38,7 +38,6 @@ jobs:
     timeout-minutes: 45
 
     # Production retains its protected GitHub Environment.
-    # Staging can use an ordinary staging environment.
     environment:
       name: ${{ inputs.environment }}
 
@@ -167,8 +166,7 @@ jobs:
             bash -n "$script"
           done
 
-          # Application archive must not contain operational
-          # deployment scripts or environment configuration.
+          # Package application source separately.
           tar \
             --exclude='./.git' \
             --exclude='./.github' \
@@ -183,7 +181,7 @@ jobs:
             --exclude='./*.log' \
             -czf "$SOURCE_ARCHIVE" .
 
-          # Package deployment scripts separately.
+          # Package operational deployment tools separately.
           tar \
             -czf "$DEPLOYMENT_ARCHIVE" \
             -C "$GITHUB_WORKSPACE" \
@@ -206,7 +204,6 @@ jobs:
           fi
 
           # Ensure deployment archive contains its expected files.
-          # Save the listing first to avoid SIGPIPE with pipefail.
           DEPLOYMENT_ARCHIVE_LIST="$RUNNER_TEMP/${DEPLOY_ENVIRONMENT}-deployment-archive-list.txt"
 
           tar -tzf "$DEPLOYMENT_ARCHIVE" > "$DEPLOYMENT_ARCHIVE_LIST"
@@ -269,10 +266,10 @@ jobs:
           echo "Deployment archives transferred."
 
       # --------------------------------------------------
-      # 6. Install deployment tools and deploy application
+      # 6. Extract temporary tools and deploy application
       # --------------------------------------------------
 
-      - name: Install deployment tools and deploy Laravel
+      - name: Deploy Laravel application
         id: deployment
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
@@ -324,13 +321,9 @@ jobs:
           SOURCE_ARCHIVE="/tmp/laravel-${ENVIRONMENT}-source.tar.gz"
           DEPLOYMENT_ARCHIVE="/tmp/laravel-${ENVIRONMENT}-deployment.tar.gz"
 
-          # Separate operational script trees prevent staging
-          # and production deployments from overwriting each other.
-          DEPLOYMENT_DIR="$APP_ROOT/deployment-${ENVIRONMENT}"
-
+          # Operational scripts are temporary and independent
+          # of the Laravel application source directories.
           EXTRACT_DIR=""
-          STAGED_DEPLOYMENT_DIR=""
-          BACKUP_DEPLOYMENT_DIR=""
 
           echo "=========================================="
           echo "ADAMA MUNICIPAL REVENUE DEPLOYMENT"
@@ -339,12 +332,11 @@ jobs:
           echo "Environment: $ENVIRONMENT"
           echo "Server: $(hostname)"
           echo "Application root: $APP_ROOT"
-          echo "Deployment scripts: $DEPLOYMENT_DIR"
           echo "Database migrations: $RUN_DATABASE_MIGRATIONS"
           echo "Started: $(date -Is)"
 
           # ------------------------------------------------
-          # Cleanup temporary installation files
+          # Cleanup temporary deployment tools
           # ------------------------------------------------
 
           cleanup_installation() {
@@ -354,15 +346,10 @@ jobs:
               rm -rf -- "$EXTRACT_DIR"
             fi
 
-            if [[ -n "$STAGED_DEPLOYMENT_DIR" &&
-                  -d "$STAGED_DEPLOYMENT_DIR" ]]; then
-              rm -rf -- "$STAGED_DEPLOYMENT_DIR"
-            fi
-
             if [[ "$exit_code" -eq 0 ]]; then
               rm -f -- "$DEPLOYMENT_ARCHIVE"
             else
-              echo "Deployment installation failed."
+              echo "Deployment failed."
               echo "Deployment archive retained: $DEPLOYMENT_ARCHIVE"
             fi
           }
@@ -374,7 +361,7 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[1/4] Validating deployment prerequisites..."
+          echo "[1/3] Validating deployment prerequisites..."
 
           test -d "$APP_ROOT"
           test -s "$SOURCE_ARCHIVE"
@@ -382,9 +369,6 @@ jobs:
 
           command -v docker > /dev/null
           command -v tar > /dev/null
-          command -v install > /dev/null
-          command -v mv > /dev/null
-          command -v cp > /dev/null
           command -v mktemp > /dev/null
 
           tar -tzf "$SOURCE_ARCHIVE" > /dev/null
@@ -397,84 +381,37 @@ jobs:
           # ------------------------------------------------
 
           echo ""
-          echo "[2/4] Preparing environment-specific deployment tools..."
+          echo "[2/3] Preparing temporary deployment tools..."
 
           EXTRACT_DIR="$(mktemp -d "/tmp/adama-deployment-${ENVIRONMENT}.XXXXXX")"
 
           tar -xzf "$DEPLOYMENT_ARCHIVE" -C "$EXTRACT_DIR"
 
-          PACKAGE_DIR="$EXTRACT_DIR/deployment"
+          DEPLOYMENT_DIR="$EXTRACT_DIR/deployment"
 
-          test -d "$PACKAGE_DIR"
-          test -f "$PACKAGE_DIR/scripts/common.sh"
-          test -f "$PACKAGE_DIR/scripts/deploy.sh"
-          test -f "$PACKAGE_DIR/scripts/database-verify.sh"
-          test -f "$PACKAGE_DIR/scripts/database-migrate.sh"
-          test -f "$PACKAGE_DIR/scripts/database-seed.sh"
-          test -f "$PACKAGE_DIR/config/${ENVIRONMENT}.env"
-          test -f "$PACKAGE_DIR/config/seeders.allowlist"
+          test -d "$DEPLOYMENT_DIR"
+          test -f "$DEPLOYMENT_DIR/scripts/common.sh"
+          test -f "$DEPLOYMENT_DIR/scripts/deploy.sh"
+          test -f "$DEPLOYMENT_DIR/scripts/database-verify.sh"
+          test -f "$DEPLOYMENT_DIR/scripts/database-migrate.sh"
+          test -f "$DEPLOYMENT_DIR/scripts/database-seed.sh"
+          test -f "$DEPLOYMENT_DIR/config/${ENVIRONMENT}.env"
+          test -f "$DEPLOYMENT_DIR/config/seeders.allowlist"
 
-          # Validate the extracted scripts.
-          for script in "$PACKAGE_DIR"/scripts/*.sh; do
+          # Validate extracted scripts.
+          for script in "$DEPLOYMENT_DIR"/scripts/*.sh; do
             bash -n "$script"
           done
 
-          # Install into a temporary sibling directory so that
-          # the final rename occurs on the same filesystem.
-          STAGED_DEPLOYMENT_DIR="$APP_ROOT/.deployment-${ENVIRONMENT}.new.$$"
-          BACKUP_DEPLOYMENT_DIR="$APP_ROOT/.deployment-${ENVIRONMENT}.previous.$$"
-
-          mkdir -m 0750 "$STAGED_DEPLOYMENT_DIR"
-          cp -a "$PACKAGE_DIR/." "$STAGED_DEPLOYMENT_DIR/"
-
-          # Scripts are invoked using bash, so executable mode
-          # is not required.
-          test -f "$STAGED_DEPLOYMENT_DIR/scripts/deploy.sh"
+          echo "Temporary deployment tools prepared."
+          echo "Deployment tools directory: $DEPLOYMENT_DIR"
 
           # ------------------------------------------------
-          # 3. Replace only this environment's deployment tools
+          # 3. Execute shared deployment orchestrator
           # ------------------------------------------------
 
           echo ""
-          echo "[3/4] Installing deployment tools..."
-
-          if [[ -e "$DEPLOYMENT_DIR" ]]; then
-            if [[ ! -d "$DEPLOYMENT_DIR" ]]; then
-              echo "ERROR: Deployment path exists but is not a directory."
-              exit 1
-            fi
-
-            mv "$DEPLOYMENT_DIR" "$BACKUP_DEPLOYMENT_DIR"
-          fi
-
-          if mv "$STAGED_DEPLOYMENT_DIR" "$DEPLOYMENT_DIR"; then
-            STAGED_DEPLOYMENT_DIR=""
-
-            if [[ -d "$BACKUP_DEPLOYMENT_DIR" ]]; then
-              rm -rf -- "$BACKUP_DEPLOYMENT_DIR"
-            fi
-
-            BACKUP_DEPLOYMENT_DIR=""
-          else
-            if [[ -d "$BACKUP_DEPLOYMENT_DIR" ]]; then
-              mv "$BACKUP_DEPLOYMENT_DIR" "$DEPLOYMENT_DIR"
-              BACKUP_DEPLOYMENT_DIR=""
-            fi
-
-            echo "ERROR: Could not install deployment tools."
-            exit 1
-          fi
-
-          test -f "$DEPLOYMENT_DIR/scripts/deploy.sh"
-
-          echo "Deployment tools installed."
-
-          # ------------------------------------------------
-          # 4. Execute shared deployment orchestrator
-          # ------------------------------------------------
-
-          echo ""
-          echo "[4/4] Running Laravel deployment..."
+          echo "[3/3] Running Laravel deployment..."
 
           RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
             bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
