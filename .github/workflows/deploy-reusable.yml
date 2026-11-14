@@ -1,0 +1,540 @@
+
+name: Reusable Laravel Deployment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Deployment environment
+        required: true
+        type: string
+
+      run_database_migrations:
+        description: Run database migrations during deployment
+        required: false
+        default: false
+        type: boolean
+
+    secrets:
+      DEPLOY_SSH_PRIVATE_KEY:
+        required: true
+
+      DEPLOY_SSH_KNOWN_HOSTS:
+        required: true
+
+      DEPLOY_SSH_HOST:
+        required: true
+
+      DEPLOY_SSH_USER:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Laravel ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # Production retains its protected GitHub Environment.
+    # Staging can use an ordinary staging environment.
+    environment:
+      name: ${{ inputs.environment }}
+
+    steps:
+      # --------------------------------------------------
+      # 1. Checkout source code
+      # --------------------------------------------------
+
+      - name: Checkout source code
+        uses: actions/checkout@v5
+
+      # --------------------------------------------------
+      # 2. Validate deployment inputs
+      # --------------------------------------------------
+
+      - name: Validate deployment inputs
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
+        run: |
+          set -Eeuo pipefail
+
+          case "$DEPLOY_ENVIRONMENT" in
+            staging|production)
+              ;;
+            *)
+              echo "::error::Unsupported deployment environment."
+              exit 1
+              ;;
+          esac
+
+          case "$RUN_DATABASE_MIGRATIONS" in
+            true|false)
+              ;;
+            *)
+              echo "::error::Invalid migration setting."
+              exit 1
+              ;;
+          esac
+
+          if [[ "$DEPLOY_ENVIRONMENT" == "production" ]] &&
+             [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+            echo "Production migrations are enabled."
+            echo "The server-side migration script must verify a production backup."
+          fi
+
+          echo "Environment: $DEPLOY_ENVIRONMENT"
+          echo "Run database migrations: $RUN_DATABASE_MIGRATIONS"
+
+      # --------------------------------------------------
+      # 3. Configure SSH
+      # --------------------------------------------------
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+
+          test -n "$SSH_PRIVATE_KEY" || {
+            echo "::error::Deployment SSH private key is missing."
+            exit 1
+          }
+
+          test -n "$SSH_KNOWN_HOSTS" || {
+            echo "::error::Deployment SSH known_hosts is missing."
+            exit 1
+          }
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" \
+            | tr -d '\r' \
+            > "$HOME/.ssh/id_ed25519"
+
+          chmod 600 "$HOME/.ssh/id_ed25519"
+
+          printf '%s\n' "$SSH_KNOWN_HOSTS" \
+            | tr -d '\r' \
+            > "$HOME/.ssh/known_hosts"
+
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          ssh-keygen -y \
+            -f "$HOME/.ssh/id_ed25519" \
+            > /dev/null
+
+          echo "SSH configuration verified."
+
+      # --------------------------------------------------
+      # 4. Package application source and deployment tools
+      # --------------------------------------------------
+
+      - name: Package Laravel source and deployment tools
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -Eeuo pipefail
+
+          SOURCE_ARCHIVE="$RUNNER_TEMP/laravel-${DEPLOY_ENVIRONMENT}-source.tar.gz"
+          DEPLOYMENT_ARCHIVE="$RUNNER_TEMP/laravel-${DEPLOY_ENVIRONMENT}-deployment.tar.gz"
+
+          # Validate environment-specific application files.
+          test -f docker/Dockerfile
+          test -f docker/compose.yml
+          test -f "docker/compose.${DEPLOY_ENVIRONMENT}.yml"
+          test -f nginx/default.conf
+          test -f public/index.php
+          test -f composer.json
+          test -f composer.lock
+
+          # Validate deployment scripts and configuration.
+          test -f deployment/scripts/common.sh
+          test -f deployment/scripts/deploy.sh
+          test -f deployment/scripts/database-verify.sh
+          test -f deployment/scripts/database-migrate.sh
+          test -f deployment/scripts/database-seed.sh
+
+          test -f "deployment/config/${DEPLOY_ENVIRONMENT}.env"
+          test -f deployment/config/seeders.allowlist
+
+          # Validate shell syntax before packaging.
+          for script in deployment/scripts/*.sh; do
+            bash -n "$script"
+          done
+
+          # Application archive must not contain operational
+          # deployment scripts or environment configuration.
+          tar \
+            --exclude='./.git' \
+            --exclude='./.github' \
+            --exclude='./.env' \
+            --exclude='./.env.*' \
+            --exclude='./vendor' \
+            --exclude='./node_modules' \
+            --exclude='./coverage' \
+            --exclude='./certificates' \
+            --exclude='./gateway' \
+            --exclude='./deployment' \
+            --exclude='./*.log' \
+            -czf "$SOURCE_ARCHIVE" .
+
+          # Package deployment scripts separately.
+          tar \
+            -czf "$DEPLOYMENT_ARCHIVE" \
+            -C "$GITHUB_WORKSPACE" \
+            deployment
+
+          test -s "$SOURCE_ARCHIVE"
+          test -s "$DEPLOYMENT_ARCHIVE"
+
+          tar -tzf "$SOURCE_ARCHIVE" > /dev/null
+          tar -tzf "$DEPLOYMENT_ARCHIVE" > /dev/null
+
+          # Ensure application archive excludes deployment tools.
+          SOURCE_ARCHIVE_LIST="$RUNNER_TEMP/${DEPLOY_ENVIRONMENT}-source-archive-list.txt"
+
+          tar -tzf "$SOURCE_ARCHIVE" > "$SOURCE_ARCHIVE_LIST"
+
+          if grep -Eq '(^|/)deployment/' "$SOURCE_ARCHIVE_LIST"; then
+            echo "::error::Application archive unexpectedly contains deployment scripts."
+            exit 1
+          fi
+
+          # Ensure deployment archive contains its expected files.
+          # Save the listing first to avoid SIGPIPE with pipefail.
+          DEPLOYMENT_ARCHIVE_LIST="$RUNNER_TEMP/${DEPLOY_ENVIRONMENT}-deployment-archive-list.txt"
+
+          tar -tzf "$DEPLOYMENT_ARCHIVE" > "$DEPLOYMENT_ARCHIVE_LIST"
+
+          for required_file in \
+            deployment/scripts/common.sh \
+            deployment/scripts/deploy.sh \
+            deployment/scripts/database-verify.sh \
+            deployment/scripts/database-migrate.sh \
+            deployment/scripts/database-seed.sh \
+            "deployment/config/${DEPLOY_ENVIRONMENT}.env" \
+            deployment/config/seeders.allowlist; do
+
+            if ! grep -Fxq "$required_file" "$DEPLOYMENT_ARCHIVE_LIST"; then
+              echo "::error::Deployment archive is missing: $required_file"
+              exit 1
+            fi
+          done
+
+          echo "Application source archive created."
+          echo "Deployment tools archive created."
+          echo "Deployment archive contents verified."
+          echo "Commit: $GITHUB_SHA"
+
+      # --------------------------------------------------
+      # 5. Transfer both archives
+      # --------------------------------------------------
+
+      - name: Transfer deployment archives
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+
+          test -n "$SSH_HOST" || {
+            echo "::error::Deployment SSH host is missing."
+            exit 1
+          }
+
+          test -n "$SSH_USER" || {
+            echo "::error::Deployment SSH user is missing."
+            exit 1
+          }
+
+          SOURCE_ARCHIVE="$RUNNER_TEMP/laravel-${DEPLOY_ENVIRONMENT}-source.tar.gz"
+          DEPLOYMENT_ARCHIVE="$RUNNER_TEMP/laravel-${DEPLOY_ENVIRONMENT}-deployment.tar.gz"
+
+          scp \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            "$SOURCE_ARCHIVE" \
+            "$DEPLOYMENT_ARCHIVE" \
+            "$SSH_USER@$SSH_HOST:/tmp/"
+
+          echo "Deployment archives transferred."
+
+      # --------------------------------------------------
+      # 6. Install deployment tools and deploy application
+      # --------------------------------------------------
+
+      - name: Install deployment tools and deploy Laravel
+        id: deployment
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+
+          DEPLOYMENT_LOG="$RUNNER_TEMP/${DEPLOY_ENVIRONMENT}-deployment.log"
+
+          SUCCESS_MARKER="${DEPLOY_ENVIRONMENT^^}_DEPLOYMENT_SUCCESS"
+
+          ssh \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" \
+            "bash -s -- '$DEPLOY_ENVIRONMENT' '$RUN_DATABASE_MIGRATIONS'" \
+            <<'REMOTE' | tee "$DEPLOYMENT_LOG"
+
+          set -Eeuo pipefail
+
+          ENVIRONMENT="${1:-}"
+          RUN_DATABASE_MIGRATIONS="${2:-false}"
+
+          case "$ENVIRONMENT" in
+            staging|production)
+              ;;
+            *)
+              echo "ERROR: Invalid deployment environment."
+              exit 1
+              ;;
+          esac
+
+          case "$RUN_DATABASE_MIGRATIONS" in
+            true|false)
+              ;;
+            *)
+              echo "ERROR: Invalid migration setting."
+              exit 1
+              ;;
+          esac
+
+          APP_ROOT="/opt/adama-revenue-api"
+
+          SOURCE_ARCHIVE="/tmp/laravel-${ENVIRONMENT}-source.tar.gz"
+          DEPLOYMENT_ARCHIVE="/tmp/laravel-${ENVIRONMENT}-deployment.tar.gz"
+
+          # Separate operational script trees prevent staging
+          # and production deployments from overwriting each other.
+          DEPLOYMENT_DIR="$APP_ROOT/deployment-${ENVIRONMENT}"
+
+          EXTRACT_DIR=""
+          STAGED_DEPLOYMENT_DIR=""
+          BACKUP_DEPLOYMENT_DIR=""
+
+          echo "=========================================="
+          echo "ADAMA MUNICIPAL REVENUE DEPLOYMENT"
+          echo "=========================================="
+
+          echo "Environment: $ENVIRONMENT"
+          echo "Server: $(hostname)"
+          echo "Application root: $APP_ROOT"
+          echo "Deployment scripts: $DEPLOYMENT_DIR"
+          echo "Database migrations: $RUN_DATABASE_MIGRATIONS"
+          echo "Started: $(date -Is)"
+
+          # ------------------------------------------------
+          # Cleanup temporary installation files
+          # ------------------------------------------------
+
+          cleanup_installation() {
+            local exit_code=$?
+
+            if [[ -n "$EXTRACT_DIR" && -d "$EXTRACT_DIR" ]]; then
+              rm -rf -- "$EXTRACT_DIR"
+            fi
+
+            if [[ -n "$STAGED_DEPLOYMENT_DIR" &&
+                  -d "$STAGED_DEPLOYMENT_DIR" ]]; then
+              rm -rf -- "$STAGED_DEPLOYMENT_DIR"
+            fi
+
+            if [[ "$exit_code" -eq 0 ]]; then
+              rm -f -- "$DEPLOYMENT_ARCHIVE"
+            else
+              echo "Deployment installation failed."
+              echo "Deployment archive retained: $DEPLOYMENT_ARCHIVE"
+            fi
+          }
+
+          trap cleanup_installation EXIT
+
+          # ------------------------------------------------
+          # 1. Validate prerequisites
+          # ------------------------------------------------
+
+          echo ""
+          echo "[1/4] Validating deployment prerequisites..."
+
+          test -d "$APP_ROOT"
+          test -s "$SOURCE_ARCHIVE"
+          test -s "$DEPLOYMENT_ARCHIVE"
+
+          command -v docker > /dev/null
+          command -v tar > /dev/null
+          command -v install > /dev/null
+          command -v mv > /dev/null
+          command -v cp > /dev/null
+          command -v mktemp > /dev/null
+
+          tar -tzf "$SOURCE_ARCHIVE" > /dev/null
+          tar -tzf "$DEPLOYMENT_ARCHIVE" > /dev/null
+
+          echo "Deployment prerequisites verified."
+
+          # ------------------------------------------------
+          # 2. Extract and validate deployment tools
+          # ------------------------------------------------
+
+          echo ""
+          echo "[2/4] Preparing environment-specific deployment tools..."
+
+          EXTRACT_DIR="$(mktemp -d "/tmp/adama-deployment-${ENVIRONMENT}.XXXXXX")"
+
+          tar -xzf "$DEPLOYMENT_ARCHIVE" -C "$EXTRACT_DIR"
+
+          PACKAGE_DIR="$EXTRACT_DIR/deployment"
+
+          test -d "$PACKAGE_DIR"
+          test -f "$PACKAGE_DIR/scripts/common.sh"
+          test -f "$PACKAGE_DIR/scripts/deploy.sh"
+          test -f "$PACKAGE_DIR/scripts/database-verify.sh"
+          test -f "$PACKAGE_DIR/scripts/database-migrate.sh"
+          test -f "$PACKAGE_DIR/scripts/database-seed.sh"
+          test -f "$PACKAGE_DIR/config/${ENVIRONMENT}.env"
+          test -f "$PACKAGE_DIR/config/seeders.allowlist"
+
+          # Validate the extracted scripts.
+          for script in "$PACKAGE_DIR"/scripts/*.sh; do
+            bash -n "$script"
+          done
+
+          # Install into a temporary sibling directory so that
+          # the final rename occurs on the same filesystem.
+          STAGED_DEPLOYMENT_DIR="$APP_ROOT/.deployment-${ENVIRONMENT}.new.$$"
+          BACKUP_DEPLOYMENT_DIR="$APP_ROOT/.deployment-${ENVIRONMENT}.previous.$$"
+
+          mkdir -m 0750 "$STAGED_DEPLOYMENT_DIR"
+          cp -a "$PACKAGE_DIR/." "$STAGED_DEPLOYMENT_DIR/"
+
+          # Scripts are invoked using bash, so executable mode
+          # is not required.
+          test -f "$STAGED_DEPLOYMENT_DIR/scripts/deploy.sh"
+
+          # ------------------------------------------------
+          # 3. Replace only this environment's deployment tools
+          # ------------------------------------------------
+
+          echo ""
+          echo "[3/4] Installing deployment tools..."
+
+          if [[ -e "$DEPLOYMENT_DIR" ]]; then
+            if [[ ! -d "$DEPLOYMENT_DIR" ]]; then
+              echo "ERROR: Deployment path exists but is not a directory."
+              exit 1
+            fi
+
+            mv "$DEPLOYMENT_DIR" "$BACKUP_DEPLOYMENT_DIR"
+          fi
+
+          if mv "$STAGED_DEPLOYMENT_DIR" "$DEPLOYMENT_DIR"; then
+            STAGED_DEPLOYMENT_DIR=""
+
+            if [[ -d "$BACKUP_DEPLOYMENT_DIR" ]]; then
+              rm -rf -- "$BACKUP_DEPLOYMENT_DIR"
+            fi
+
+            BACKUP_DEPLOYMENT_DIR=""
+          else
+            if [[ -d "$BACKUP_DEPLOYMENT_DIR" ]]; then
+              mv "$BACKUP_DEPLOYMENT_DIR" "$DEPLOYMENT_DIR"
+              BACKUP_DEPLOYMENT_DIR=""
+            fi
+
+            echo "ERROR: Could not install deployment tools."
+            exit 1
+          fi
+
+          test -f "$DEPLOYMENT_DIR/scripts/deploy.sh"
+
+          echo "Deployment tools installed."
+
+          # ------------------------------------------------
+          # 4. Execute shared deployment orchestrator
+          # ------------------------------------------------
+
+          echo ""
+          echo "[4/4] Running Laravel deployment..."
+
+          RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
+            bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
+
+          echo ""
+          echo "Remote deployment script completed."
+
+          REMOTE
+
+          # --------------------------------------------------
+          # Verify exact environment-specific success marker
+          # --------------------------------------------------
+
+          if ! grep -Fxq "$SUCCESS_MARKER" "$DEPLOYMENT_LOG"; then
+            echo "::error::Remote deployment did not return the expected success marker."
+
+            echo "Expected marker: $SUCCESS_MARKER"
+            echo "Last 100 lines of remote deployment output:"
+
+            tail -n 100 "$DEPLOYMENT_LOG" || true
+
+            exit 1
+          fi
+
+          echo "Verified deployment success marker: $SUCCESS_MARKER"
+
+          echo "deployment_success=true" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------
+      # 7. Deployment summary
+      # --------------------------------------------------
+
+      - name: Deployment summary
+        if: success()
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOYMENT_SUCCESS: ${{ steps.deployment.outputs.deployment_success }}
+        run: |
+          set -Eeuo pipefail
+
+          test "$DEPLOYMENT_SUCCESS" = "true"
+
+          echo "=========================================="
+          echo "LARAVEL ${DEPLOY_ENVIRONMENT^^} DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+
+          echo "Server: $SSH_HOST"
+          echo "Environment: $DEPLOY_ENVIRONMENT"
+          echo "Database migrations: $RUN_DATABASE_MIGRATIONS"
+          echo "Database seeders: not executed"
+
+          if [[ "$DEPLOY_ENVIRONMENT" == "production" ]]; then
+            if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+              echo "Database backup: required and verified by migration script"
+            else
+              echo "Database backup: not performed by deployment workflow"
+            fi
+          fi
+
+          echo "Remote health checks: passed"
+          echo "Deployment success marker: verified"
