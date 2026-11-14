@@ -15,6 +15,12 @@ on:
         default: false
         type: boolean
 
+      run_database_seeders:
+        description: Run approved reference-data seeders during deployment
+        required: false
+        default: false
+        type: boolean
+
     secrets:
       DEPLOY_SSH_PRIVATE_KEY:
         required: true
@@ -57,6 +63,7 @@ jobs:
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
+          RUN_DATABASE_SEEDERS: ${{ inputs.run_database_seeders }}
         run: |
           set -Eeuo pipefail
 
@@ -78,14 +85,30 @@ jobs:
               ;;
           esac
 
+          case "$RUN_DATABASE_SEEDERS" in
+            true|false)
+              ;;
+            *)
+              echo "::error::Invalid database seeder setting."
+              exit 1
+              ;;
+          esac
+
           if [[ "$DEPLOY_ENVIRONMENT" == "production" ]] &&
              [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
             echo "Production migrations are enabled."
             echo "The server-side migration script must verify a production backup."
           fi
 
+          if [[ "$DEPLOY_ENVIRONMENT" == "production" ]] &&
+             [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
+            echo "::warning::Production database seeders are enabled."
+            echo "The server-side seeder script must enforce the approved allowlist."
+          fi
+
           echo "Environment: $DEPLOY_ENVIRONMENT"
           echo "Run database migrations: $RUN_DATABASE_MIGRATIONS"
+          echo "Run database seeders: $RUN_DATABASE_SEEDERS"
 
       # --------------------------------------------------
       # 3. Configure SSH
@@ -274,6 +297,7 @@ jobs:
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
+          RUN_DATABASE_SEEDERS: ${{ inputs.run_database_seeders }}
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
         run: |
@@ -290,13 +314,14 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
             "$SSH_USER@$SSH_HOST" \
-            "bash -s -- '$DEPLOY_ENVIRONMENT' '$RUN_DATABASE_MIGRATIONS'" \
+            "bash -s -- '$DEPLOY_ENVIRONMENT' '$RUN_DATABASE_MIGRATIONS' '$RUN_DATABASE_SEEDERS'" \
             <<'REMOTE' | tee "$DEPLOYMENT_LOG"
 
           set -Eeuo pipefail
 
           ENVIRONMENT="${1:-}"
           RUN_DATABASE_MIGRATIONS="${2:-false}"
+          RUN_DATABASE_SEEDERS="${3:-false}"
 
           case "$ENVIRONMENT" in
             staging|production)
@@ -312,6 +337,15 @@ jobs:
               ;;
             *)
               echo "ERROR: Invalid migration setting."
+              exit 1
+              ;;
+          esac
+
+          case "$RUN_DATABASE_SEEDERS" in
+            true|false)
+              ;;
+            *)
+              echo "ERROR: Invalid database seeder setting."
               exit 1
               ;;
           esac
@@ -333,6 +367,7 @@ jobs:
           echo "Server: $(hostname)"
           echo "Application root: $APP_ROOT"
           echo "Database migrations: $RUN_DATABASE_MIGRATIONS"
+          echo "Database seeders: $RUN_DATABASE_SEEDERS"
           echo "Started: $(date -Is)"
 
           # ------------------------------------------------
@@ -414,6 +449,7 @@ jobs:
           echo "[3/3] Running Laravel deployment..."
 
           RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
+          RUN_DATABASE_SEEDERS="$RUN_DATABASE_SEEDERS" \
             bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
 
           echo ""
@@ -449,6 +485,7 @@ jobs:
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
+          RUN_DATABASE_SEEDERS: ${{ inputs.run_database_seeders }}
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOYMENT_SUCCESS: ${{ steps.deployment.outputs.deployment_success }}
         run: |
@@ -462,8 +499,8 @@ jobs:
 
           echo "Server: $SSH_HOST"
           echo "Environment: $DEPLOY_ENVIRONMENT"
-          echo "Database migrations: $RUN_DATABASE_MIGRATIONS"
-          echo "Database seeders: not executed"
+          echo "Database migrations requested: $RUN_DATABASE_MIGRATIONS"
+          echo "Database seeders requested: $RUN_DATABASE_SEEDERS"
 
           if [[ "$DEPLOY_ENVIRONMENT" == "production" ]]; then
             if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then

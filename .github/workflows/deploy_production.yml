@@ -13,6 +13,12 @@ on:
         default: false
         type: boolean
 
+      run_database_seeders:
+        description: Run approved reference-data seeders during production deployment
+        required: false
+        default: false
+        type: boolean
+
 permissions:
   contents: read
 
@@ -29,6 +35,7 @@ jobs:
     with:
       environment: production
       run_database_migrations: ${{ inputs.run_database_migrations || false }}
+      run_database_seeders: ${{ inputs.run_database_seeders || false }}
 
     secrets:
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}

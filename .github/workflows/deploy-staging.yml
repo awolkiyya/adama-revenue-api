@@ -9,8 +9,14 @@ on:
     inputs:
       run_database_migrations:
         description: Run database migrations during this deployment
-        required: false
-        default: false
+        required: true
+        default: true
+        type: boolean
+
+      run_database_seeders:
+        description: Run approved reference-data seeders during this deployment
+        required: true
+        default: true
         type: boolean
 
 permissions:
@@ -29,6 +35,7 @@ jobs:
     with:
       environment: staging
       run_database_migrations: ${{ inputs.run_database_migrations || false }}
+      run_database_seeders: ${{ inputs.run_database_seeders || false }}
 
     secrets:
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_KEY }}
