@@ -114,11 +114,9 @@ class StoreCitizenRequest extends FormRequest
             'national_id' => [
                 'required',
                 'string',
-                'max:100',
-                Rule::unique(
-                    'citizens',
-                    'national_id'
-                ),
+                'size:16',
+                'regex:/^[0-9]{16}$/',
+                Rule::unique('citizens', 'national_id'),
             ],
 
             'gender' => [

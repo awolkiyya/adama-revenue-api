@@ -67,6 +67,94 @@ class InvoiceService
             ->paginate($perPage);
     }
 
+
+
+    
+
+    /*
+    |--------------------------------------------------------------------------
+    | PAGINATE UNPAID INVOICES
+    |--------------------------------------------------------------------------
+    |
+    | Return invoices that still have an outstanding balance.
+    |
+    | Eligible statuses:
+    |
+    | - ISSUED
+    | - PARTIALLY_PAID
+    | - OVERDUE
+    |
+    | Search:
+    |
+    | - Invoice number
+    | - Assessment number
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    public function paginateUnpaid(
+        string $search,
+        int $perPage = 20,
+    ) {
+        $search = trim($search);
+
+        $perPage = max(1, min($perPage, 50));
+
+        if (mb_strlen($search) < 2) {
+            throw ValidationException::withMessages([
+                'search' => [
+                    'The search term must contain at least 2 characters.',
+                ],
+            ]);
+        }
+
+        $searchTerm = "%{$search}%";
+
+        return Invoice::query()
+            ->with([
+                'citizen',
+                'assessment',
+                'items.service',
+                'items.paymentSchedule',
+                'administrativeUnit',
+                'creator',
+                'issuer',
+            ])
+            ->whereIn('status', [
+                'ISSUED',
+                'PARTIALLY_PAID',
+                'OVERDUE',
+            ])
+            ->where('balance_due', '>', 0)
+            ->where(function (Builder $query) use ($searchTerm) {
+
+                // Search by invoice number.
+                $query->where(
+                    'invoice_number',
+                    'like',
+                    $searchTerm
+                );
+
+                // Search by assessment number.
+                $query->orWhereHas(
+                    'assessment',
+                    function (Builder $assessmentQuery) use ($searchTerm) {
+                        $assessmentQuery->where(
+                            'assessment_number',
+                            'like',
+                            $searchTerm
+                        );
+                    }
+                );
+            })
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->paginate($perPage);
+    }
+
+
+
+
     /*
     |--------------------------------------------------------------------------
     | INVOICE SUMMARY

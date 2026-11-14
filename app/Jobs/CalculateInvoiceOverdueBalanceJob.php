@@ -40,9 +40,10 @@ class CalculateInvoiceOverdueBalanceJob implements ShouldQueue
      * ============================================================
      */
     public function __construct(
-        public string $invoiceId,
-        public string $asOfDate,
+        public readonly string $invoiceId,
+        public readonly string $asOfDate,
     ) {
+        $this->onQueue('overdue-balances');
     }
 
     /**

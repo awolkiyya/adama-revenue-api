@@ -9,6 +9,7 @@ use App\Services\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Throwable;
 use App\Modules\Invoice\Resources\InvoiceDetailResource;
+use App\Modules\Invoice\Requests\InvoiceUnpaidRequest;
 class InvoiceController
 {
     /*
@@ -239,4 +240,47 @@ class InvoiceController
             );
         }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | UNPAID
+    |--------------------------------------------------------------------------
+    |
+    | Return invoices that still have a balance (ISSUED, PARTIALLY_PAID,
+    | OVERDUE) matching a required search term, together with the true
+    | totals for the whole search in meta.summary.
+    |
+    | InvoiceService controls filtering, ordering and summary.
+    | InvoiceResource controls the shape of each invoice.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+   
+    public function unpaid(
+        InvoiceUnpaidRequest $request
+    ): JsonResponse {
+        try {
+            $validated = $request->validated();
+
+            $invoices = $this->invoiceService->paginateUnpaid(
+                search: $validated['search'],
+                perPage: (int) ($validated['per_page'] ?? 20),
+            );
+
+            return ApiResponse::success(
+                data: InvoiceResource::collection($invoices),
+                message: 'Unpaid invoices retrieved successfully.',
+            );
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return ApiResponse::serverError(
+                message: 'Failed to retrieve unpaid invoices.',
+                exception: $e,
+            );
+        }
+    }
+
 }

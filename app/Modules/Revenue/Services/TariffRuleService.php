@@ -83,38 +83,22 @@ class TariffRuleService
         return $rule->fresh($this->defaultRelations());
     }
 
+   
     /**
-     * Copy selected formula configuration from a source rule
+     * Copy formula variables from a source rule
      * to a destination rule within the same tariff version.
-     *
-     * Supported options:
-     * - variables
-     * - expression
-     * - conditions
      */
     public function copyFormula(
         TariffVersion $tariffVersion,
         TariffRule $destinationRule,
         array $data
     ): TariffRule {
-        $options = $data['options'] ?? [];
+        $copyVariables = (bool) ($data['options']['variables'] ?? false);
 
-        $copyVariables = (bool) ($options['variables'] ?? false);
-        $copyExpression = (bool) ($options['expression'] ?? false);
-        $copyConditions = (bool) ($options['conditions'] ?? false);
-
-        $overwrite = (bool) ($data['overwrite'] ?? false);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate selected options
-        |--------------------------------------------------------------------------
-        */
-
-        if (! $copyVariables && ! $copyExpression && ! $copyConditions) {
+        if (! $copyVariables) {
             throw ValidationException::withMessages([
-                'options' => [
-                    'Select at least one formula configuration option to copy.',
+                'options.variables' => [
+                    'Select formula variables to copy.',
                 ],
             ]);
         }
@@ -132,11 +116,7 @@ class TariffRuleService
         return DB::transaction(function () use (
             $tariffVersion,
             $destinationRule,
-            $sourceRuleId,
-            $copyVariables,
-            $copyExpression,
-            $copyConditions,
-            $overwrite
+            $sourceRuleId
         ) {
             /*
             |--------------------------------------------------------------------------
@@ -187,7 +167,7 @@ class TariffRuleService
             if ($source->is($destination)) {
                 throw ValidationException::withMessages([
                     'destination_rule_id' => [
-                        'You cannot copy formula configuration to the same rule.',
+                        'You cannot copy formula variables to the same rule.',
                     ],
                 ]);
             }
@@ -209,77 +189,16 @@ class TariffRuleService
                 ]);
             }
 
-            $updates = [];
-
-            /*
-            |--------------------------------------------------------------------------
-            | Copy formula expression
-            |--------------------------------------------------------------------------
-            */
-
-            if ($copyExpression) {
-                $destinationHasFormula = ! empty(
-                    trim((string) $destination->formula)
-                );
-
-                if ($destinationHasFormula && ! $overwrite) {
-                    throw ValidationException::withMessages([
-                        'overwrite' => [
-                            'The destination already has a formula expression. '
-                            . 'Enable overwrite to replace it.',
-                        ],
-                    ]);
-                }
-
-                $updates['formula'] = $source->formula;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Copy conditions
-            |--------------------------------------------------------------------------
-            */
-
-            if ($copyConditions) {
-                $destinationConditions = $destination->conditions ?? [];
-
-                if (! empty($destinationConditions) && ! $overwrite) {
-                    throw ValidationException::withMessages([
-                        'overwrite' => [
-                            'The destination already has conditions. '
-                            . 'Enable overwrite to replace them.',
-                        ],
-                    ]);
-                }
-
-                $updates['conditions'] = $source->conditions ?? [];
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Update destination rule fields
-            |--------------------------------------------------------------------------
-            */
-
-            if (! empty($updates) || $copyVariables) {
-                $updates['updated_by'] = Auth::id();
-
-                $destination->update($updates);
-            }
-
             /*
             |--------------------------------------------------------------------------
             | Copy formula variables
             |--------------------------------------------------------------------------
             */
 
-            if ($copyVariables) {
-                $this->formulaVariableService->copy(
-                    $source,
-                    $destination,
-                    $overwrite
-                );
-            }
+            $this->formulaVariableService->copy(
+                $source,
+                $destination
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -290,6 +209,8 @@ class TariffRuleService
             return $destination->fresh($this->defaultRelations());
         });
     }
+
+
 
     /**
      * Delete a tariff rule.
