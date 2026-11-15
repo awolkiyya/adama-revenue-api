@@ -109,19 +109,12 @@ verify_postgres() {
         if database_result="$(
             docker exec "$container_id" sh -ec '
 
-                # ------------------------------------------------
-                # Validate PostgreSQL environment variables
-                # ------------------------------------------------
-
                 : "${POSTGRES_USER:?POSTGRES_USER is not configured}"
                 : "${POSTGRES_DB:?POSTGRES_DB is not configured}"
 
-                # ------------------------------------------------
-                # Check PostgreSQL readiness
-                #
-                # Suppress pg_isready output because it writes
-                # a status message to stdout.
-                # ------------------------------------------------
+                # Suppress pg_isready output.
+                # Otherwise its readiness message gets captured
+                # together with the SQL result.
 
                 if ! pg_isready \
                     --username="$POSTGRES_USER" \
@@ -133,12 +126,7 @@ verify_postgres() {
 
                 fi
 
-                # ------------------------------------------------
-                # Execute SQL verification
-                #
-                # Explicitly use the configured PostgreSQL user
-                # and database.
-                # ------------------------------------------------
+                # Execute a real SQL query.
 
                 result="$(
                     psql \
@@ -152,9 +140,7 @@ verify_postgres() {
                         --command="SELECT 1"
                 )"
 
-                # ------------------------------------------------
-                # Validate SQL result
-                # ------------------------------------------------
+                # Verify the exact SQL result.
 
                 if [ "$result" != "1" ]; then
 
@@ -168,10 +154,6 @@ verify_postgres() {
 
             ' 2>&1
         )"; then
-
-            # ------------------------------------------------
-            # Verification successful
-            # ------------------------------------------------
 
             if [[ "$database_result" == "1" ]]; then
 
@@ -190,10 +172,6 @@ verify_postgres() {
             fi
 
         else
-
-            # ------------------------------------------------
-            # Verification failed
-            # ------------------------------------------------
 
             log_warn "PostgreSQL database verification failed ($attempt/$MAX_ATTEMPTS)."
 
