@@ -103,6 +103,7 @@ jobs:
              [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
             echo "::warning::Production database seeders are enabled."
             echo "The server-side seeder script must enforce the approved allowlist."
+            echo "Production seeding confirmation will be passed to the deployment script."
           fi
 
           echo "Environment: $DEPLOY_ENVIRONMENT"
@@ -181,7 +182,7 @@ jobs:
           test -f deployment/scripts/database-seed.sh
 
           test -f "deployment/config/${DEPLOY_ENVIRONMENT}.env"
-          test -f deployment/config/seeders.allowlist
+          test -f deployment/seeder.allowlist
 
           # Validate shell syntax before packaging.
           for script in deployment/scripts/*.sh; do
@@ -237,7 +238,7 @@ jobs:
             deployment/scripts/database-migrate.sh \
             deployment/scripts/database-seed.sh \
             "deployment/config/${DEPLOY_ENVIRONMENT}.env" \
-            deployment/config/seeders.allowlist; do
+            deployment/seeder.allowlist; do
 
             if ! grep -Fxq "$required_file" "$DEPLOYMENT_ARCHIVE_LIST"; then
               echo "::error::Deployment archive is missing: $required_file"
@@ -430,7 +431,7 @@ jobs:
           test -f "$DEPLOYMENT_DIR/scripts/database-migrate.sh"
           test -f "$DEPLOYMENT_DIR/scripts/database-seed.sh"
           test -f "$DEPLOYMENT_DIR/config/${ENVIRONMENT}.env"
-          test -f "$DEPLOYMENT_DIR/config/seeders.allowlist"
+          test -f "$DEPLOYMENT_DIR/seeder.allowlist"
 
           # Validate extracted scripts.
           for script in "$DEPLOYMENT_DIR"/scripts/*.sh; do
@@ -447,9 +448,24 @@ jobs:
           echo ""
           echo "[3/3] Running Laravel deployment..."
 
-          RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
-          RUN_DATABASE_SEEDERS="$RUN_DATABASE_SEEDERS" \
-            bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
+          if [[ "$ENVIRONMENT" == "production" ]] &&
+             [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
+
+            echo "Production seeding explicitly enabled."
+            echo "Production seeding confirmation supplied."
+
+            CONFIRM_PRODUCTION_SEEDING=YES \
+            RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
+            RUN_DATABASE_SEEDERS="$RUN_DATABASE_SEEDERS" \
+              bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
+
+          else
+
+            RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
+            RUN_DATABASE_SEEDERS="$RUN_DATABASE_SEEDERS" \
+              bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
+
+          fi
 
           echo ""
           echo "Remote deployment script completed."

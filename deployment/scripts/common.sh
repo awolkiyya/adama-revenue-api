@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# Adama Municipal Revenue API
+# ADAMA MUNICIPAL REVENUE API
 # Shared Deployment Functions
 # ============================================================
 
@@ -149,7 +149,6 @@ deployment_init() {
         WORKER_SERVICE
         SCHEDULER_SERVICE
         DATABASE_BACKUP_REQUIRED
-        REFERENCE_SEEDING_ENABLED
     )
 
     local variable_name
@@ -171,14 +170,6 @@ deployment_init() {
             ;;
         *)
             die "DATABASE_BACKUP_REQUIRED must be true or false."
-            ;;
-    esac
-
-    case "$REFERENCE_SEEDING_ENABLED" in
-        true|false)
-            ;;
-        *)
-            die "REFERENCE_SEEDING_ENABLED must be true or false."
             ;;
     esac
 
@@ -292,7 +283,7 @@ deployment_summary() {
     log "Compose project: $COMPOSE_PROJECT_NAME"
     log "Docker image: $APP_IMAGE"
     log "Database backup required: $DATABASE_BACKUP_REQUIRED"
-    log "Reference seeding enabled: $REFERENCE_SEEDING_ENABLED"
+    log "Reference seeding controlled by GitHub Actions."
 
     log "=========================================="
 

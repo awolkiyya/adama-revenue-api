@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 # ============================================================
@@ -65,6 +64,10 @@ verify_postgres() {
 
     for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
 
+        # ----------------------------------------------------
+        # Find PostgreSQL container
+        # ----------------------------------------------------
+
         container_id="$(compose ps -q "$POSTGRES_SERVICE")"
 
         if [[ -z "$container_id" ]]; then
@@ -93,6 +96,7 @@ verify_postgres() {
             healthy|running)
                 ;;
             *)
+                log_warn "PostgreSQL container is not running or healthy yet."
                 sleep "$RETRY_INTERVAL"
                 continue
                 ;;
@@ -104,26 +108,50 @@ verify_postgres() {
 
         if database_result="$(
             docker exec "$container_id" sh -ec '
+
                 : "${POSTGRES_USER:?POSTGRES_USER is not configured}"
                 : "${POSTGRES_DB:?POSTGRES_DB is not configured}"
 
-                pg_isready \
+                # Suppress pg_isready output.
+                # Otherwise its readiness message gets captured
+                # together with the SQL result.
+
+                if ! pg_isready \
                     --username="$POSTGRES_USER" \
-                    --dbname="$POSTGRES_DB"
+                    --dbname="$POSTGRES_DB" \
+                    >/dev/null 2>&1; then
+
+                    echo "pg_isready could not verify PostgreSQL readiness." >&2
+                    exit 1
+
+                fi
+
+                # Execute a real SQL query.
 
                 result="$(
                     psql \
+                        --no-psqlrc \
                         --username="$POSTGRES_USER" \
                         --dbname="$POSTGRES_DB" \
                         --no-align \
                         --tuples-only \
+                        --quiet \
                         --set=ON_ERROR_STOP=1 \
                         --command="SELECT 1"
                 )"
 
-                test "$result" = "1"
+                # Verify the exact SQL result.
+
+                if [ "$result" != "1" ]; then
+
+                    echo "SQL verification returned an unexpected result: $result" >&2
+
+                    exit 1
+
+                fi
 
                 printf "%s\n" "$result"
+
             ' 2>&1
         )"; then
 
@@ -137,9 +165,21 @@ verify_postgres() {
 
             fi
 
-        fi
+            log_warn "PostgreSQL verification returned an unexpected response."
 
-        log_warn "PostgreSQL is not ready for database queries yet."
+            if [[ -n "$database_result" ]]; then
+                log_warn "Verification output: $database_result"
+            fi
+
+        else
+
+            log_warn "PostgreSQL database verification failed ($attempt/$MAX_ATTEMPTS)."
+
+            if [[ -n "$database_result" ]]; then
+                log_warn "Database verification error: $database_result"
+            fi
+
+        fi
 
         sleep "$RETRY_INTERVAL"
 
@@ -154,6 +194,7 @@ verify_postgres() {
 # ------------------------------------------------------------
 
 echo ""
+
 log "=========================================="
 log "DATABASE VERIFICATION"
 log "=========================================="
@@ -161,6 +202,7 @@ log "=========================================="
 verify_postgres
 
 echo ""
+
 log "=========================================="
 log "DATABASE VERIFICATION PASSED"
 log "=========================================="
