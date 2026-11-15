@@ -6,6 +6,7 @@
 #
 # Usage:
 #   bash database-seed.sh staging PermissionSeeder
+#
 #   CONFIRM_PRODUCTION_SEEDING=YES \
 #       bash database-seed.sh production PermissionSeeder
 #
@@ -54,8 +55,8 @@ deployment_init "$ENVIRONMENT"
 require_command docker
 require_command grep
 require_command sed
-require_command awk
 require_command date
+require_command awk
 
 # ------------------------------------------------------------
 # Production protection
@@ -120,17 +121,14 @@ for ((i = 0; i < ${#APPROVED_SEEDERS[@]}; i++)); do
 
     approved_seeder="${APPROVED_SEEDERS[$i]}"
 
-    # Validate class-name format.
     if [[ ! "$approved_seeder" =~ ^[A-Za-z][A-Za-z0-9]*Seeder$ ]]; then
         die "Invalid seeder entry in allowlist: $approved_seeder"
     fi
 
-    # DatabaseSeeder must never be allowlisted.
     if [[ "$approved_seeder" == "DatabaseSeeder" ]]; then
         die "DatabaseSeeder is prohibited in the seeder allowlist."
     fi
 
-    # Prevent duplicate entries.
     for ((j = 0; j < i; j++)); do
 
         if [[ "${APPROVED_SEEDERS[$j]}" == "$approved_seeder" ]]; then
@@ -231,6 +229,8 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
     BACKUP_MAX_AGE_MINUTES="${DATABASE_BACKUP_MAX_AGE_MINUTES:-30}"
 
+    EXPECTED_BACKUP_PREFIX="adama-revenue-production_"
+
     log "Production database backup is mandatory."
 
     # Validate backup age configuration.
@@ -238,12 +238,20 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
         die "DATABASE_BACKUP_MAX_AGE_MINUTES must be a positive integer."
     fi
 
+    # Protect against unreasonable arithmetic values.
+    if (( ${#BACKUP_MAX_AGE_MINUTES} > 6 )); then
+        die "DATABASE_BACKUP_MAX_AGE_MINUTES is unreasonably large."
+    fi
+
     require_command sudo
 
-    # The script is root-owned and executable through the
-    # explicitly authorized sudoers command.
+    # The backup script must exist.
     if [[ ! -f "$BACKUP_SCRIPT" ]]; then
         die "Production backup script does not exist: $BACKUP_SCRIPT"
+    fi
+
+    if [[ ! -x "$BACKUP_SCRIPT" ]]; then
+        die "Production backup script is not executable: $BACKUP_SCRIPT"
     fi
 
     log "Creating a fresh production PostgreSQL backup."
@@ -260,7 +268,10 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
     # Preserve backup script output for audit logs.
     printf '%s\n' "$BACKUP_OUTPUT"
 
-    # Extract machine-readable backup metadata.
+    # --------------------------------------------------------
+    # Extract machine-readable backup metadata
+    # --------------------------------------------------------
+
     mapfile -t BACKUP_FILE_LINES < <(
         printf '%s\n' "$BACKUP_OUTPUT" |
             grep '^BACKUP_FILE=' || true
@@ -283,30 +294,67 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
     BACKUP_CREATED_AT="${BACKUP_CREATED_LINES[0]#BACKUP_CREATED_AT=}"
 
-    # Validate backup path.
+    # --------------------------------------------------------
+    # Validate backup directory
+    # --------------------------------------------------------
+
     if [[ "$BACKUP_FILE" != "$BACKUP_DIRECTORY/"* ]]; then
         die "Backup file is outside the expected production backup directory."
     fi
 
     BACKUP_FILENAME="${BACKUP_FILE##*/}"
 
-    # Validate exact backup filename format.
-    if [[ ! "$BACKUP_FILENAME" =~ ^adama-revenue-production_([0-9]{8}T[0-9]{6}Z)\.dump$ ]]; then
+    # Reject nested paths and unexpected filename structures.
+    if [[ "$BACKUP_FILENAME" == */* || -z "$BACKUP_FILENAME" ]]; then
+        die "Invalid production backup filename."
+    fi
+
+    # --------------------------------------------------------
+    # Validate exact backup filename
+    # --------------------------------------------------------
+
+    if [[ "$BACKUP_FILENAME" != "${EXPECTED_BACKUP_PREFIX}"*.dump ]]; then
         die "Invalid production backup filename: $BACKUP_FILENAME"
     fi
 
-    # Validate backup timestamp.
+    # Extract timestamp without BASH_REMATCH.
+    FILENAME_TIMESTAMP="${BACKUP_FILENAME#"$EXPECTED_BACKUP_PREFIX"}"
+    FILENAME_TIMESTAMP="${FILENAME_TIMESTAMP%.dump}"
+
+    # Expected format: YYYYMMDDTHHMMSSZ
+    if [[ ! "$FILENAME_TIMESTAMP" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+        die "Invalid production backup filename timestamp: $FILENAME_TIMESTAMP"
+    fi
+
+    # --------------------------------------------------------
+    # Validate backup file existence
+    # --------------------------------------------------------
+
+    if ! sudo -n test -f "$BACKUP_FILE"; then
+        die "Production backup file does not exist: $BACKUP_FILE"
+    fi
+
+    # --------------------------------------------------------
+    # Validate machine-readable creation timestamp
+    # --------------------------------------------------------
+
     if [[ ! "$BACKUP_CREATED_AT" =~ ^[0-9]+$ ]]; then
         die "Invalid BACKUP_CREATED_AT value."
     fi
 
-    FILENAME_TIMESTAMP="${BASH_REMATCH[1]}"
+    # --------------------------------------------------------
+    # Convert filename timestamp into Unix epoch
+    # --------------------------------------------------------
 
     FILENAME_ISO="${FILENAME_TIMESTAMP:0:4}-${FILENAME_TIMESTAMP:4:2}-${FILENAME_TIMESTAMP:6:2}T${FILENAME_TIMESTAMP:9:2}:${FILENAME_TIMESTAMP:11:2}:${FILENAME_TIMESTAMP:13:2}Z"
 
     if ! FILENAME_EPOCH="$(date -u -d "$FILENAME_ISO" +%s)"; then
         die "Unable to parse production backup filename timestamp."
     fi
+
+    # --------------------------------------------------------
+    # Validate timestamp consistency and freshness
+    # --------------------------------------------------------
 
     CURRENT_EPOCH="$(date +%s)"
 
@@ -315,14 +363,14 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
         die "Production backup timestamp is in the future."
     fi
 
-    # Ensure the filename and machine-readable timestamps agree.
+    # Ensure filename and machine-readable timestamps agree.
     TIMESTAMP_DIFFERENCE=$(( BACKUP_CREATED_AT - FILENAME_EPOCH ))
 
     if (( TIMESTAMP_DIFFERENCE < -60 || TIMESTAMP_DIFFERENCE > 60 )); then
         die "Production backup timestamps do not match."
     fi
 
-    # Verify backup freshness.
+    # Calculate backup age.
     BACKUP_AGE_SECONDS=$(( CURRENT_EPOCH - BACKUP_CREATED_AT ))
 
     if (( BACKUP_AGE_SECONDS < 0 )); then
