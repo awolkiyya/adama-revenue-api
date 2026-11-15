@@ -174,17 +174,44 @@ deployment_init() {
     esac
 
     # --------------------------------------------------------
-    # Validate environment-specific backup configuration
+    # Validate production backup policy
     # --------------------------------------------------------
 
     if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
-        if [[ -z "${DATABASE_BACKUP_SCRIPT:-}" ]]; then
-            die "Production backup script configuration is missing."
+        if [[ "$DATABASE_BACKUP_REQUIRED" == "true" ]]; then
+
+            # Normal production deployments must have a
+            # configured backup script.
+            if [[ -z "${DATABASE_BACKUP_SCRIPT:-}" ]]; then
+                die "Production backup script configuration is missing."
+            fi
+
+            log "Production database backup is mandatory."
+
+        elif [[ "$DATABASE_BACKUP_REQUIRED" == "false" ]]; then
+
+            # Disabling production backups is permitted only
+            # during an explicitly confirmed first deployment.
+            if [[ "${CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT:-}" != "YES" ]]; then
+                die "Production backup cannot be disabled without CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT=YES."
+            fi
+
+            log_warn "Production database backup requirement is disabled."
+            log_warn "First-time production initialization has been explicitly confirmed."
+
+            # The caller must independently verify that the
+            # target production database is new and contains
+            # no existing data before running migrations.
+
         fi
 
-        if [[ "$DATABASE_BACKUP_REQUIRED" != "true" ]]; then
-            die "Production deployment must require a database backup."
+    else
+
+        # Staging does not require the production initialization
+        # confirmation.
+        if [[ "${CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT:-}" == "YES" ]]; then
+            log_warn "Production initialization confirmation is ignored for staging."
         fi
 
     fi
@@ -233,6 +260,7 @@ deployment_init() {
     log "Project: $COMPOSE_PROJECT_NAME"
     log "Source: $SOURCE_DIR"
     log "Image: $APP_IMAGE"
+    log "Database backup required: $DATABASE_BACKUP_REQUIRED"
 
 }
 
@@ -283,6 +311,12 @@ deployment_summary() {
     log "Compose project: $COMPOSE_PROJECT_NAME"
     log "Docker image: $APP_IMAGE"
     log "Database backup required: $DATABASE_BACKUP_REQUIRED"
+
+    if [[ "$APP_ENVIRONMENT" == "production" ]] &&
+       [[ "$DATABASE_BACKUP_REQUIRED" == "false" ]]; then
+        log_warn "FIRST-TIME PRODUCTION INITIALIZATION MODE"
+    fi
+
     log "Reference seeding controlled by GitHub Actions."
 
     log "=========================================="
