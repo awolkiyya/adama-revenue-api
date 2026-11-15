@@ -39,8 +39,8 @@ require_command docker
 # Require explicit authorization
 # ------------------------------------------------------------
 
-if [[ "${RUN_REFERENCE_SEEDERS:-false}" != "true" ]]; then
-    die "Seeding is disabled. Set RUN_REFERENCE_SEEDERS=true to authorize it explicitly."
+if [[ "${RUN_DATABASE_SEEDERS:-false}" != "true" ]]; then
+    die "Seeding is disabled. Set RUN_DATABASE_SEEDERS=true to authorize it explicitly."
 fi
 
 if [[ "$REFERENCE_SEEDING_ENABLED" != "true" ]]; then
