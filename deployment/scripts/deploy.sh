@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 # ============================================================
@@ -48,13 +47,17 @@ case "$RUN_DATABASE_MIGRATIONS" in
 esac
 
 if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+
     log_warn "Database migrations are explicitly enabled."
+
 else
+
     log "Database migrations are disabled. Existing database schema will be preserved."
+
 fi
 
 # ------------------------------------------------------------
-# Reference seeding policy
+# Database seeding policy
 # ------------------------------------------------------------
 
 RUN_DATABASE_SEEDERS="${RUN_DATABASE_SEEDERS:-false}"
@@ -67,21 +70,88 @@ case "$RUN_DATABASE_SEEDERS" in
         ;;
 esac
 
+# GitHub Actions controls whether seeding runs.
+# The allowlist controls which seeders are permitted.
+#
+# No REFERENCE_SEEDERS or REFERENCE_SEEDING_ENABLED
+# environment variables are required.
+
+SEEDER_ALLOWLIST="$DEPLOYMENT_ROOT/seeder.allowlist"
+SEEDER_LIST=()
+
 if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
 
-    if [[ "$REFERENCE_SEEDING_ENABLED" != "true" ]]; then
-        die "Reference seeding is disabled in this environment."
+    log_warn "Approved reference-data seeding is explicitly enabled."
+
+    # Validate the command before reading the allowlist.
+    require_command sed
+
+    # The allowlist must exist.
+    require_file "$SEEDER_ALLOWLIST" "Seeder allowlist"
+
+    # Read the allowlist, ignoring blank lines and comments.
+    mapfile -t SEEDER_LIST < <(
+        sed \
+            -e 's/#.*//' \
+            -e 's/^[[:space:]]*//' \
+            -e 's/[[:space:]]*$//' \
+            -e '/^$/d' \
+            "$SEEDER_ALLOWLIST"
+    )
+
+    if [[ "${#SEEDER_LIST[@]}" -eq 0 ]]; then
+        die "Seeder allowlist is empty."
     fi
 
-    if [[ -z "${REFERENCE_SEEDERS:-}" ]]; then
-        die "REFERENCE_SEEDERS must specify at least one approved seeder."
-    fi
+    # Validate every entry before executing anything.
+    for ((i = 0; i < ${#SEEDER_LIST[@]}; i++)); do
 
-    log_warn "Reference seeding is explicitly enabled."
+        seeder="${SEEDER_LIST[$i]}"
+
+        # Validate the seeder class name.
+        if [[ ! "$seeder" =~ ^[A-Za-z][A-Za-z0-9]*Seeder$ ]]; then
+
+            die "Invalid seeder entry in allowlist: $seeder"
+
+        fi
+
+        # Reject seeders that require separate authorization.
+        case "$seeder" in
+
+            DatabaseSeeder)
+                die "DatabaseSeeder is prohibited in the reference seeder allowlist."
+                ;;
+
+            SystemAdminSeeder|FieldCollectorSeeder)
+                die "User-provisioning seeder is prohibited: $seeder"
+                ;;
+
+            RoleSeeder|RolePermissionSeeder)
+                die "Authorization-management seeder is prohibited: $seeder"
+                ;;
+
+        esac
+
+        # Reject duplicate entries before execution.
+        for ((j = 0; j < i; j++)); do
+
+            if [[ "${SEEDER_LIST[$j]}" == "$seeder" ]]; then
+
+                die "Duplicate seeder in allowlist: $seeder"
+
+            fi
+
+        done
+
+        log "Approved seeder: $seeder"
+
+    done
+
+    log "Validated ${#SEEDER_LIST[@]} approved seeders."
 
 else
 
-    log "Reference seeding is disabled."
+    log "Reference seeding is disabled for this deployment."
 
 fi
 
@@ -99,6 +169,7 @@ require_command mktemp
 require_command sleep
 require_command seq
 require_command grep
+require_command sed
 require_command date
 require_command hostname
 
@@ -486,26 +557,14 @@ else
 fi
 
 # ------------------------------------------------------------
-# Optional reference seeding
+# Run approved reference seeders when requested
 # ------------------------------------------------------------
 
 if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
 
-    log "Reference seeding explicitly requested."
+    log "Executing approved seeders from the deployment allowlist."
 
-    if [[ "$REFERENCE_SEEDING_ENABLED" != "true" ]]; then
-        die "Reference seeding is disabled in this environment."
-    fi
-
-    if [[ -z "${REFERENCE_SEEDERS:-}" ]]; then
-        die "REFERENCE_SEEDERS must specify at least one approved seeder."
-    fi
-
-    read -r -a SEEDER_LIST <<< "$REFERENCE_SEEDERS"
-
-    if [[ "${#SEEDER_LIST[@]}" -eq 0 ]]; then
-        die "No reference seeders were provided."
-    fi
+    # Execute seeders in the exact order defined by seeder.allowlist.
 
     for seeder in "${SEEDER_LIST[@]}"; do
 
@@ -514,6 +573,8 @@ if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
         bash "$DEPLOYMENT_ROOT/scripts/database-seed.sh" \
             "$APP_ENVIRONMENT" \
             "$seeder"
+
+        log "Seeder completed successfully: $seeder"
 
     done
 
@@ -585,7 +646,6 @@ compose up \
     --remove-orphans \
     --scale "$APP_SERVICE=1"
 
-# IMPORTANT:
 # Do not clear recovery flags here.
 # They remain active until all verification succeeds.
 
@@ -717,17 +777,18 @@ log "Finished: $(date -Is)"
 # Emit exact environment-specific GitHub Actions marker
 # ------------------------------------------------------------
 
-# Do not use log() here because it adds a timestamp and prefix.
-# GitHub Actions verifies this marker using grep -Fxq.
-
 case "$APP_ENVIRONMENT" in
+
     staging)
         printf '%s\n' "STAGING_DEPLOYMENT_SUCCESS"
         ;;
+
     production)
         printf '%s\n' "PRODUCTION_DEPLOYMENT_SUCCESS"
         ;;
+
     *)
         die "Cannot emit success marker for unsupported environment."
         ;;
+
 esac
