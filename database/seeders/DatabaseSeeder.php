@@ -78,18 +78,5 @@ class DatabaseSeeder extends Seeder
         $this->call([
             SystemAdminSeeder::class,
         ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | 7. Field Collectors
-        |--------------------------------------------------------------------------
-        |
-        | Requires roles and administrative units to exist.
-        |
-        */
-
-        $this->call([
-            FieldCollectorSeeder::class,
-        ]);
     }
 }
