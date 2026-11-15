@@ -34,8 +34,8 @@ jobs:
 
     with:
       environment: staging
-      run_database_migrations: ${{ inputs.run_database_migrations || false }}
-      run_database_seeders: ${{ inputs.run_database_seeders || false }}
+      run_database_migrations: ${{ inputs.run_database_migrations }}
+      run_database_seeders: ${{ inputs.run_database_seeders }}
 
     secrets:
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_KEY }}
