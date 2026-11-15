@@ -44,6 +44,16 @@ if [[ ! -w "$LOG_FILE" ]]; then
     exit 1
 fi
 
+# Preserve standard output for machine-readable results.
+#
+# Standard output is used by database-migrate.sh to receive:
+#   BACKUP_FILE
+#   BACKUP_CREATED_AT
+#
+# Normal backup logs are redirected to LOG_FILE.
+
+exec 3>&1
+
 exec >> "$LOG_FILE" 2>&1
 
 log() {
@@ -75,9 +85,11 @@ cleanup() {
     # Remove an incomplete published backup if checksum
     # publication failed.
     if [[ "$exit_code" -ne 0 && -n "$FINAL_FILE" ]]; then
+
         if [[ -f "$FINAL_FILE" && ! -f "$FINAL_CHECKSUM" ]]; then
             rm -f -- "$FINAL_FILE"
         fi
+
     fi
 
     if [[ "$exit_code" -ne 0 ]]; then
@@ -107,10 +119,12 @@ for required_file in \
     "$COMPOSE_OVERRIDE_FILE" \
     "$ENV_FILE"
 do
+
     if [[ ! -f "$required_file" ]]; then
         log "ERROR: Required configuration file does not exist: $required_file"
         exit 1
     fi
+
 done
 
 if [[ ! -d "$PROJECT_DIR" ]]; then
@@ -156,10 +170,12 @@ for required_command in \
     date \
     basename
 do
+
     if ! command -v "$required_command" >/dev/null 2>&1; then
         log "ERROR: Required host command is unavailable: $required_command"
         exit 1
     fi
+
 done
 
 # ----------------------------------------------------------
@@ -301,6 +317,11 @@ CHECKSUM="$(
     sha256sum "$TEMP_FILE" | awk '{ print $1 }'
 )"
 
+if [[ ! "$CHECKSUM" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    log "ERROR: Generated SHA256 checksum is invalid."
+    exit 1
+fi
+
 printf '%s  %s\n' \
     "$CHECKSUM" \
     "$(basename "$FINAL_FILE")" \
@@ -317,7 +338,7 @@ chmod "$FILE_MODE" "$TEMP_CHECKSUM"
 
 # ----------------------------------------------------------
 # PUBLISH BACKUP
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 
 log "Publishing PostgreSQL backup..."
 
@@ -345,6 +366,25 @@ log "Verifying saved backup checksum..."
 )
 
 log "Saved backup checksum verified."
+
+# ----------------------------------------------------------
+# CAPTURE BACKUP CREATION TIMESTAMP
+# ----------------------------------------------------------
+
+# Capture the timestamp only after:
+#   1. The backup archive has been published.
+#   2. The checksum has been published.
+#   3. The saved checksum has been verified.
+#
+# The migration script uses this timestamp to verify that
+# the backup belongs to the current deployment attempt.
+
+BACKUP_CREATED_AT="$(date +%s)"
+
+if [[ ! "$BACKUP_CREATED_AT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: Unable to determine backup creation timestamp."
+    exit 1
+fi
 
 # ----------------------------------------------------------
 # BACKUP RETENTION CLEANUP
@@ -384,5 +424,18 @@ log "PostgreSQL backup completed successfully."
 log "Backup: $FINAL_FILE"
 log "Checksum: $FINAL_CHECKSUM"
 log "=========================================================="
+
+# ----------------------------------------------------------
+# RETURN MACHINE-READABLE BACKUP RESULT
+# ----------------------------------------------------------
+
+# Standard output is reserved for the deployment orchestrator.
+# Detailed logs remain in LOG_FILE.
+#
+# database-migrate.sh expects these exact variable names.
+
+printf 'BACKUP_FILE=%s\n' "$FINAL_FILE" >&3
+
+printf 'BACKUP_CREATED_AT=%s\n' "$BACKUP_CREATED_AT" >&3
 
 exit 0

@@ -39,14 +39,9 @@ deployment_init "$ENVIRONMENT"
 
 require_command docker
 require_command date
-require_command sha256sum
 require_command awk
-require_command find
-require_command sort
-require_command head
-require_command basename
 require_command grep
-require_command stat
+require_command sudo
 
 # ------------------------------------------------------------
 # Production backup configuration
@@ -57,6 +52,10 @@ BACKUP_MAX_AGE_MINUTES="${DATABASE_BACKUP_MAX_AGE_MINUTES:-30}"
 if ! [[ "$BACKUP_MAX_AGE_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
     die "DATABASE_BACKUP_MAX_AGE_MINUTES must be a positive integer."
 fi
+
+# The production backup script publishes backups here.
+# Keep this consistent with the Ansible backup role.
+PRODUCTION_BACKUP_DIRECTORY="/var/backups/adama-revenue-api/production/postgresql"
 
 # ------------------------------------------------------------
 # Verify PostgreSQL readiness
@@ -69,13 +68,115 @@ bash "$DEPLOYMENT_ROOT/scripts/database-verify.sh" "$APP_ENVIRONMENT"
 log "PostgreSQL readiness verification passed."
 
 # ------------------------------------------------------------
-# Verify first-time production database is empty
+# Verify database is genuinely empty
+# ------------------------------------------------------------
+
+verify_database_empty() {
+
+    local environment_label="$1"
+    local output
+    local object_count
+    local marker
+
+    marker="${environment_label}_DATABASE_OBJECT_COUNT"
+
+    log_warn "Checking whether the ${environment_label} database is genuinely empty."
+
+    # Count all user-defined PostgreSQL relations, including:
+    #   r = ordinary tables
+    #   p = partitioned tables
+    #   v = views
+    #   m = materialized views
+    #   S = sequences
+    #   f = foreign tables
+    #
+    # Also count non-system schemas other than the default
+    # public schema.
+    #
+    # This is read-only. It does not modify the database.
+
+    if ! output="$(
+        compose run \
+            --rm \
+            --no-deps \
+            "$APP_SERVICE" \
+            php artisan tinker --execute="
+                \$result = DB::selectOne(\"
+                    SELECT
+                        (
+                            SELECT COUNT(*)
+                            FROM pg_class c
+                            JOIN pg_namespace n
+                                ON n.oid = c.relnamespace
+                            WHERE n.nspname NOT IN (
+                                'pg_catalog',
+                                'information_schema'
+                            )
+                              AND n.nspname NOT LIKE 'pg_%'
+                              AND c.relkind IN (
+                                  'r',
+                                  'p',
+                                  'v',
+                                  'm',
+                                  'S',
+                                  'f'
+                              )
+                        )
+                        +
+                        (
+                            SELECT COUNT(*)
+                            FROM pg_namespace
+                            WHERE nspname NOT IN (
+                                'pg_catalog',
+                                'information_schema',
+                                'public'
+                            )
+                              AND nspname NOT LIKE 'pg_%'
+                        ) AS object_count
+                \");
+
+                echo \"${marker}=\" . \$result->object_count . PHP_EOL;
+            " 2>&1
+    )"; then
+
+        printf '%s\n' "$output" >&2
+
+        die "Unable to verify whether the ${environment_label} database is empty."
+
+    fi
+
+    printf '%s\n' "$output"
+
+    object_count="$(
+        printf '%s\n' "$output" |
+            awk -F= -v marker="$marker" '
+                $1 == marker && $2 ~ /^[0-9]+$/ {
+                    value = $2
+                }
+                END {
+                    if (value != "") {
+                        print value
+                    }
+                }
+            '
+    )"
+
+    if [[ ! "$object_count" =~ ^[0-9]+$ ]]; then
+        die "Unable to determine the ${environment_label} database object count."
+    fi
+
+    if (( object_count != 0 )); then
+        die "${environment_label} database is not empty: ${object_count} user-defined database object(s) found. Initial migration is blocked."
+    fi
+
+    log "${environment_label} database contains zero user-defined database objects."
+}
+
+# ------------------------------------------------------------
+# Verify initial production database
 # ------------------------------------------------------------
 
 verify_initial_production_database() {
-
-    local output
-    local table_count
 
     if [[ "$APP_ENVIRONMENT" != "production" ]]; then
         return 0
@@ -89,56 +190,14 @@ verify_initial_production_database() {
         die "First-time production initialization confirmation is missing."
     fi
 
-    log_warn "Checking whether the production database is genuinely empty."
+    log_warn "Production backup requirement is disabled for first-time initialization."
 
-    # Count existing application tables in the schemas
-    # included in PostgreSQL's active search path.
-    #
-    # This is read-only. It does not create or modify tables.
+    # Initial production initialization is permitted only
+    # after verifying that the entire database is empty.
 
-    if ! output="$(
-        compose run \
-            --rm \
-            --no-deps \
-            "$APP_SERVICE" \
-            php artisan tinker --execute='
-                $result = DB::selectOne("
-                    SELECT COUNT(*) AS table_count
-                    FROM information_schema.tables
-                    WHERE table_type = ?
-                      AND table_schema = ANY(current_schemas(false))
-                ", ["BASE TABLE"]);
+    verify_database_empty "PRODUCTION"
 
-                echo "PRODUCTION_TABLE_COUNT=" . $result->table_count . PHP_EOL;
-            ' 2>&1
-    )"; then
-
-        printf '%s\n' "$output" >&2
-
-        die "Unable to verify whether the initial production database is empty."
-
-    fi
-
-    printf '%s\n' "$output"
-
-    table_count="$(
-        printf '%s\n' "$output" |
-            grep -E '^PRODUCTION_TABLE_COUNT=[0-9]+$' |
-            tail -n 1 |
-            cut -d '=' -f 2
-    )"
-
-    if [[ ! "$table_count" =~ ^[0-9]+$ ]]; then
-        die "Unable to determine the production database table count."
-    fi
-
-    if (( table_count != 0 )); then
-        die "First-time production initialization refused: the database already contains ${table_count} table(s). A verified backup is required."
-    fi
-
-    log "Production database contains zero tables."
-    log "First-time database initialization is permitted."
-
+    log "First-time production database initialization is permitted."
 }
 
 # ------------------------------------------------------------
@@ -148,15 +207,13 @@ verify_initial_production_database() {
 verify_production_backup() {
 
     local backup_script
-    local backup_directory
+    local backup_result
     local backup_file
-    local checksum_file
-    local backup_timestamp
-    local backup_age
-    local backup_basename
-    local checksum_basename
-    local current_timestamp
+    local backup_created_at
     local backup_started_at
+    local current_timestamp
+    local backup_age
+    local expected_prefix
 
     # Staging does not require a production backup.
     if [[ "$APP_ENVIRONMENT" != "production" ]]; then
@@ -176,11 +233,9 @@ verify_production_backup() {
 
         log_warn "Skipping production backup for explicitly confirmed first-time initialization."
 
-        # Never bypass the database-empty verification.
         verify_initial_production_database
 
         return 0
-
     fi
 
     # --------------------------------------------------------
@@ -188,7 +243,7 @@ verify_production_backup() {
     # --------------------------------------------------------
 
     if [[ "$DATABASE_BACKUP_REQUIRED" != "true" ]]; then
-        die "Invalid production database backup policy."
+        die "Invalid production database backup policy. DATABASE_BACKUP_REQUIRED must be true or false."
     fi
 
     backup_script="${DATABASE_BACKUP_SCRIPT:-}"
@@ -197,126 +252,124 @@ verify_production_backup() {
         die "Production database backup script is not configured."
     fi
 
-    require_command sudo
+    if [[ "$backup_script" != /* ]]; then
+        die "Production database backup script must use an absolute path: $backup_script"
+    fi
 
     # The backup script is intentionally root-owned and
-    # root-readable. Do not weaken its file permissions.
+    # root-readable with restrictive permissions.
     #
-    # Validate access using non-interactive sudo.
+    # Do not use sudo for test, find, stat, grep, or other
+    # separate commands. The sudoers rule authorizes only
+    # execution of the backup script itself.
 
-    if ! sudo -n test -f "$backup_script"; then
-        die "Production database backup script does not exist or is inaccessible to root: $backup_script"
-    fi
-
-    if ! sudo -n test -r "$backup_script"; then
-        die "Root cannot read the production database backup script: $backup_script"
-    fi
-
-    if ! sudo -n test -x "$backup_script"; then
-        die "Production database backup script is not executable: $backup_script"
-    fi
-
-    backup_directory="/var/backups/adama-revenue-api/production/postgresql"
-
-    if ! sudo -n test -d "$backup_directory"; then
-        die "Production backup directory does not exist or is inaccessible: $backup_directory"
-    fi
-
-    # Record the start time before invoking the backup script.
-    # The resulting archive must be newer than this timestamp.
     backup_started_at="$(date +%s)"
 
     log "Starting a new production PostgreSQL backup."
     log "Backup start timestamp: $backup_started_at"
 
-    # Execute the root-only backup script without an
-    # interactive password prompt.
+    # The backup script must return:
     #
-    # Any non-zero result blocks the migration.
+    # BACKUP_FILE=/absolute/path/to/backup.dump
+    # BACKUP_CREATED_AT=unix_timestamp
+    #
+    # Its normal logs remain in its configured log file.
 
-    if ! sudo -n "$backup_script"; then
+    if ! backup_result="$(sudo -n "$backup_script")"; then
         die "Production backup script failed. Migration is blocked."
     fi
 
-    log "Backup script completed. Checking for a newly created archive."
-
-    # Find the newest published production backup.
-    # The backup directory may be root-only, so use sudo.
-
-    if ! backup_file="$(
-        sudo -n find "$backup_directory" \
-            -maxdepth 1 \
-            -type f \
-            -name 'adama-revenue-production_*.dump' \
-            -printf '%T@ %p\n' |
-            sort -nr |
-            head -n 1 |
-            awk '{$1=""; sub(/^ /, ""); print}'
-    )"; then
-        die "Unable to inspect the production backup directory."
+    if [[ -z "$backup_result" ]]; then
+        die "Production backup script returned no backup result. Migration is blocked."
     fi
 
-    if [[ -z "$backup_file" ]]; then
-        die "No production PostgreSQL backup archive was found."
-    fi
-
-    checksum_file="${backup_file}.sha256"
-
-    if ! sudo -n test -f "$backup_file"; then
-        die "Production backup archive does not exist."
-    fi
-
-    if ! sudo -n test -r "$backup_file"; then
-        die "Root cannot read the production backup archive."
-    fi
-
-    if ! sudo -n test -f "$checksum_file"; then
-        die "Production backup checksum does not exist."
-    fi
-
-    if ! sudo -n test -r "$checksum_file"; then
-        die "Root cannot read the production backup checksum."
-    fi
-
-    if ! sudo -n test -s "$backup_file"; then
-        die "Production backup archive is empty."
-    fi
-
-    # Ensure this backup was created during this deployment attempt.
-    backup_timestamp="$(
-        sudo -n stat -c '%Y' "$backup_file"
+    backup_file="$(
+        printf '%s\n' "$backup_result" |
+            awk -F= '
+                $1 == "BACKUP_FILE" && NF >= 2 {
+                    value = substr($0, index($0, "=") + 1)
+                }
+                END {
+                    if (value != "") {
+                        print value
+                    }
+                }
+            '
     )"
 
-    if (( backup_timestamp < backup_started_at )); then
-        die "The newest backup predates this deployment attempt. Migration is blocked."
+    backup_created_at="$(
+        printf '%s\n' "$backup_result" |
+            awk -F= '
+                $1 == "BACKUP_CREATED_AT" && $2 ~ /^[0-9]+$/ {
+                    value = $2
+                }
+                END {
+                    if (value != "") {
+                        print value
+                    }
+                }
+            '
+    )"
+
+    if [[ -z "$backup_file" ]]; then
+        die "Backup script did not return BACKUP_FILE. Migration is blocked."
     fi
 
-    backup_basename="$(basename "$backup_file")"
-    checksum_basename="$(basename "$checksum_file")"
-
-    # Ensure the checksum references this exact archive.
-    if ! sudo -n grep -Fq -- "  ${backup_basename}" "$checksum_file"; then
-        die "Backup checksum does not reference the selected backup archive."
+    if [[ ! "$backup_created_at" =~ ^[0-9]+$ ]]; then
+        die "Backup script did not return a valid BACKUP_CREATED_AT timestamp. Migration is blocked."
     fi
 
-    log "Verifying production backup checksum."
+    # --------------------------------------------------------
+    # Validate returned backup location
+    # --------------------------------------------------------
 
-    sudo -n bash -c '
-        set -Eeuo pipefail
+    expected_prefix="${PRODUCTION_BACKUP_DIRECTORY}/adama-revenue-production_"
 
-        backup_directory="$1"
-        checksum_basename="$2"
+    if [[ "$backup_file" != "${expected_prefix}"*.dump ]]; then
+        die "Backup script returned an unexpected backup path: $backup_file"
+    fi
 
-        cd "$backup_directory"
+    # --------------------------------------------------------
+    # Validate backup filename
+    # --------------------------------------------------------
 
-        sha256sum --check "$checksum_basename"
-    ' _ "$backup_directory" "$checksum_basename" ||
-        die "Production backup checksum verification failed."
+    local backup_basename
+    local filename_timestamp
+    local filename_epoch
 
-    # Check backup age.
+    backup_basename="${backup_file##*/}"
+
+    if [[ ! "$backup_basename" =~ ^adama-revenue-production_([0-9]{8}T[0-9]{6}Z)\.dump$ ]]; then
+        die "Backup script returned an invalid production backup filename: $backup_basename"
+    fi
+
+    filename_timestamp="${BASH_REMATCH[1]}"
+
+    if ! filename_epoch="$(
+        date -u -d "${filename_timestamp:0:8} ${filename_timestamp:9:6}" +%s 2>/dev/null
+    )"; then
+        die "Unable to parse production backup filename timestamp."
+    fi
+
+    # --------------------------------------------------------
+    # Verify backup was created during this deployment
+    # --------------------------------------------------------
+
+    if (( backup_created_at < backup_started_at )); then
+        die "The production backup predates this deployment attempt. Migration is blocked."
+    fi
+
+    if (( filename_epoch < backup_started_at )); then
+        die "The production backup filename indicates an older backup. Migration is blocked."
+    fi
+
+    # --------------------------------------------------------
+    # Verify backup age
+    # --------------------------------------------------------
+
     current_timestamp="$(date +%s)"
 
-    backup_age=$(( (current_timestamp - backup_timestamp) / 60 ))
+    backup_age=$(( (current_timestamp - backup_created_at) / 60 ))
 
     if (( backup_age < 0 )); then
         die "Production backup timestamp is in the future."
@@ -326,11 +379,26 @@ verify_production_backup() {
         die "Production backup is too old: ${backup_age} minutes."
     fi
 
-    log "Production backup verification passed."
+    # --------------------------------------------------------
+    # Backup integrity verification
+    # --------------------------------------------------------
+
+    # The root-owned backup script is responsible for:
+    #   - Creating the PostgreSQL custom-format archive.
+    #   - Verifying the archive with pg_restore --list.
+    #   - Creating the SHA-256 checksum.
+    #   - Publishing the archive and checksum.
+    #   - Verifying the saved checksum.
+    #
+    # A zero exit code is required before this script
+    # accepts the returned backup result.
+
+    log "Production backup script completed successfully."
     log "Backup archive: $backup_basename"
+    log "Backup creation timestamp: $backup_created_at"
     log "Backup age: ${backup_age} minutes."
     log "Backup created during this deployment attempt: YES"
-
+    log "Production backup verification passed."
 }
 
 # ------------------------------------------------------------
@@ -374,45 +442,27 @@ else
         log_warn "Laravel migration table does not exist yet."
 
         # A missing migration table is acceptable only when
-        # the database has been verified as empty.
+        # the entire database has been verified as empty.
         #
-        # Production first-time initialization performs this
-        # check above. Apply the same protection to staging.
+        # Production first-time initialization already
+        # performs this verification.
+        #
+        # Normal production deployments and staging must
+        # also pass this check if the migration table is absent.
 
-        if [[ "$APP_ENVIRONMENT" == "staging" ]]; then
-            log "Verifying that the staging database is empty."
+        if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
-            STAGING_TABLE_COUNT_OUTPUT="$(
-                compose run \
-                    --rm \
-                    --no-deps \
-                    "$APP_SERVICE" \
-                    php artisan tinker --execute='
-                        $result = DB::selectOne("
-                            SELECT COUNT(*) AS table_count
-                            FROM information_schema.tables
-                            WHERE table_type = ?
-                              AND table_schema = ANY(current_schemas(false))
-                        ", ["BASE TABLE"]);
-
-                        echo "STAGING_TABLE_COUNT=" . $result->table_count . PHP_EOL;
-                    '
-            )"
-
-            STAGING_TABLE_COUNT="$(
-                printf '%s\n' "$STAGING_TABLE_COUNT_OUTPUT" |
-                    grep -E '^STAGING_TABLE_COUNT=[0-9]+$' |
-                    tail -n 1 |
-                    cut -d '=' -f 2
-            )"
-
-            if [[ ! "$STAGING_TABLE_COUNT" =~ ^[0-9]+$ ]] ||
-               (( STAGING_TABLE_COUNT != 0 )); then
-                die "Staging migration table is missing but the database is not verified empty. Migration is blocked."
+            if [[ "$DATABASE_BACKUP_REQUIRED" == "true" ]]; then
+                verify_database_empty "PRODUCTION"
             fi
 
-            log "Staging database is empty. Initial migrations are permitted."
+        elif [[ "$APP_ENVIRONMENT" == "staging" ]]; then
+
+            verify_database_empty "STAGING"
+
         fi
+
+        log "Empty database verification passed. Initial migrations are permitted."
 
     else
 
