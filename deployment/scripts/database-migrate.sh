@@ -53,7 +53,6 @@ if ! [[ "$BACKUP_MAX_AGE_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
     die "DATABASE_BACKUP_MAX_AGE_MINUTES must be a positive integer."
 fi
 
-# The production backup script publishes backups here.
 # Keep this consistent with the Ansible backup role.
 PRODUCTION_BACKUP_DIRECTORY="/var/backups/adama-revenue-api/production/postgresql"
 
@@ -82,18 +81,21 @@ verify_database_empty() {
 
     log_warn "Checking whether the ${environment_label} database is genuinely empty."
 
-    # Count all user-defined PostgreSQL relations, including:
-    #   r = ordinary tables
-    #   p = partitioned tables
-    #   v = views
-    #   m = materialized views
-    #   S = sequences
-    #   f = foreign tables
+    # Count user-defined PostgreSQL relations:
     #
-    # Also count non-system schemas other than the default
-    # public schema.
+    # r = ordinary tables
+    # p = partitioned tables
+    # v = views
+    # m = materialized views
+    # S = sequences
+    # f = foreign tables
     #
-    # This is read-only. It does not modify the database.
+    # Also count non-system schemas other than public.
+    #
+    # left(nspname, 3) <> 'pg_' avoids treating the
+    # underscore in LIKE 'pg_%' as a literal underscore.
+    #
+    # This operation is read-only.
 
     if ! output="$(
         compose run \
@@ -112,7 +114,7 @@ verify_database_empty() {
                                 'pg_catalog',
                                 'information_schema'
                             )
-                              AND n.nspname NOT LIKE 'pg_%'
+                              AND left(n.nspname, 3) <> 'pg_'
                               AND c.relkind IN (
                                   'r',
                                   'p',
@@ -131,7 +133,7 @@ verify_database_empty() {
                                 'information_schema',
                                 'public'
                             )
-                              AND nspname NOT LIKE 'pg_%'
+                              AND left(nspname, 3) <> 'pg_'
                         ) AS object_count
                 \");
 
@@ -151,10 +153,11 @@ verify_database_empty() {
         printf '%s\n' "$output" |
             awk -F= -v marker="$marker" '
                 $1 == marker && $2 ~ /^[0-9]+$/ {
+                    count++
                     value = $2
                 }
                 END {
-                    if (value != "") {
+                    if (count == 1) {
                         print value
                     }
                 }
@@ -162,14 +165,14 @@ verify_database_empty() {
     )"
 
     if [[ ! "$object_count" =~ ^[0-9]+$ ]]; then
-        die "Unable to determine the ${environment_label} database object count."
+        die "Unable to determine a unique ${environment_label} database object count."
     fi
 
     if (( object_count != 0 )); then
         die "${environment_label} database is not empty: ${object_count} user-defined database object(s) found. Initial migration is blocked."
     fi
 
-    log "${environment_label} database contains zero user-defined database objects."
+    log "${environment_label} database contains zero user-defined relations and no additional application schemas."
 }
 
 # ------------------------------------------------------------
@@ -193,7 +196,7 @@ verify_initial_production_database() {
     log_warn "Production backup requirement is disabled for first-time initialization."
 
     # Initial production initialization is permitted only
-    # after verifying that the entire database is empty.
+    # after verifying that the database is genuinely empty.
 
     verify_database_empty "PRODUCTION"
 
@@ -201,7 +204,7 @@ verify_initial_production_database() {
 }
 
 # ------------------------------------------------------------
-# Verify production backup
+# Extract and validate backup metadata
 # ------------------------------------------------------------
 
 verify_production_backup() {
@@ -214,6 +217,11 @@ verify_production_backup() {
     local current_timestamp
     local backup_age
     local expected_prefix
+
+    local backup_basename
+    local filename_timestamp
+    local filename_iso
+    local filename_epoch
 
     # Staging does not require a production backup.
     if [[ "$APP_ENVIRONMENT" != "production" ]]; then
@@ -253,27 +261,31 @@ verify_production_backup() {
     fi
 
     if [[ "$backup_script" != /* ]]; then
-        die "Production database backup script must use an absolute path: $backup_script"
+        die "Production database backup script must use an absolute path."
     fi
 
-    # The backup script is intentionally root-owned and
-    # root-readable with restrictive permissions.
+    # The backup script is root-owned with restrictive
+    # permissions. The sudoers rule authorizes only this
+    # exact executable.
     #
-    # Do not use sudo for test, find, stat, grep, or other
-    # separate commands. The sudoers rule authorizes only
-    # execution of the backup script itself.
+    # Do not use sudo for test, find, stat, grep, or bash.
+    # Execute the authorized backup script directly.
 
     backup_started_at="$(date +%s)"
+
+    if [[ ! "$backup_started_at" =~ ^[0-9]+$ ]]; then
+        die "Unable to determine the production backup start timestamp."
+    fi
 
     log "Starting a new production PostgreSQL backup."
     log "Backup start timestamp: $backup_started_at"
 
-    # The backup script must return:
+    # Expected stdout:
     #
     # BACKUP_FILE=/absolute/path/to/backup.dump
     # BACKUP_CREATED_AT=unix_timestamp
     #
-    # Its normal logs remain in its configured log file.
+    # Normal backup logs are written to the backup log file.
 
     if ! backup_result="$(sudo -n "$backup_script")"; then
         die "Production backup script failed. Migration is blocked."
@@ -283,28 +295,38 @@ verify_production_backup() {
         die "Production backup script returned no backup result. Migration is blocked."
     fi
 
+    # --------------------------------------------------------
+    # Extract backup file
+    # --------------------------------------------------------
+
     backup_file="$(
         printf '%s\n' "$backup_result" |
             awk -F= '
                 $1 == "BACKUP_FILE" && NF >= 2 {
+                    count++
                     value = substr($0, index($0, "=") + 1)
                 }
                 END {
-                    if (value != "") {
+                    if (count == 1) {
                         print value
                     }
                 }
             '
     )"
 
+    # --------------------------------------------------------
+    # Extract backup creation timestamp
+    # --------------------------------------------------------
+
     backup_created_at="$(
         printf '%s\n' "$backup_result" |
             awk -F= '
                 $1 == "BACKUP_CREATED_AT" && $2 ~ /^[0-9]+$/ {
+                    count++
                     value = $2
                 }
                 END {
-                    if (value != "") {
+                    if (count == 1) {
                         print value
                     }
                 }
@@ -312,11 +334,11 @@ verify_production_backup() {
     )"
 
     if [[ -z "$backup_file" ]]; then
-        die "Backup script did not return BACKUP_FILE. Migration is blocked."
+        die "Backup script did not return exactly one valid BACKUP_FILE value."
     fi
 
     if [[ ! "$backup_created_at" =~ ^[0-9]+$ ]]; then
-        die "Backup script did not return a valid BACKUP_CREATED_AT timestamp. Migration is blocked."
+        die "Backup script did not return exactly one valid BACKUP_CREATED_AT timestamp."
     fi
 
     # --------------------------------------------------------
@@ -326,16 +348,20 @@ verify_production_backup() {
     expected_prefix="${PRODUCTION_BACKUP_DIRECTORY}/adama-revenue-production_"
 
     if [[ "$backup_file" != "${expected_prefix}"*.dump ]]; then
-        die "Backup script returned an unexpected backup path: $backup_file"
+        die "Backup script returned an unexpected production backup path."
+    fi
+
+    # Require the exact expected parent directory.
+    # This prevents accepting a nested directory or path
+    # containing unexpected components.
+
+    if [[ "${backup_file%/*}" != "$PRODUCTION_BACKUP_DIRECTORY" ]]; then
+        die "Production backup is not located in the expected backup directory."
     fi
 
     # --------------------------------------------------------
     # Validate backup filename
     # --------------------------------------------------------
-
-    local backup_basename
-    local filename_timestamp
-    local filename_epoch
 
     backup_basename="${backup_file##*/}"
 
@@ -345,11 +371,35 @@ verify_production_backup() {
 
     filename_timestamp="${BASH_REMATCH[1]}"
 
+    # --------------------------------------------------------
+    # Convert UTC filename timestamp to Unix timestamp
+    # --------------------------------------------------------
+
+    # Filename format:
+    # YYYYMMDDTHHMMSSZ
+    #
+    # Example:
+    # 20261116T014653Z
+    #
+    # Convert to ISO-8601:
+    # 2026-11-16T01:46:53Z
+    #
+    # GNU date on the Linux production server can parse this
+    # ISO-8601 representation reliably.
+
+    filename_iso="${filename_timestamp:0:4}-${filename_timestamp:4:2}-${filename_timestamp:6:2}T${filename_timestamp:9:2}:${filename_timestamp:11:2}:${filename_timestamp:13:2}Z"
+
     if ! filename_epoch="$(
-        date -u -d "${filename_timestamp:0:8} ${filename_timestamp:9:6}" +%s 2>/dev/null
+        date -u -d "$filename_iso" +%s 2>/dev/null
     )"; then
-        die "Unable to parse production backup filename timestamp."
+        die "Unable to parse production backup filename timestamp: $filename_timestamp"
     fi
+
+    if [[ ! "$filename_epoch" =~ ^[0-9]+$ ]]; then
+        die "Production backup filename produced an invalid Unix timestamp."
+    fi
+
+    log "Production backup filename timestamp parsed successfully."
 
     # --------------------------------------------------------
     # Verify backup was created during this deployment
@@ -363,17 +413,30 @@ verify_production_backup() {
         die "The production backup filename indicates an older backup. Migration is blocked."
     fi
 
+    # The filename timestamp represents the time the backup
+    # process started creating the archive. The backup-created
+    # timestamp is recorded after archive and checksum
+    # verification. Therefore, it must not precede the filename.
+
+    if (( backup_created_at < filename_epoch )); then
+        die "Backup creation metadata predates its filename timestamp. Migration is blocked."
+    fi
+
     # --------------------------------------------------------
     # Verify backup age
     # --------------------------------------------------------
 
     current_timestamp="$(date +%s)"
 
-    backup_age=$(( (current_timestamp - backup_created_at) / 60 ))
+    if [[ ! "$current_timestamp" =~ ^[0-9]+$ ]]; then
+        die "Unable to determine the current system timestamp."
+    fi
 
-    if (( backup_age < 0 )); then
+    if (( backup_created_at > current_timestamp )); then
         die "Production backup timestamp is in the future."
     fi
+
+    backup_age=$(( (current_timestamp - backup_created_at) / 60 ))
 
     if (( backup_age > BACKUP_MAX_AGE_MINUTES )); then
         die "Production backup is too old: ${backup_age} minutes."
@@ -384,17 +447,19 @@ verify_production_backup() {
     # --------------------------------------------------------
 
     # The root-owned backup script is responsible for:
+    #
     #   - Creating the PostgreSQL custom-format archive.
     #   - Verifying the archive with pg_restore --list.
     #   - Creating the SHA-256 checksum.
     #   - Publishing the archive and checksum.
     #   - Verifying the saved checksum.
     #
-    # A zero exit code is required before this script
-    # accepts the returned backup result.
+    # A zero exit code is mandatory before this script
+    # accepts the returned backup metadata.
 
     log "Production backup script completed successfully."
     log "Backup archive: $backup_basename"
+    log "Backup filename timestamp: $filename_timestamp"
     log "Backup creation timestamp: $backup_created_at"
     log "Backup age: ${backup_age} minutes."
     log "Backup created during this deployment attempt: YES"
@@ -442,23 +507,26 @@ else
         log_warn "Laravel migration table does not exist yet."
 
         # A missing migration table is acceptable only when
-        # the entire database has been verified as empty.
+        # the entire application database has been verified
+        # as empty.
         #
-        # Production first-time initialization already
+        # Production backup verification has already passed
+        # for normal production deployments.
+        #
+        # Explicit initial production initialization also
         # performs this verification.
-        #
-        # Normal production deployments and staging must
-        # also pass this check if the migration table is absent.
 
         if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
-            if [[ "$DATABASE_BACKUP_REQUIRED" == "true" ]]; then
-                verify_database_empty "PRODUCTION"
-            fi
+            verify_database_empty "PRODUCTION"
 
         elif [[ "$APP_ENVIRONMENT" == "staging" ]]; then
 
             verify_database_empty "STAGING"
+
+        else
+
+            die "Unsupported environment while checking initial migrations."
 
         fi
 
