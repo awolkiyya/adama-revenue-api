@@ -70,6 +70,45 @@ case "$RUN_DATABASE_SEEDERS" in
         ;;
 esac
 
+# ------------------------------------------------------------
+# First-time production deployment policy
+# ------------------------------------------------------------
+
+CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT="${CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT:-}"
+
+if [[ "$APP_ENVIRONMENT" == "production" ]] &&
+   [[ "$DATABASE_BACKUP_REQUIRED" == "false" ]]; then
+
+    if [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" != "YES" ]]; then
+        die "First-time production deployment requires CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT=YES."
+    fi
+
+    if [[ "$RUN_DATABASE_MIGRATIONS" != "true" ]]; then
+        die "First-time production initialization requires database migrations to be enabled."
+    fi
+
+    log_warn "=========================================="
+    log_warn "FIRST-TIME PRODUCTION INITIALIZATION"
+    log_warn "=========================================="
+
+    log_warn "Production database backup requirement is disabled."
+    log_warn "The migration script must verify that the database is empty."
+    log_warn "Existing database tables will block initialization."
+
+    export CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT
+
+elif [[ "$APP_ENVIRONMENT" == "production" ]] &&
+     [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" == "YES" ]]; then
+
+    log_warn "First-time production confirmation supplied, but backup policy is enabled."
+    log "Normal production backup verification remains mandatory."
+
+fi
+
+# ------------------------------------------------------------
+# Reference-data seeding policy
+# ------------------------------------------------------------
+
 # GitHub Actions controls whether seeding runs.
 # The allowlist controls which seeders are permitted.
 #
@@ -110,9 +149,7 @@ if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
 
         # Validate the seeder class name.
         if [[ ! "$seeder" =~ ^[A-Za-z][A-Za-z0-9]*Seeder$ ]]; then
-
             die "Invalid seeder entry in allowlist: $seeder"
-
         fi
 
         # Reject seeders that require separate authorization.
@@ -136,9 +173,7 @@ if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
         for ((j = 0; j < i; j++)); do
 
             if [[ "${SEEDER_LIST[$j]}" == "$seeder" ]]; then
-
                 die "Duplicate seeder in allowlist: $seeder"
-
             fi
 
         done
@@ -205,19 +240,17 @@ cleanup() {
         log_warn "Deployment failed. Starting best-effort service recovery."
 
         # Restore internal Nginx if it was removed.
-
         if [[ "$NGINX_REMOVED" == "true" ]]; then
 
             log_warn "Attempting to restore the internal Nginx service."
 
             if ! compose up -d "$NGINX_SERVICE"; then
-                log_error "WARNING: Automatic Nginx recovery failed."
+                log_error "Automatic Nginx recovery failed."
             fi
 
         fi
 
         # Restart production worker and scheduler if stopped.
-
         if [[ "$PRODUCTION_WORKERS_STOPPED" == "true" ]]; then
 
             log_warn "Attempting to restart production worker and scheduler."
@@ -226,7 +259,7 @@ cleanup() {
                 "$WORKER_SERVICE" \
                 "$SCHEDULER_SERVICE"; then
 
-                log_error "WARNING: Automatic production worker/scheduler recovery failed."
+                log_error "Automatic production worker/scheduler recovery failed."
 
             fi
 
@@ -321,6 +354,10 @@ deployment_summary
 
 log "Database migrations enabled: $RUN_DATABASE_MIGRATIONS"
 log "Reference seeders enabled: $RUN_DATABASE_SEEDERS"
+
+if [[ "$APP_ENVIRONMENT" == "production" ]]; then
+    log "Production initial deployment confirmation: ${CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT:-NO}"
+fi
 
 # ------------------------------------------------------------
 # Step 1: Validate source archive
@@ -540,8 +577,9 @@ if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
 
     log "[8/10] Running database migrations."
 
-    # Production migrations require a verified PostgreSQL backup.
-    # database-migrate.sh enforces this requirement.
+    # The migration script enforces the production backup
+    # policy or the explicitly confirmed initial deployment
+    # policy and verifies the database before migration.
 
     bash "$DEPLOYMENT_ROOT/scripts/database-migrate.sh" \
         "$APP_ENVIRONMENT"
@@ -771,6 +809,12 @@ log "Project: $COMPOSE_PROJECT_NAME"
 log "Image: $APP_IMAGE"
 log "Database migrations: $RUN_DATABASE_MIGRATIONS"
 log "Reference seeders: $RUN_DATABASE_SEEDERS"
+
+if [[ "$APP_ENVIRONMENT" == "production" ]] &&
+   [[ "$DATABASE_BACKUP_REQUIRED" == "false" ]]; then
+    log_warn "Production initial database initialization mode was used."
+fi
+
 log "Finished: $(date -Is)"
 
 # ------------------------------------------------------------
