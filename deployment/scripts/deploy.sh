@@ -1,0 +1,591 @@
+
+#!/usr/bin/env bash
+
+# ============================================================
+# ADAMA MUNICIPAL REVENUE API
+# Shared Staging / Production Deployment Orchestrator
+# ============================================================
+
+set -Eeuo pipefail
+
+# ------------------------------------------------------------
+# Load shared deployment functions
+# ------------------------------------------------------------
+
+SCRIPT_DIR="$(
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &&
+    pwd
+)"
+
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
+# ------------------------------------------------------------
+# Validate arguments
+# ------------------------------------------------------------
+
+if [[ "$#" -ne 1 ]]; then
+    echo "Usage: $0 <staging|production>" >&2
+    exit 1
+fi
+
+ENVIRONMENT="$1"
+
+deployment_init "$ENVIRONMENT"
+
+# ------------------------------------------------------------
+# Database migration policy
+# ------------------------------------------------------------
+
+RUN_DATABASE_MIGRATIONS="${RUN_DATABASE_MIGRATIONS:-false}"
+
+case "$RUN_DATABASE_MIGRATIONS" in
+    true|false)
+        ;;
+    *)
+        die "RUN_DATABASE_MIGRATIONS must be true or false."
+        ;;
+esac
+
+if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+    log_warn "Database migrations are explicitly enabled."
+else
+    log "Database migrations are disabled. Existing database schema will be preserved."
+fi
+
+# ------------------------------------------------------------
+# Reference seeding policy
+# ------------------------------------------------------------
+
+RUN_REFERENCE_SEEDERS="${RUN_REFERENCE_SEEDERS:-false}"
+
+case "$RUN_REFERENCE_SEEDERS" in
+    true|false)
+        ;;
+    *)
+        die "RUN_REFERENCE_SEEDERS must be true or false."
+        ;;
+esac
+
+if [[ "$RUN_REFERENCE_SEEDERS" == "true" ]]; then
+
+    if [[ "$REFERENCE_SEEDING_ENABLED" != "true" ]]; then
+        die "Reference seeding is disabled in this environment."
+    fi
+
+    if [[ -z "${REFERENCE_SEEDERS:-}" ]]; then
+        die "REFERENCE_SEEDERS must specify at least one approved seeder."
+    fi
+
+    log_warn "Reference seeding is explicitly enabled."
+
+else
+
+    log "Reference seeding is disabled."
+
+fi
+
+# ------------------------------------------------------------
+# Validate required commands
+# ------------------------------------------------------------
+
+require_command docker
+require_command tar
+require_command find
+require_command cp
+require_command rm
+require_command mkdir
+require_command mktemp
+require_command sleep
+require_command seq
+require_command grep
+require_command date
+require_command hostname
+
+# ------------------------------------------------------------
+# Deployment state
+# ------------------------------------------------------------
+
+EXTRACT_DIR=""
+
+DEPLOYMENT_STARTED_AT="$(date -Is)"
+
+# ------------------------------------------------------------
+# Cleanup
+# ------------------------------------------------------------
+
+cleanup() {
+
+    local exit_code=$?
+
+    if [[ -n "$EXTRACT_DIR" && -d "$EXTRACT_DIR" ]]; then
+        rm -rf -- "$EXTRACT_DIR"
+    fi
+
+    if [[ "$exit_code" -eq 0 ]]; then
+
+        rm -f -- "$SOURCE_ARCHIVE"
+
+    else
+
+        log_warn "Deployment failed. Source archive retained for investigation: $SOURCE_ARCHIVE"
+
+    fi
+}
+
+trap cleanup EXIT
+
+# ------------------------------------------------------------
+# Failure diagnostics
+# ------------------------------------------------------------
+
+handle_error() {
+
+    local exit_code=$?
+    local failed_command="$BASH_COMMAND"
+
+    trap - ERR
+
+    log_error "=========================================="
+    log_error "DEPLOYMENT FAILED"
+    log_error "=========================================="
+
+    log_error "Environment: $APP_ENVIRONMENT"
+    log_error "Exit code: $exit_code"
+    log_error "Failed command: $failed_command"
+
+    log_error "Docker Compose status:"
+
+    compose ps -a || true
+
+    for service in \
+        "$APP_SERVICE" \
+        "$NGINX_SERVICE" \
+        "$WORKER_SERVICE" \
+        "$SCHEDULER_SERVICE" \
+        "$POSTGRES_SERVICE" \
+        "$REDIS_SERVICE"
+    do
+
+        log_error "Logs: $service"
+
+        compose logs --tail=60 "$service" || true
+
+    done
+
+    exit "$exit_code"
+}
+
+trap handle_error ERR
+
+# ------------------------------------------------------------
+# Deployment summary
+# ------------------------------------------------------------
+
+log "=========================================="
+log "ADAMA MUNICIPAL REVENUE DEPLOYMENT"
+log "=========================================="
+
+log "Started: $DEPLOYMENT_STARTED_AT"
+log "Server: $(hostname)"
+log "Environment: $APP_ENVIRONMENT"
+
+deployment_summary
+
+log "Database migrations enabled: $RUN_DATABASE_MIGRATIONS"
+log "Reference seeders enabled: $RUN_REFERENCE_SEEDERS"
+
+# ------------------------------------------------------------
+# Step 1: Validate source archive
+# ------------------------------------------------------------
+
+log "[1/10] Validating source archive."
+
+require_file "$SOURCE_ARCHIVE" "Laravel source archive"
+
+if [[ ! -s "$SOURCE_ARCHIVE" ]]; then
+    die "Source archive is empty."
+fi
+
+tar -tzf "$SOURCE_ARCHIVE" >/dev/null
+
+log "Source archive is valid."
+
+# ------------------------------------------------------------
+# Step 2: Extract and validate source
+# ------------------------------------------------------------
+
+log "[2/10] Extracting source archive."
+
+EXTRACT_DIR="$(mktemp -d "/tmp/adama-revenue-${APP_ENVIRONMENT}.XXXXXX")"
+
+tar -xzf "$SOURCE_ARCHIVE" -C "$EXTRACT_DIR"
+
+# The archive contains the project root directly.
+# It must not contain an additional parent directory.
+
+require_file "$EXTRACT_DIR/docker/Dockerfile"
+require_file "$EXTRACT_DIR/docker/compose.yml"
+require_file "$EXTRACT_DIR/$COMPOSE_OVERRIDE_FILE"
+require_file "$EXTRACT_DIR/nginx/default.conf"
+require_file "$EXTRACT_DIR/public/index.php"
+require_file "$EXTRACT_DIR/composer.json"
+require_file "$EXTRACT_DIR/composer.lock"
+
+# Deployment scripts are installed separately outside
+# the application source directory.
+
+rm -rf -- "$EXTRACT_DIR/deployment"
+
+log "Laravel source structure validated."
+
+# ------------------------------------------------------------
+# Step 3: Ensure Docker networks exist
+# ------------------------------------------------------------
+
+log "[3/10] Checking Docker networks."
+
+for network in "$STAGING_NETWORK" "$PRODUCTION_NETWORK"; do
+
+    if docker network inspect "$network" >/dev/null 2>&1; then
+
+        log "Network already exists: $network"
+
+    else
+
+        log "Creating network: $network"
+
+        docker network create "$network"
+
+    fi
+
+done
+
+# ------------------------------------------------------------
+# Step 4: Prepare source replacement
+# ------------------------------------------------------------
+
+log "[4/10] Preparing application source replacement."
+
+if [[ -f "$SOURCE_DIR/docker/compose.yml" ]] &&
+   [[ -f "$SOURCE_DIR/$COMPOSE_OVERRIDE_FILE" ]]; then
+
+    if [[ "$APP_ENVIRONMENT" == "production" ]]; then
+
+        log "Stopping production worker and scheduler."
+
+        compose stop "$WORKER_SERVICE" "$SCHEDULER_SERVICE"
+
+    fi
+
+    log "Removing previous internal Nginx container."
+
+    compose rm -sf "$NGINX_SERVICE" || true
+
+else
+
+    log_warn "No previous application Compose deployment found."
+
+fi
+
+# ------------------------------------------------------------
+# Step 5: Replace application source
+# ------------------------------------------------------------
+
+log "[5/10] Replacing application source."
+
+# Preserve the existing Laravel storage directory.
+# Deployment scripts remain outside SOURCE_DIR.
+
+find "$SOURCE_DIR" \
+    -mindepth 1 \
+    -maxdepth 1 \
+    ! -name storage \
+    -exec rm -rf -- {} +
+
+cp -a "$EXTRACT_DIR/." "$SOURCE_DIR/"
+
+# Do not retain an application .env in the source tree.
+rm -f "$SOURCE_DIR/.env"
+
+require_file "$SOURCE_DIR/docker/Dockerfile"
+require_file "$SOURCE_DIR/docker/compose.yml"
+require_file "$SOURCE_DIR/$COMPOSE_OVERRIDE_FILE"
+require_file "$SOURCE_DIR/nginx/default.conf"
+
+log "Application source replaced."
+
+# ------------------------------------------------------------
+# Step 6: Validate Compose and build image
+# ------------------------------------------------------------
+
+log "[6/10] Validating Docker Compose configuration."
+
+validate_compose
+
+log "Building application image: $APP_IMAGE"
+
+docker build \
+    --pull \
+    -f "$SOURCE_DIR/docker/Dockerfile" \
+    -t "$APP_IMAGE" \
+    "$SOURCE_DIR"
+
+docker image inspect "$APP_IMAGE" >/dev/null
+
+log "Application image built successfully."
+
+# ------------------------------------------------------------
+# Step 7: Start PostgreSQL and Redis
+# ------------------------------------------------------------
+
+log "[7/10] Starting database and cache services."
+
+compose up -d "$POSTGRES_SERVICE" "$REDIS_SERVICE"
+
+wait_for_healthy() {
+
+    local service="$1"
+    local attempts="${2:-30}"
+
+    local container_id
+    local status
+
+    log "Waiting for $service to become healthy."
+
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+
+        container_id="$(compose ps -q "$service")"
+
+        if [[ -n "$container_id" ]]; then
+
+            status="$(
+                docker inspect \
+                    --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                    "$container_id"
+            )"
+
+            log "$service status: $status ($attempt/$attempts)"
+
+            if [[ "$status" == "healthy" ]]; then
+                return 0
+            fi
+
+        fi
+
+        sleep 5
+
+    done
+
+    die "$service did not become healthy within the allowed time."
+
+}
+
+wait_for_healthy "$POSTGRES_SERVICE" 30
+wait_for_healthy "$REDIS_SERVICE" 30
+
+log "PostgreSQL and Redis are healthy."
+
+# ------------------------------------------------------------
+# Step 8: Run database migrations when explicitly requested
+# ------------------------------------------------------------
+
+if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+
+    log "[8/10] Running database migrations."
+
+    # database-migrate.sh verifies PostgreSQL readiness.
+    # Production additionally requires a successful,
+    # verified PostgreSQL backup before migrations.
+
+    bash "$DEPLOYMENT_ROOT/scripts/database-migrate.sh" \
+        "$APP_ENVIRONMENT"
+
+    log "Database migrations completed."
+
+else
+
+    log "[8/10] Database migrations skipped."
+
+    log "Database schema remains unchanged."
+
+fi
+
+# ------------------------------------------------------------
+# Optional reference seeding
+# ------------------------------------------------------------
+
+if [[ "$RUN_REFERENCE_SEEDERS" == "true" ]]; then
+
+    log "Reference seeding explicitly requested."
+
+    if [[ "$REFERENCE_SEEDING_ENABLED" != "true" ]]; then
+        die "Reference seeding is disabled in this environment."
+    fi
+
+    if [[ -z "${REFERENCE_SEEDERS:-}" ]]; then
+        die "REFERENCE_SEEDERS must specify at least one approved seeder."
+    fi
+
+    read -r -a SEEDER_LIST <<< "$REFERENCE_SEEDERS"
+
+    if [[ "${#SEEDER_LIST[@]}" -eq 0 ]]; then
+        die "No reference seeders were provided."
+    fi
+
+    for seeder in "${SEEDER_LIST[@]}"; do
+
+        log "Executing approved seeder: $seeder"
+
+        bash "$DEPLOYMENT_ROOT/scripts/database-seed.sh" \
+            "$APP_ENVIRONMENT" \
+            "$seeder"
+
+    done
+
+else
+
+    log "Reference seeding skipped."
+
+fi
+
+# ------------------------------------------------------------
+# Step 9: Deploy application services
+# ------------------------------------------------------------
+
+log "[9/10] Starting Laravel application services."
+
+compose up \
+    -d \
+    --remove-orphans \
+    --scale "$APP_SERVICE=1"
+
+# ------------------------------------------------------------
+# Verify PHP-FPM
+# ------------------------------------------------------------
+
+wait_for_healthy "$APP_SERVICE" 30
+
+APP_ID="$(compose ps -q "$APP_SERVICE")"
+
+if [[ -z "$APP_ID" ]]; then
+    die "Laravel application container was not created."
+fi
+
+log "PHP-FPM is healthy."
+
+# ------------------------------------------------------------
+# Verify remaining application services
+# ------------------------------------------------------------
+
+verify_running() {
+
+    local service="$1"
+    local container_id
+    local status
+
+    container_id="$(compose ps -q "$service")"
+
+    if [[ -z "$container_id" ]]; then
+        die "$service container was not created."
+    fi
+
+    status="$(
+        docker inspect \
+            --format '{{.State.Status}}' \
+            "$container_id"
+    )"
+
+    log "$service status: $status"
+
+    if [[ "$status" != "running" ]]; then
+
+        docker logs --tail 100 "$container_id" || true
+
+        die "$service is not running."
+
+    fi
+
+}
+
+verify_running "$NGINX_SERVICE"
+verify_running "$WORKER_SERVICE"
+verify_running "$SCHEDULER_SERVICE"
+
+# ------------------------------------------------------------
+# Verify internal Nginx
+# ------------------------------------------------------------
+
+log "Testing internal Nginx configuration."
+
+NGINX_ID="$(compose ps -q "$NGINX_SERVICE")"
+
+if [[ -z "$NGINX_ID" ]]; then
+    die "Internal Nginx container was not created."
+fi
+
+docker exec "$NGINX_ID" nginx -t
+
+# ------------------------------------------------------------
+# Verify shared gateway
+# ------------------------------------------------------------
+
+log "Checking shared Nginx gateway."
+
+mapfile -t GATEWAY_IDS < <(
+    docker ps \
+        --filter "publish=80" \
+        --format '{{.ID}}'
+)
+
+if [[ "${#GATEWAY_IDS[@]}" -ne 1 ]]; then
+
+    docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Ports}}'
+
+    die "Expected exactly one container publishing port 80."
+
+fi
+
+GATEWAY_ID="${GATEWAY_IDS[0]}"
+
+docker exec "$GATEWAY_ID" nginx -t
+
+log "Shared gateway configuration is valid."
+
+# ------------------------------------------------------------
+# Step 10: Final verification
+# ------------------------------------------------------------
+
+log "[10/10] Final deployment verification."
+
+compose ps
+
+log "=========================================="
+log "DEPLOYMENT COMPLETED SUCCESSFULLY"
+log "=========================================="
+
+log "Environment: $APP_ENVIRONMENT"
+log "Project: $COMPOSE_PROJECT_NAME"
+log "Image: $APP_IMAGE"
+log "Database migrations: $RUN_DATABASE_MIGRATIONS"
+log "Reference seeders: $RUN_REFERENCE_SEEDERS"
+log "Finished: $(date -Is)"
+
+# ------------------------------------------------------------
+# Emit exact environment-specific GitHub Actions marker
+# ------------------------------------------------------------
+
+# Do not use log() here because it adds a timestamp and prefix.
+# GitHub Actions verifies this marker using grep -Fxq.
+
+case "$APP_ENVIRONMENT" in
+    staging)
+        printf '%s\n' "STAGING_DEPLOYMENT_SUCCESS"
+        ;;
+    production)
+        printf '%s\n' "PRODUCTION_DEPLOYMENT_SUCCESS"
+        ;;
+    *)
+        die "Cannot emit success marker for unsupported environment."
+        ;;
+esac
