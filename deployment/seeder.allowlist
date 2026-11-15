@@ -1,4 +1,11 @@
+PermissionSeeder
+RoleSeeder
+AdministrativeUnitSeeder
 ClusterSeeder
+SectorSeeder
 MeasurementUnitSeeder
 RevenueCategorySeeder
-SectorSeeder
+RolePermissionSeeder
+RevenueSettingSeeder
+SystemAdminSeeder
+FieldCollectorSeeder
