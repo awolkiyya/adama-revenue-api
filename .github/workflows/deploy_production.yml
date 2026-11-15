@@ -19,6 +19,12 @@ on:
         default: false
         type: boolean
 
+      confirm_production_initial_deployment:
+        description: Authorize initial production database initialization without a pre-migration backup (only after database verification)
+        required: false
+        default: false
+        type: boolean
+
 permissions:
   contents: read
 
@@ -34,8 +40,12 @@ jobs:
 
     with:
       environment: production
+
       run_database_migrations: ${{ github.event_name == 'workflow_dispatch' && inputs.run_database_migrations || false }}
+
       run_database_seeders: ${{ github.event_name == 'workflow_dispatch' && inputs.run_database_seeders || false }}
+
+      confirm_production_initial_deployment: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_production_initial_deployment || false }}
 
     secrets:
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}

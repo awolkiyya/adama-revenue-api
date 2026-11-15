@@ -20,6 +20,12 @@ on:
         default: false
         type: boolean
 
+      confirm_production_initial_deployment:
+        description: Explicitly authorize initial production database initialization without a pre-migration backup
+        required: false
+        default: false
+        type: boolean
+
     secrets:
       DEPLOY_SSH_PRIVATE_KEY:
         required: true
@@ -63,6 +69,7 @@ jobs:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
           RUN_DATABASE_SEEDERS: ${{ inputs.run_database_seeders }}
+          CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT: ${{ inputs.confirm_production_initial_deployment }}
         run: |
           set -Eeuo pipefail
 
@@ -93,22 +100,65 @@ jobs:
               ;;
           esac
 
+          case "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" in
+            true|false)
+              ;;
+            *)
+              echo "::error::Invalid initial production deployment confirmation."
+              exit 1
+              ;;
+          esac
+
+          # Initial production initialization is a separate,
+          # explicitly authorized operation.
+          if [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" == "true" ]]; then
+
+            if [[ "$DEPLOY_ENVIRONMENT" != "production" ]]; then
+              echo "::error::Initial production confirmation is only valid for production."
+              exit 1
+            fi
+
+            if [[ "$RUN_DATABASE_MIGRATIONS" != "true" ]]; then
+              echo "::error::Initial production confirmation requires database migrations."
+              exit 1
+            fi
+
+            if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
+              echo "::error::Run initial production initialization separately from production seeders."
+              exit 1
+            fi
+
+            echo "::warning::Initial production database initialization has been explicitly authorized."
+            echo "The server-side deployment scripts must independently verify database identity and initialization safety."
+
+          fi
+
           if [[ "$DEPLOY_ENVIRONMENT" == "production" ]] &&
              [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+
             echo "Production migrations are enabled."
-            echo "The server-side migration script must verify a production backup."
+
+            if [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" == "true" ]]; then
+              echo "Initial production initialization confirmation is enabled."
+            else
+              echo "The server-side migration script must verify a production backup."
+            fi
+
           fi
 
           if [[ "$DEPLOY_ENVIRONMENT" == "production" ]] &&
              [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
+
             echo "::warning::Production database seeders are enabled."
             echo "The server-side seeder script must enforce the approved allowlist."
             echo "Production seeding confirmation will be passed to the deployment script."
+
           fi
 
           echo "Environment: $DEPLOY_ENVIRONMENT"
           echo "Run database migrations: $RUN_DATABASE_MIGRATIONS"
           echo "Run database seeders: $RUN_DATABASE_SEEDERS"
+          echo "Confirm initial production deployment: $CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT"
 
       # --------------------------------------------------
       # 3. Configure SSH
@@ -298,6 +348,7 @@ jobs:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
           RUN_DATABASE_SEEDERS: ${{ inputs.run_database_seeders }}
+          CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT: ${{ inputs.confirm_production_initial_deployment }}
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
         run: |
@@ -314,7 +365,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
             "$SSH_USER@$SSH_HOST" \
-            "bash -s -- '$DEPLOY_ENVIRONMENT' '$RUN_DATABASE_MIGRATIONS' '$RUN_DATABASE_SEEDERS'" \
+            "bash -s -- '$DEPLOY_ENVIRONMENT' '$RUN_DATABASE_MIGRATIONS' '$RUN_DATABASE_SEEDERS' '$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT'" \
             <<'REMOTE' | tee "$DEPLOYMENT_LOG"
 
           set -Eeuo pipefail
@@ -322,6 +373,7 @@ jobs:
           ENVIRONMENT="${1:-}"
           RUN_DATABASE_MIGRATIONS="${2:-false}"
           RUN_DATABASE_SEEDERS="${3:-false}"
+          CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT="${4:-false}"
 
           case "$ENVIRONMENT" in
             staging|production)
@@ -350,6 +402,36 @@ jobs:
               ;;
           esac
 
+          case "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" in
+            true|false)
+              ;;
+            *)
+              echo "ERROR: Invalid initial production deployment confirmation."
+              exit 1
+              ;;
+          esac
+
+          # Independently enforce initial production authorization
+          # on the remote server.
+          if [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" == "true" ]]; then
+
+            if [[ "$ENVIRONMENT" != "production" ]]; then
+              echo "ERROR: Initial production confirmation is only valid for production."
+              exit 1
+            fi
+
+            if [[ "$RUN_DATABASE_MIGRATIONS" != "true" ]]; then
+              echo "ERROR: Initial production confirmation requires database migrations."
+              exit 1
+            fi
+
+            if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
+              echo "ERROR: Initial production initialization cannot be combined with production seeding."
+              exit 1
+            fi
+
+          fi
+
           APP_ROOT="/opt/adama-revenue-api"
 
           SOURCE_ARCHIVE="/tmp/laravel-${ENVIRONMENT}-source.tar.gz"
@@ -368,6 +450,7 @@ jobs:
           echo "Application root: $APP_ROOT"
           echo "Database migrations: $RUN_DATABASE_MIGRATIONS"
           echo "Database seeders: $RUN_DATABASE_SEEDERS"
+          echo "Initial production confirmation: $CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT"
           echo "Started: $(date -Is)"
 
           # ------------------------------------------------
@@ -448,8 +531,18 @@ jobs:
           echo ""
           echo "[3/3] Running Laravel deployment..."
 
-          if [[ "$ENVIRONMENT" == "production" ]] &&
-             [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
+          if [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" == "true" ]]; then
+
+            echo "WARNING: Initial production database initialization explicitly authorized."
+            echo "The migration script must still verify database identity and initialization safety."
+
+            CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT=YES \
+            RUN_DATABASE_MIGRATIONS="$RUN_DATABASE_MIGRATIONS" \
+            RUN_DATABASE_SEEDERS="$RUN_DATABASE_SEEDERS" \
+              bash "$DEPLOYMENT_DIR/scripts/deploy.sh" "$ENVIRONMENT"
+
+          elif [[ "$ENVIRONMENT" == "production" ]] &&
+               [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
 
             echo "Production seeding explicitly enabled."
             echo "Production seeding confirmation supplied."
@@ -501,6 +594,7 @@ jobs:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RUN_DATABASE_MIGRATIONS: ${{ inputs.run_database_migrations }}
           RUN_DATABASE_SEEDERS: ${{ inputs.run_database_seeders }}
+          CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT: ${{ inputs.confirm_production_initial_deployment }}
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOYMENT_SUCCESS: ${{ steps.deployment.outputs.deployment_success }}
         run: |
@@ -516,13 +610,20 @@ jobs:
           echo "Environment: $DEPLOY_ENVIRONMENT"
           echo "Database migrations requested: $RUN_DATABASE_MIGRATIONS"
           echo "Database seeders requested: $RUN_DATABASE_SEEDERS"
+          echo "Initial production confirmation: $CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT"
 
           if [[ "$DEPLOY_ENVIRONMENT" == "production" ]]; then
-            if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
+
+            if [[ "$CONFIRM_PRODUCTION_INITIAL_DEPLOYMENT" == "true" ]]; then
+              echo "Initial production initialization: explicitly authorized"
+
+            elif [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
               echo "Database backup: required and verified by migration script"
+
             else
               echo "Database backup: not performed by deployment workflow"
             fi
+
           fi
 
           echo "Remote health checks: passed"
