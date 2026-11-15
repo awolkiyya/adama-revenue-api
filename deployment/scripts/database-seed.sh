@@ -17,6 +17,8 @@
 #   - Production seeding requires a fresh verified backup.
 #   - Laravel migrations must already be completed.
 #   - Exactly one seeder executes per invocation.
+#   - Production backup executes with restricted root privileges.
+#   - Backup metadata and freshness are validated before seeding.
 # ============================================================
 
 set -Eeuo pipefail
@@ -208,6 +210,7 @@ fi
 
 printf '%s\n' "$MIGRATION_OUTPUT"
 
+# Reject missing migration tables.
 if printf '%s\n' "$MIGRATION_OUTPUT" |
     grep -Eiq 'Pending|Migration table not found'; then
 
@@ -233,7 +236,10 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
     log "Production database backup is mandatory."
 
-    # Validate backup age configuration.
+    # --------------------------------------------------------
+    # Validate backup age configuration
+    # --------------------------------------------------------
+
     if [[ ! "$BACKUP_MAX_AGE_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
         die "DATABASE_BACKUP_MAX_AGE_MINUTES must be a positive integer."
     fi
@@ -243,16 +249,29 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
         die "DATABASE_BACKUP_MAX_AGE_MINUTES is unreasonably large."
     fi
 
-    require_command sudo
+    # Force decimal interpretation.
+    BACKUP_MAX_AGE_SECONDS=$(( 10#$BACKUP_MAX_AGE_MINUTES * 60 ))
 
-    # The backup script must exist.
+    # --------------------------------------------------------
+    # Validate backup script existence
+    # --------------------------------------------------------
+
     if [[ ! -f "$BACKUP_SCRIPT" ]]; then
         die "Production backup script does not exist: $BACKUP_SCRIPT"
     fi
 
-    if [[ ! -x "$BACKUP_SCRIPT" ]]; then
-        die "Production backup script is not executable: $BACKUP_SCRIPT"
-    fi
+    log "Production backup script found."
+
+    # --------------------------------------------------------
+    # Execute fresh production PostgreSQL backup
+    #
+    # The sudoers rule authorizes only this exact script:
+    #
+    # buadmin ALL=(root) NOPASSWD: \
+    #   /usr/local/sbin/adama-revenue-production-backup ""
+    #
+    # Do not use sudo -n test, sudo -n true, or other commands.
+    # --------------------------------------------------------
 
     log "Creating a fresh production PostgreSQL backup."
 
@@ -261,7 +280,8 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
     )"; then
 
         printf '%s\n' "$BACKUP_OUTPUT" >&2
-        die "Production PostgreSQL backup failed. Seeding aborted."
+
+        die "Production PostgreSQL backup failed or restricted sudo permission is not configured. Seeding aborted."
 
     fi
 
@@ -304,7 +324,6 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
     BACKUP_FILENAME="${BACKUP_FILE##*/}"
 
-    # Reject nested paths and unexpected filename structures.
     if [[ "$BACKUP_FILENAME" == */* || -z "$BACKUP_FILENAME" ]]; then
         die "Invalid production backup filename."
     fi
@@ -317,7 +336,6 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
         die "Invalid production backup filename: $BACKUP_FILENAME"
     fi
 
-    # Extract timestamp without BASH_REMATCH.
     FILENAME_TIMESTAMP="${BACKUP_FILENAME#"$EXPECTED_BACKUP_PREFIX"}"
     FILENAME_TIMESTAMP="${FILENAME_TIMESTAMP%.dump}"
 
@@ -327,18 +345,10 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
     fi
 
     # --------------------------------------------------------
-    # Validate backup file existence
-    # --------------------------------------------------------
-
-    if ! sudo -n test -f "$BACKUP_FILE"; then
-        die "Production backup file does not exist: $BACKUP_FILE"
-    fi
-
-    # --------------------------------------------------------
     # Validate machine-readable creation timestamp
     # --------------------------------------------------------
 
-    if [[ ! "$BACKUP_CREATED_AT" =~ ^[0-9]+$ ]]; then
+    if [[ ! "$BACKUP_CREATED_AT" =~ ^[0-9]{10}$ ]]; then
         die "Invalid BACKUP_CREATED_AT value."
     fi
 
@@ -348,7 +358,7 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
 
     FILENAME_ISO="${FILENAME_TIMESTAMP:0:4}-${FILENAME_TIMESTAMP:4:2}-${FILENAME_TIMESTAMP:6:2}T${FILENAME_TIMESTAMP:9:2}:${FILENAME_TIMESTAMP:11:2}:${FILENAME_TIMESTAMP:13:2}Z"
 
-    if ! FILENAME_EPOCH="$(date -u -d "$FILENAME_ISO" +%s)"; then
+    if ! FILENAME_EPOCH="$(date -u -d "$FILENAME_ISO" +%s 2>/dev/null)"; then
         die "Unable to parse production backup filename timestamp."
     fi
 
@@ -356,7 +366,7 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
     # Validate timestamp consistency and freshness
     # --------------------------------------------------------
 
-    CURRENT_EPOCH="$(date +%s)"
+    CURRENT_EPOCH="$(date -u +%s)"
 
     # Prevent timestamps significantly in the future.
     if (( BACKUP_CREATED_AT > CURRENT_EPOCH + 60 )); then
@@ -376,8 +386,6 @@ if [[ "$APP_ENVIRONMENT" == "production" ]]; then
     if (( BACKUP_AGE_SECONDS < 0 )); then
         BACKUP_AGE_SECONDS=0
     fi
-
-    BACKUP_MAX_AGE_SECONDS=$(( BACKUP_MAX_AGE_MINUTES * 60 ))
 
     if (( BACKUP_AGE_SECONDS > BACKUP_MAX_AGE_SECONDS )); then
         die "Production backup is older than the allowed ${BACKUP_MAX_AGE_MINUTES}-minute limit."
