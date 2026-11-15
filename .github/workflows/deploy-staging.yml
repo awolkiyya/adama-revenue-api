@@ -34,8 +34,12 @@ jobs:
 
     with:
       environment: staging
+
       run_database_migrations: ${{ github.event_name == 'workflow_dispatch' && inputs.run_database_migrations || false }}
+
       run_database_seeders: ${{ github.event_name == 'workflow_dispatch' && inputs.run_database_seeders || false }}
+
+      confirm_production_initial_deployment: false
 
     secrets:
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_KEY }}
