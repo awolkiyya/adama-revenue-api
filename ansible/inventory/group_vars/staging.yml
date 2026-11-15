@@ -1,4 +1,3 @@
-
 ---
 # ==========================================================
 # LARAVEL RUNTIME - STAGING
@@ -15,11 +14,21 @@ laravel_runtime_override_file: docker/compose.staging.yml
 
 laravel_runtime_image: adama-revenue-api:staging
 
+
 # ==========================================================
 # POSTGRESQL BACKUP - STAGING
 # ==========================================================
 
+# ----------------------------------------------------------
+# BACKUP ENABLEMENT
+# ----------------------------------------------------------
+
 backup_enabled: true
+
+
+# ----------------------------------------------------------
+# DOCKER COMPOSE CONFIGURATION
+# ----------------------------------------------------------
 
 backup_project_dir: "{{ laravel_runtime_project_dir }}"
 backup_compose_project: "{{ laravel_runtime_project_name }}"
@@ -28,39 +37,95 @@ backup_compose_file: "{{ laravel_runtime_project_dir }}/{{ laravel_runtime_compo
 backup_compose_override_file: "{{ laravel_runtime_project_dir }}/{{ laravel_runtime_override_file }}"
 backup_env_file: "{{ laravel_runtime_env_file }}"
 
+
+# ----------------------------------------------------------
+# POSTGRESQL
+# ----------------------------------------------------------
+
 backup_postgres_service: postgres
 
-# Backup storage
+
+# ----------------------------------------------------------
+# BACKUP STORAGE
+# ----------------------------------------------------------
+
 backup_root_dir: /var/backups/adama-revenue-api/staging
 backup_postgres_dir: "{{ backup_root_dir }}/postgresql"
 
 backup_owner: root
 backup_group: root
+
 backup_directory_mode: "0700"
 backup_file_mode: "0600"
 
-# Schedule: daily at 02:00
+
+# ----------------------------------------------------------
+# BACKUP SCHEDULE
+# ----------------------------------------------------------
+
+# Daily at 02:00 server local time.
 backup_schedule_minute: "0"
 backup_schedule_hour: "2"
 backup_schedule_day: "*"
 backup_schedule_month: "*"
 backup_schedule_weekday: "*"
 
-# Retention
+
+# ----------------------------------------------------------
+# BACKUP RETENTION
+# ----------------------------------------------------------
+
 backup_retention_days: 7
 
-# Script and logging
+
+# ----------------------------------------------------------
+# BACKUP SCRIPT
+# ----------------------------------------------------------
+
 backup_script_path: /usr/local/sbin/adama-revenue-staging-backup
+
+
+# ----------------------------------------------------------
+# RESTRICTED SUDO CONFIGURATION
+# ----------------------------------------------------------
+
+# Staging does not need deployment-time root backup execution.
+# Do not create or modify the production sudoers rule.
+
+backup_sudo_enabled: false
+backup_sudo_manage: false
+
+
+# ----------------------------------------------------------
+# LOGGING
+# ----------------------------------------------------------
+
 backup_log_file: /var/log/adama-revenue-staging-backup.log
+
+
+# ----------------------------------------------------------
+# LOCK FILE
+# ----------------------------------------------------------
+
 backup_lock_file: /var/lock/adama-revenue-staging-backup.lock
 
-# Cron
+
+# ----------------------------------------------------------
+# CRON
+# ----------------------------------------------------------
+
 backup_cron_job_name: adama-revenue-staging-postgresql-backup
 backup_cron_user: root
 
-# Required system packages
+
+# ----------------------------------------------------------
+# REQUIRED SYSTEM PACKAGES
+# ----------------------------------------------------------
+
 backup_packages:
   - cron
   - util-linux
   - coreutils
   - findutils
+  - grep
+  - gawk

@@ -4,20 +4,33 @@
 # POSTGRESQL BACKUP - DEFAULT CONFIGURATION
 # ==========================================================
 
-# Backup is disabled unless explicitly enabled per environment.
+# ----------------------------------------------------------
+# BACKUP ENABLEMENT
+# ----------------------------------------------------------
+
+# Backups are disabled unless explicitly enabled per environment.
 backup_enabled: false
 
-# Docker Compose configuration
+# ----------------------------------------------------------
+# DOCKER COMPOSE CONFIGURATION
+# ----------------------------------------------------------
+
 backup_project_dir: ""
 backup_compose_project: ""
 backup_compose_file: ""
 backup_compose_override_file: ""
 backup_env_file: ""
 
-# PostgreSQL
+# ----------------------------------------------------------
+# POSTGRESQL CONFIGURATION
+# ----------------------------------------------------------
+
 backup_postgres_service: postgres
 
-# Backup storage
+# ----------------------------------------------------------
+# BACKUP STORAGE
+# ----------------------------------------------------------
+
 backup_root_dir: ""
 backup_postgres_dir: ""
 
@@ -27,30 +40,70 @@ backup_group: root
 backup_directory_mode: "0700"
 backup_file_mode: "0600"
 
-# Backup schedule
+# ----------------------------------------------------------
+# BACKUP SCHEDULE
+# ----------------------------------------------------------
+
 backup_schedule_minute: "0"
 backup_schedule_hour: "1"
 backup_schedule_day: "*"
 backup_schedule_month: "*"
 backup_schedule_weekday: "*"
 
-# Backup retention
+# ----------------------------------------------------------
+# BACKUP RETENTION
+# ----------------------------------------------------------
+
 backup_retention_days: 30
 
-# Backup script
+# ----------------------------------------------------------
+# BACKUP SCRIPT
+# ----------------------------------------------------------
+
 backup_script_path: /usr/local/sbin/adama-revenue-postgresql-backup
 
-# Logging
+# ----------------------------------------------------------
+# RESTRICTED SUDO CONFIGURATION
+# ----------------------------------------------------------
+
+# Disabled by default.
+# Enable only for the production environment that needs
+# deployment-time execution of the backup script.
+backup_sudo_enabled: false
+
+# Whether this environment owns and manages the sudoers file.
+# Set true only in the production environment.
+backup_sudo_manage: false
+
+# Deployment SSH user permitted to execute the backup script.
+backup_sudo_user: buadmin
+
+# Dedicated sudoers file managed by this role.
+backup_sudoers_file: /etc/sudoers.d/adama-revenue-backup
+
+# ----------------------------------------------------------
+# LOGGING
+# ----------------------------------------------------------
+
 backup_log_file: /var/log/adama-revenue-postgresql-backup.log
 
-# Lock file
+# ----------------------------------------------------------
+# LOCK FILE
+# ----------------------------------------------------------
+
 backup_lock_file: /var/lock/adama-revenue-postgresql-backup.lock
 
-# Cron
+# ----------------------------------------------------------
+# CRON
+# ----------------------------------------------------------
+
 backup_cron_job_name: adama-revenue-postgresql-backup
 backup_cron_user: root
 
-# Required system packages
+# ----------------------------------------------------------
+# REQUIRED SYSTEM PACKAGES
+# ----------------------------------------------------------
+
 backup_packages:
   - cron
   - util-linux
