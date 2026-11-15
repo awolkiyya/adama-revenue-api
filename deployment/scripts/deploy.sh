@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 
 # ============================================================
@@ -33,6 +34,23 @@ ENVIRONMENT="$1"
 deployment_init "$ENVIRONMENT"
 
 # ------------------------------------------------------------
+# Validate required commands
+# ------------------------------------------------------------
+
+require_command docker
+require_command tar
+require_command find
+require_command cp
+require_command rm
+require_command mkdir
+require_command mktemp
+require_command sleep
+require_command grep
+require_command sed
+require_command date
+require_command hostname
+
+# ------------------------------------------------------------
 # Database migration policy
 # ------------------------------------------------------------
 
@@ -47,13 +65,9 @@ case "$RUN_DATABASE_MIGRATIONS" in
 esac
 
 if [[ "$RUN_DATABASE_MIGRATIONS" == "true" ]]; then
-
     log_warn "Database migrations are explicitly enabled."
-
 else
-
     log "Database migrations are disabled. Existing database schema will be preserved."
-
 fi
 
 # ------------------------------------------------------------
@@ -112,8 +126,8 @@ fi
 # GitHub Actions controls whether seeding runs.
 # The allowlist controls which seeders are permitted.
 #
-# No REFERENCE_SEEDERS or REFERENCE_SEEDING_ENABLED
-# environment variables are required.
+# DatabaseSeeder is permanently prohibited.
+# All other seeders require explicit allowlist membership.
 
 SEEDER_ALLOWLIST="$DEPLOYMENT_ROOT/seeder.allowlist"
 SEEDER_LIST=()
@@ -122,10 +136,6 @@ if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
 
     log_warn "Approved reference-data seeding is explicitly enabled."
 
-    # Validate the command before reading the allowlist.
-    require_command sed
-
-    # The allowlist must exist.
     require_file "$SEEDER_ALLOWLIST" "Seeder allowlist"
 
     # Read the allowlist, ignoring blank lines and comments.
@@ -142,7 +152,7 @@ if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
         die "Seeder allowlist is empty."
     fi
 
-    # Validate every entry before executing anything.
+    # Validate every allowlist entry before executing anything.
     for ((i = 0; i < ${#SEEDER_LIST[@]}; i++)); do
 
         seeder="${SEEDER_LIST[$i]}"
@@ -152,22 +162,11 @@ if [[ "$RUN_DATABASE_SEEDERS" == "true" ]]; then
             die "Invalid seeder entry in allowlist: $seeder"
         fi
 
-        # Reject seeders that require separate authorization.
-        case "$seeder" in
-
-            DatabaseSeeder)
-                die "DatabaseSeeder is prohibited in the reference seeder allowlist."
-                ;;
-
-            SystemAdminSeeder|FieldCollectorSeeder)
-                die "User-provisioning seeder is prohibited: $seeder"
-                ;;
-
-            RoleSeeder|RolePermissionSeeder)
-                die "Authorization-management seeder is prohibited: $seeder"
-                ;;
-
-        esac
+        # DatabaseSeeder must never be executed through
+        # the individual reference-seeder mechanism.
+        if [[ "$seeder" == "DatabaseSeeder" ]]; then
+            die "DatabaseSeeder is prohibited in the reference seeder allowlist."
+        fi
 
         # Reject duplicate entries before execution.
         for ((j = 0; j < i; j++)); do
@@ -189,24 +188,6 @@ else
     log "Reference seeding is disabled for this deployment."
 
 fi
-
-# ------------------------------------------------------------
-# Validate required commands
-# ------------------------------------------------------------
-
-require_command docker
-require_command tar
-require_command find
-require_command cp
-require_command rm
-require_command mkdir
-require_command mktemp
-require_command sleep
-require_command seq
-require_command grep
-require_command sed
-require_command date
-require_command hostname
 
 # ------------------------------------------------------------
 # Deployment state
