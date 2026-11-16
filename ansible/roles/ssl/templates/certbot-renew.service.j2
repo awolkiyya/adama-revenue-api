@@ -14,8 +14,7 @@ UMask=0077
 ExecStart={{ ssl_certbot_binary }} renew --quiet --non-interactive --config-dir={{ ssl_config_dir }} --work-dir={{ ssl_certbot_work_dir }} --logs-dir={{ ssl_certbot_logs_dir }} --deploy-hook {{ ssl_certbot_deploy_hook }}
 
 PrivateTmp=true
-ProtectHome=true
-NoNewPrivileges=true
+ProtectHome=false
 
 # Allow Certbot to access persistent certificate and ACME state.
 ReadWritePaths={{ ssl_config_dir }} {{ ssl_certbot_work_dir }} {{ ssl_certbot_logs_dir }}
