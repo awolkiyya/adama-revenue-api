@@ -1332,135 +1332,116 @@ class PaymentController extends Controller
     }
 
    /*
-|--------------------------------------------------------------------------
-| Show Payment
-|--------------------------------------------------------------------------
-*/
+    |--------------------------------------------------------------------------
+    | Show Payment
+    |--------------------------------------------------------------------------
+    */
 
-public function show(
-    Request $request,
-    string $payment
-): JsonResponse {
+    public function show(
+        Request $request,
+        string $payment
+    ): JsonResponse {
 
-    $requestId =
-        $request->header('X-Request-ID')
-        ?? (string) Str::uuid();
-
-    Log::info(
-        'Payment retrieval request started.',
-        [
-            'request_id' =>
-                $requestId,
-
-            'user_id' =>
-                $request->user()?->id,
-
-            'authenticated' =>
-                $request->user() !== null,
-
-            'payment_id' =>
-                $payment,
-
-            'ip' =>
-                $request->ip(),
-
-            'user_agent' =>
-                $request->userAgent(),
-        ]
-    );
-
-    try {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Authentication Required
-        |--------------------------------------------------------------------------
-        |
-        | Payment records are shared municipal records.
-        |
-        | The authenticated user does NOT need to own the payment.
-        |
-        | Authorization/permission can be handled separately.
-        |
-        */
-
-        $user =
-            $request->user();
-
-        if (! $user) {
-
-            Log::warning(
-                'Payment retrieval rejected because the user is unauthenticated.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_id' =>
-                        $payment,
-
-                    'ip' =>
-                        $request->ip(),
-                ]
-            );
-
-            return ApiResponse::error(
-                'Authentication is required.',
-                401
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find Payment
-        |--------------------------------------------------------------------------
-        |
-        | The route parameter is the Payment UUID.
-        |
-        | IMPORTANT:
-        |
-        | Payments are shared municipal records.
-        | Do NOT filter the payment by the authenticated user.
-        |
-        | Do NOT interpret the route parameter as:
-        |
-        | - transaction_reference
-        | - user_id
-        | - collector_id
-        | - received_by_user_id
-        |
-        */
-
-        $paymentModel =
-            $this->paymentService
-                ->find($payment);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Not Found
-        |--------------------------------------------------------------------------
-        */
+        $requestId =
+            $request->header('X-Request-ID')
+            ?? (string) Str::uuid();
 
         Log::info(
-            'Payment lookup completed.',
+            'Payment retrieval request started.',
             [
                 'request_id' =>
                     $requestId,
 
                 'user_id' =>
-                    $user->id,
+                    $request->user()?->id,
+
+                'authenticated' =>
+                    $request->user() !== null,
 
                 'payment_id' =>
                     $payment,
 
-                'payment_found' =>
-                    $paymentModel !== null,
+                'ip' =>
+                    $request->ip(),
+
+                'user_agent' =>
+                    $request->userAgent(),
             ]
         );
 
-        if (! $paymentModel) {
+        try {
 
-            Log::warning(
-                'Payment retrieval failed because the payment was not found.',
+            /*
+            |--------------------------------------------------------------------------
+            | Authentication Required
+            |--------------------------------------------------------------------------
+            |
+            | Payment records are shared municipal records.
+            |
+            | The authenticated user does NOT need to own the payment.
+            |
+            | Authorization/permission can be handled separately.
+            |
+            */
+
+            $user =
+                $request->user();
+
+            if (! $user) {
+
+                Log::warning(
+                    'Payment retrieval rejected because the user is unauthenticated.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'payment_id' =>
+                            $payment,
+
+                        'ip' =>
+                            $request->ip(),
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Authentication is required.',
+                    401
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Find Payment
+            |--------------------------------------------------------------------------
+            |
+            | The route parameter is the Payment UUID.
+            |
+            | IMPORTANT:
+            |
+            | Payments are shared municipal records.
+            | Do NOT filter the payment by the authenticated user.
+            |
+            | Do NOT interpret the route parameter as:
+            |
+            | - transaction_reference
+            | - user_id
+            | - collector_id
+            | - received_by_user_id
+            |
+            */
+
+            $paymentModel =
+                $this->paymentService
+                    ->find($payment);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Not Found
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Payment lookup completed.',
                 [
                     'request_id' =>
                         $requestId,
@@ -1470,6 +1451,118 @@ public function show(
 
                     'payment_id' =>
                         $payment,
+
+                    'payment_found' =>
+                        $paymentModel !== null,
+                ]
+            );
+
+            if (! $paymentModel) {
+
+                Log::warning(
+                    'Payment retrieval failed because the payment was not found.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
+
+                        'payment_id' =>
+                            $payment,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Payment not found.',
+                    404
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Found
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Payment retrieved successfully.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $user->id,
+
+                    'payment_id' =>
+                        $paymentModel->id,
+
+                    'payment_number' =>
+                        $paymentModel->payment_number,
+
+                    'transaction_reference' =>
+                        $paymentModel->transaction_reference,
+
+                    'invoice_id' =>
+                        $paymentModel->invoice_id,
+
+                    'citizen_id' =>
+                        $paymentModel->citizen_id,
+
+                    'status' =>
+                        $this->safeEnumValue(
+                            $paymentModel->status
+                        ),
+
+                    'amount' =>
+                        $paymentModel->amount,
+
+                    'currency' =>
+                        $paymentModel->currency,
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
+
+            return ApiResponse::success(
+                new PaymentResource(
+                    $paymentModel
+                ),
+                'Payment retrieved successfully.'
+            );
+
+        } catch (Throwable $exception) {
+
+            Log::error(
+                'Payment retrieval failed.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $request->user()?->id,
+
+                    'payment_id' =>
+                        $payment,
+
+                    'exception' =>
+                        $exception::class,
+
+                    'message' =>
+                        $exception->getMessage(),
+
+                    'file' =>
+                        $exception->getFile(),
+
+                    'line' =>
+                        $exception->getLine(),
+
+                    'trace' =>
+                        $exception->getTraceAsString(),
                 ]
             );
 
@@ -1478,100 +1571,7 @@ public function show(
                 404
             );
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Found
-        |--------------------------------------------------------------------------
-        */
-
-        Log::info(
-            'Payment retrieved successfully.',
-            [
-                'request_id' =>
-                    $requestId,
-
-                'user_id' =>
-                    $user->id,
-
-                'payment_id' =>
-                    $paymentModel->id,
-
-                'payment_number' =>
-                    $paymentModel->payment_number,
-
-                'transaction_reference' =>
-                    $paymentModel->transaction_reference,
-
-                'invoice_id' =>
-                    $paymentModel->invoice_id,
-
-                'citizen_id' =>
-                    $paymentModel->citizen_id,
-
-                'status' =>
-                    $this->safeEnumValue(
-                        $paymentModel->status
-                    ),
-
-                'amount' =>
-                    $paymentModel->amount,
-
-                'currency' =>
-                    $paymentModel->currency,
-            ]
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Response
-        |--------------------------------------------------------------------------
-        */
-
-        return ApiResponse::success(
-            new PaymentResource(
-                $paymentModel
-            ),
-            'Payment retrieved successfully.'
-        );
-
-    } catch (Throwable $exception) {
-
-        Log::error(
-            'Payment retrieval failed.',
-            [
-                'request_id' =>
-                    $requestId,
-
-                'user_id' =>
-                    $request->user()?->id,
-
-                'payment_id' =>
-                    $payment,
-
-                'exception' =>
-                    $exception::class,
-
-                'message' =>
-                    $exception->getMessage(),
-
-                'file' =>
-                    $exception->getFile(),
-
-                'line' =>
-                    $exception->getLine(),
-
-                'trace' =>
-                    $exception->getTraceAsString(),
-            ]
-        );
-
-        return ApiResponse::error(
-            'Payment not found.',
-            404
-        );
     }
-}
 
     /*
     |--------------------------------------------------------------------------
@@ -1662,128 +1662,179 @@ public function show(
 
 
     /*
-|--------------------------------------------------------------------------
-| Get Payment Receipt
-|--------------------------------------------------------------------------
-|
-| Returns the official receipt associated with a completed payment.
-|
-| IMPORTANT:
-| - This endpoint NEVER creates a receipt.
-| - A receipt is created when the payment becomes COMPLETED.
-| - If the payment is not completed, no receipt is available.
-|
-*/
+    |--------------------------------------------------------------------------
+    | Get Payment Receipt
+    |--------------------------------------------------------------------------
+    |
+    | Returns the official receipt associated with a completed payment.
+    |
+    | IMPORTANT:
+    | - This endpoint NEVER creates a receipt.
+    | - A receipt is created when the payment becomes COMPLETED.
+    | - If the payment is not completed, no receipt is available.
+    |
+    */
 
-public function receipt(
-    Request $request,
-    string $payment
-): JsonResponse {
+    public function receipt(
+        Request $request,
+        string $payment
+    ): JsonResponse {
 
-    $requestId =
-        $request->header('X-Request-ID')
-        ?? (string) Str::uuid();
+        $requestId =
+            $request->header('X-Request-ID')
+            ?? (string) Str::uuid();
 
-    Log::info(
-        'Payment receipt retrieval request started.',
-        [
-            'request_id' =>
-                $requestId,
+        Log::info(
+            'Payment receipt retrieval request started.',
+            [
+                'request_id' =>
+                    $requestId,
 
-            'user_id' =>
-                $request->user()?->id,
+                'user_id' =>
+                    $request->user()?->id,
 
-            'authenticated' =>
-                $request->user() !== null,
+                'authenticated' =>
+                    $request->user() !== null,
 
-            'payment_id' =>
-                $payment,
+                'payment_id' =>
+                    $payment,
 
-            'ip' =>
-                $request->ip(),
+                'ip' =>
+                    $request->ip(),
 
-            'user_agent' =>
-                $request->userAgent(),
-        ]
-    );
+                'user_agent' =>
+                    $request->userAgent(),
+            ]
+        );
 
-    try {
+        try {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Authentication Required
-        |--------------------------------------------------------------------------
-        */
+            /*
+            |--------------------------------------------------------------------------
+            | Authentication Required
+            |--------------------------------------------------------------------------
+            */
 
-        $user =
-            $request->user();
+            $user =
+                $request->user();
 
-        if (! $user) {
+            if (! $user) {
 
-            Log::warning(
-                'Payment receipt retrieval rejected because the user is unauthenticated.',
-                [
-                    'request_id' =>
-                        $requestId,
+                Log::warning(
+                    'Payment receipt retrieval rejected because the user is unauthenticated.',
+                    [
+                        'request_id' =>
+                            $requestId,
 
-                    'payment_id' =>
-                        $payment,
+                        'payment_id' =>
+                            $payment,
 
-                    'ip' =>
-                        $request->ip(),
-                ]
-            );
+                        'ip' =>
+                            $request->ip(),
+                    ]
+                );
 
-            return ApiResponse::error(
-                'Authentication is required.',
-                401
-            );
-        }
+                return ApiResponse::error(
+                    'Authentication is required.',
+                    401
+                );
+            }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Find Payment
-        |--------------------------------------------------------------------------
-        |
-        | The route parameter is the internal Payment UUID.
-        |
-        */
+            /*
+            |--------------------------------------------------------------------------
+            | Find Payment
+            |--------------------------------------------------------------------------
+            |
+            | The route parameter is the internal Payment UUID.
+            |
+            */
 
-        $paymentModel =
-            $this->paymentService->find($payment);
+            $paymentModel =
+                $this->paymentService->find($payment);
 
-        if (! $paymentModel) {
+            if (! $paymentModel) {
 
-            Log::warning(
-                'Payment receipt retrieval failed because the payment was not found.',
-                [
-                    'request_id' =>
-                        $requestId,
+                Log::warning(
+                    'Payment receipt retrieval failed because the payment was not found.',
+                    [
+                        'request_id' =>
+                            $requestId,
 
-                    'user_id' =>
-                        $user->id,
+                        'user_id' =>
+                            $user->id,
 
-                    'payment_id' =>
-                        $payment,
-                ]
-            );
+                        'payment_id' =>
+                            $payment,
+                    ]
+                );
 
-            return ApiResponse::error(
-                'Payment not found.',
-                404
-            );
-        }
+                return ApiResponse::error(
+                    'Payment not found.',
+                    404
+                );
+            }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Receipt Is Available Only For Completed Payments
-        |--------------------------------------------------------------------------
-        */
+            /*
+            |--------------------------------------------------------------------------
+            | Receipt Is Available Only For Completed Payments
+            |--------------------------------------------------------------------------
+            */
 
-        if (! $paymentModel->isSuccessful()) {
+            if (! $paymentModel->isSuccessful()) {
+
+                Log::info(
+                    'Payment receipt is unavailable because payment is not completed.',
+                    [
+                        'request_id' =>
+                            $requestId,
+
+                        'user_id' =>
+                            $user->id,
+
+                        'payment_id' =>
+                            $paymentModel->id,
+
+                        'payment_number' =>
+                            $paymentModel->payment_number,
+
+                        'status' =>
+                            $this->safeEnumValue(
+                                $paymentModel->status
+                            ),
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'A receipt is only available for a completed payment.',
+                    422
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Get Existing Official Receipt
+            |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            |
+            | getReceipt() only retrieves the official receipt.
+            | It does NOT create one.
+            |
+            */
+
+            $receipt =
+                $this->receiptService->getReceipt(
+                    $paymentModel
+                );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
 
             Log::info(
-                'Payment receipt is unavailable because payment is not completed.',
+                'Payment receipt retrieved successfully.',
                 [
                     'request_id' =>
                         $requestId,
@@ -1797,108 +1848,57 @@ public function receipt(
                     'payment_number' =>
                         $paymentModel->payment_number,
 
-                    'status' =>
-                        $this->safeEnumValue(
-                            $paymentModel->status
-                        ),
+                    'receipt_id' =>
+                        $receipt->id,
+
+                    'receipt_number' =>
+                        $receipt->receipt_number,
+
+                    'issued_at' =>
+                        $receipt->issued_at,
+                ]
+            );
+
+            return ApiResponse::success(
+                $receipt,
+                'Payment receipt retrieved successfully.'
+            );
+
+        } catch (Throwable $exception) {
+
+            Log::error(
+                'Payment receipt retrieval failed.',
+                [
+                    'request_id' =>
+                        $requestId,
+
+                    'user_id' =>
+                        $request->user()?->id,
+
+                    'payment_id' =>
+                        $payment,
+
+                    'exception' =>
+                        $exception::class,
+
+                    'message' =>
+                        $exception->getMessage(),
+
+                    'file' =>
+                        $exception->getFile(),
+
+                    'line' =>
+                        $exception->getLine(),
+
+                    'trace' =>
+                        $exception->getTraceAsString(),
                 ]
             );
 
             return ApiResponse::error(
-                'A receipt is only available for a completed payment.',
-                422
+                'Unable to retrieve payment receipt.',
+                500
             );
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Get Existing Official Receipt
-        |--------------------------------------------------------------------------
-        |
-        | IMPORTANT:
-        |
-        | getReceipt() only retrieves the official receipt.
-        | It does NOT create one.
-        |
-        */
-
-        $receipt =
-            $this->receiptService->getReceipt(
-                $paymentModel
-            );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Response
-        |--------------------------------------------------------------------------
-        */
-
-        Log::info(
-            'Payment receipt retrieved successfully.',
-            [
-                'request_id' =>
-                    $requestId,
-
-                'user_id' =>
-                    $user->id,
-
-                'payment_id' =>
-                    $paymentModel->id,
-
-                'payment_number' =>
-                    $paymentModel->payment_number,
-
-                'receipt_id' =>
-                    $receipt->id,
-
-                'receipt_number' =>
-                    $receipt->receipt_number,
-
-                'issued_at' =>
-                    $receipt->issued_at,
-            ]
-        );
-
-        return ApiResponse::success(
-            $receipt,
-            'Payment receipt retrieved successfully.'
-        );
-
-    } catch (Throwable $exception) {
-
-        Log::error(
-            'Payment receipt retrieval failed.',
-            [
-                'request_id' =>
-                    $requestId,
-
-                'user_id' =>
-                    $request->user()?->id,
-
-                'payment_id' =>
-                    $payment,
-
-                'exception' =>
-                    $exception::class,
-
-                'message' =>
-                    $exception->getMessage(),
-
-                'file' =>
-                    $exception->getFile(),
-
-                'line' =>
-                    $exception->getLine(),
-
-                'trace' =>
-                    $exception->getTraceAsString(),
-            ]
-        );
-
-        return ApiResponse::error(
-            'Unable to retrieve payment receipt.',
-            500
-        );
     }
-}
 }

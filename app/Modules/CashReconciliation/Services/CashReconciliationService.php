@@ -5,46 +5,144 @@ namespace App\Modules\CashReconciliation\Services;
 use App\Models\CashReconciliation;
 use App\Models\Payment;
 use App\Models\User;
+use App\Services\Authorization\AdministrativeScopeService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CashReconciliationService
 {
+    public function __construct(
+        protected AdministrativeScopeService $administrativeScopeService
+    ) {}
+
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Restrict reconciliations through their collector's administrative unit.
+     *
+     * IMPORTANT:
+     * cash_reconciliations does not have administrative_unit_id.
+     * Therefore, administrative scope is applied through the collector
+     * relationship and the users table.
+     */
+    protected function administrativelyScopedReconciliationQuery(
+        User $user
+    ): Builder {
+        return CashReconciliation::query()
+            ->whereHas('collector', function (Builder $collectorQuery) use ($user): void {
+                $this->administrativeScopeService->applyAdministrativeScope(
+                    $collectorQuery,
+                    $user,
+                    'users.administrative_unit_id'
+                );
+            });
+    }
+
+    /**
+     * Apply both administrative scope and collector ownership rules.
+     *
+     * Users with view_all can see all collectors within their
+     * administrative scope.
+     *
+     * Other users can only see their own reconciliations.
+     */
+    protected function authorizedReconciliationQuery(
+        User $user,
+        bool $collectorOnly = false
+    ): Builder {
+        $query = $this->administrativelyScopedReconciliationQuery($user);
+
+        if (
+            $collectorOnly
+            || ! $user->can('cash_reconciliations.view_all')
+        ) {
+            $query->where(
+                'cash_reconciliations.collector_id',
+                $user->getKey()
+            );
+        }
+
+        return $query;
+    }
+
+    /**
+     * Retrieve a reconciliation through its authorized scope.
+     *
+     * administrativeScopeOnly is used for operations such as review,
+     * where the user is authorized to act on another collector's record
+     * within their administrative scope.
+     */
+    protected function resolveAuthorizedReconciliation(
+        User $user,
+        CashReconciliation $reconciliation,
+        bool $collectorOnly = false,
+        bool $lock = false,
+        bool $administrativeScopeOnly = false
+    ): CashReconciliation {
+        $query = $administrativeScopeOnly
+            ? $this->administrativelyScopedReconciliationQuery($user)
+            : $this->authorizedReconciliationQuery($user, $collectorOnly);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query
+            ->with(['collector', 'reviewer'])
+            ->findOrFail($reconciliation->getKey());
+    }
+
+    /**
+     * Apply administrative scope to payments through their invoice.
+     */
+    protected function authorizedPaymentQuery(User $user): Builder
+    {
+        return Payment::query()
+            ->whereHas('invoice', function (Builder $invoiceQuery) use ($user): void {
+                $this->administrativeScopeService->applyAdministrativeScope(
+                    $invoiceQuery,
+                    $user,
+                    'invoices.administrative_unit_id'
+                );
+            });
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Listing
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * List reconciliations visible to the authenticated user.
-     */
     public function paginate(
         User $user,
         array $filters = []
     ): LengthAwarePaginator {
-        $query = CashReconciliation::query()
+        $query = $this->authorizedReconciliationQuery($user)
             ->with(['collector', 'reviewer']);
 
-        /*
-         * Enforce record visibility independently of supplied filters.
-         */
-        if (! $user->can('cash_reconciliations.view_all')) {
-            $query->where('collector_id', $user->getKey());
-        }
-
         if (! empty($filters['status'])) {
-            $query->where('status', $filters['status']);
+            $query->where(
+                'cash_reconciliations.status',
+                $filters['status']
+            );
         }
 
         if (! empty($filters['collector_id'])) {
-            $query->where('collector_id', $filters['collector_id']);
+            $query->where(
+                'cash_reconciliations.collector_id',
+                $filters['collector_id']
+            );
         }
 
         if (! empty($filters['period_start'])) {
             $query->whereDate(
-                'period_start',
+                'cash_reconciliations.period_start',
                 '>=',
                 $filters['period_start']
             );
@@ -52,7 +150,7 @@ class CashReconciliationService
 
         if (! empty($filters['period_end'])) {
             $query->whereDate(
-                'period_end',
+                'cash_reconciliations.period_end',
                 '<=',
                 $filters['period_end']
             );
@@ -60,7 +158,7 @@ class CashReconciliationService
 
         if (! empty($filters['from'])) {
             $query->whereDate(
-                'created_at',
+                'cash_reconciliations.created_at',
                 '>=',
                 $filters['from']
             );
@@ -68,16 +166,12 @@ class CashReconciliationService
 
         if (! empty($filters['to'])) {
             $query->whereDate(
-                'created_at',
+                'cash_reconciliations.created_at',
                 '<=',
                 $filters['to']
             );
         }
 
-        /*
-         * Whitelist sortable columns even if this method is called
-         * without going through the Index Form Request.
-         */
         $sortableColumns = [
             'created_at',
             'period_start',
@@ -110,7 +204,10 @@ class CashReconciliationService
         );
 
         return $query
-            ->orderBy($sortBy, $sortDirection)
+            ->orderBy(
+                'cash_reconciliations.' . $sortBy,
+                $sortDirection
+            )
             ->paginate($perPage)
             ->withQueryString();
     }
@@ -121,24 +218,13 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Retrieve a reconciliation within the user's authorized data scope.
-     *
-     * The controller should also authorize viewing the record through
-     * CashReconciliationPolicy.
-     */
     public function findForUser(
         User $user,
         int|string $id
     ): CashReconciliation {
-        $query = CashReconciliation::query()
-            ->with(['collector', 'reviewer']);
-
-        if (! $user->can('cash_reconciliations.view_all')) {
-            $query->where('collector_id', $user->getKey());
-        }
-
-        return $query->findOrFail($id);
+        return $this->authorizedReconciliationQuery($user)
+            ->with(['collector', 'reviewer'])
+            ->findOrFail($id);
     }
 
     /*
@@ -147,11 +233,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Create a draft for the authenticated collector.
-     *
-     * Financial totals and workflow fields are assigned by the backend.
-     */
     public function createDraft(
         User $user,
         array $data
@@ -166,6 +247,13 @@ class CashReconciliationService
             $data['period_end'] ?? null
         );
 
+        /*
+         * Do not accept collector_id or administrative_unit_id
+         * from the request. The authenticated user is the collector.
+         *
+         * Administrative visibility is derived through the collector
+         * relationship when the record is retrieved.
+         */
         $reconciliation = CashReconciliation::create([
             'collector_id' => $user->getKey(),
 
@@ -187,7 +275,11 @@ class CashReconciliationService
             'status' => CashReconciliation::STATUS_DRAFT,
         ]);
 
-        return $reconciliation->load(['collector', 'reviewer']);
+        return $this->resolveAuthorizedReconciliation(
+            $user,
+            $reconciliation,
+            collectorOnly: true
+        );
     }
 
     /*
@@ -196,9 +288,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Update a draft or returned reconciliation.
-     */
     public function updateDraft(
         User $user,
         CashReconciliation $reconciliation,
@@ -214,11 +303,13 @@ class CashReconciliationService
             $reconciliation,
             $data
         ): CashReconciliation {
-            $reconciliation = CashReconciliation::query()
-                ->lockForUpdate()
-                ->findOrFail($reconciliation->getKey());
+            $reconciliation = $this->resolveAuthorizedReconciliation(
+                $user,
+                $reconciliation,
+                collectorOnly: true,
+                lock: true
+            );
 
-            $this->assertCollectorOwns($user, $reconciliation);
             $this->assertEditable($reconciliation);
 
             $start = $data['period_start']
@@ -237,15 +328,9 @@ class CashReconciliationService
                     $data['actual_amount'] === null
                         ? null
                         : $this->formatMoney(
-                            $this->moneyToCents(
-                                $data['actual_amount']
-                            )
+                            $this->moneyToCents($data['actual_amount'])
                         );
 
-                /*
-                 * A changed actual amount invalidates a previously
-                 * calculated difference. Recalculate during submission.
-                 */
                 $reconciliation->expected_amount = '0.00';
                 $reconciliation->difference_amount = null;
             }
@@ -267,12 +352,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Submit a closing for finance review.
-     *
-     * Expected cash is calculated from completed cash payments recorded
-     * by this collector during the reconciliation period.
-     */
     public function submit(
         User $user,
         CashReconciliation $reconciliation,
@@ -288,11 +367,13 @@ class CashReconciliationService
             $reconciliation,
             $data
         ): CashReconciliation {
-            $reconciliation = CashReconciliation::query()
-                ->lockForUpdate()
-                ->findOrFail($reconciliation->getKey());
+            $reconciliation = $this->resolveAuthorizedReconciliation(
+                $user,
+                $reconciliation,
+                collectorOnly: true,
+                lock: true
+            );
 
-            $this->assertCollectorOwns($user, $reconciliation);
             $this->assertEditable($reconciliation);
 
             $this->validatePeriod(
@@ -301,9 +382,7 @@ class CashReconciliationService
             );
 
             /*
-             * Serialize submissions for the same collector. Locking only
-             * the reconciliation row would not prevent two different
-             * drafts from being submitted with overlapping periods.
+             * Serialize submissions for the same collector.
              */
             User::query()
                 ->whereKey($reconciliation->collector_id)
@@ -311,11 +390,12 @@ class CashReconciliationService
                 ->firstOrFail();
 
             $this->assertNoOverlappingSubmittedPeriod(
+                $user,
                 $reconciliation
             );
 
             $expectedCents = $this->moneyToCents(
-                $this->calculateExpectedCash($reconciliation)
+                $this->calculateExpectedCash($user, $reconciliation)
             );
 
             $actualCents = $this->moneyToCents(
@@ -340,10 +420,6 @@ class CashReconciliationService
 
             $reconciliation->submitted_at = now();
 
-            /*
-             * Clear any previous review when a returned reconciliation
-             * is resubmitted.
-             */
             $reconciliation->reviewed_by = null;
             $reconciliation->reviewed_at = null;
             $reconciliation->review_notes = null;
@@ -363,11 +439,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Review a submitted reconciliation.
-     *
-     * The controller must authorize the review through the policy.
-     */
     public function review(
         User $user,
         CashReconciliation $reconciliation,
@@ -383,9 +454,18 @@ class CashReconciliationService
             $reconciliation,
             $data
         ): CashReconciliation {
-            $reconciliation = CashReconciliation::query()
-                ->lockForUpdate()
-                ->findOrFail($reconciliation->getKey());
+            /*
+             * Reviewers may review another collector's reconciliation
+             * inside their administrative scope.
+             *
+             * This intentionally does not require view_all permission.
+             */
+            $reconciliation = $this->resolveAuthorizedReconciliation(
+                $user,
+                $reconciliation,
+                lock: true,
+                administrativeScopeOnly: true
+            );
 
             if (
                 (string) $reconciliation->collector_id
@@ -501,9 +581,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Cancel a draft or returned reconciliation.
-     */
     public function cancel(
         User $user,
         CashReconciliation $reconciliation
@@ -517,11 +594,13 @@ class CashReconciliationService
             $user,
             $reconciliation
         ): CashReconciliation {
-            $reconciliation = CashReconciliation::query()
-                ->lockForUpdate()
-                ->findOrFail($reconciliation->getKey());
+            $reconciliation = $this->resolveAuthorizedReconciliation(
+                $user,
+                $reconciliation,
+                collectorOnly: true,
+                lock: true
+            );
 
-            $this->assertCollectorOwns($user, $reconciliation);
             $this->assertEditable($reconciliation);
 
             $reconciliation->status =
@@ -540,34 +619,27 @@ class CashReconciliationService
     */
 
     /**
-     * Calculate completed cash payments recorded by this collector
-     * during the reconciliation period.
+     * Calculate completed cash payments for this collector and period.
      *
-     * This uses columns present in the supplied Payment model:
-     * - processed_by
-     * - payment_method
-     * - status
-     * - amount
-     * - created_at
-     *
-     * Assumption: processed_by identifies the collector who recorded
-     * the cash payment, and created_at is the intended payment date.
+     * Payments are restricted to invoices within the user's
+     * administrative scope.
      */
     protected function calculateExpectedCash(
+        User $user,
         CashReconciliation $reconciliation
     ): string {
-        $total = Payment::query()
+        $total = $this->authorizedPaymentQuery($user)
             ->where(
-                'processed_by',
+                'payments.processed_by',
                 $reconciliation->collector_id
             )
-            ->where('payment_method', 'CASH')
-            ->where('status', 'COMPLETED')
-            ->whereBetween('created_at', [
+            ->where('payments.payment_method', 'CASH')
+            ->where('payments.status', 'COMPLETED')
+            ->whereBetween('payments.created_at', [
                 $reconciliation->period_start,
                 $reconciliation->period_end,
             ])
-            ->sum('amount');
+            ->sum('payments.amount');
 
         return $this->formatMoney(
             $this->moneyToCents($total)
@@ -580,9 +652,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Validate that both dates exist and the end is not before the start.
-     */
     protected function validatePeriod(
         mixed $start,
         mixed $end
@@ -600,37 +669,34 @@ class CashReconciliationService
     }
 
     /**
-     * Prevent a collector from submitting overlapping reconciliation
-     * periods.
+     * Prevent overlapping submitted periods for the same collector.
      *
      * Draft and cancelled records do not reserve a period.
-     * Returned records still reserve their period until resubmitted,
-     * cancelled, or otherwise resolved.
      */
     protected function assertNoOverlappingSubmittedPeriod(
+        User $user,
         CashReconciliation $reconciliation
     ): void {
-        $overlapExists = CashReconciliation::query()
+        $overlapExists = $this->authorizedReconciliationQuery(
+            $user,
+            collectorOnly: true
+        )
             ->where(
-                'collector_id',
-                $reconciliation->collector_id
-            )
-            ->where(
-                'id',
+                'cash_reconciliations.id',
                 '<>',
                 $reconciliation->getKey()
             )
-            ->whereNotIn('status', [
+            ->whereNotIn('cash_reconciliations.status', [
                 CashReconciliation::STATUS_DRAFT,
                 CashReconciliation::STATUS_CANCELLED,
             ])
             ->where(
-                'period_start',
+                'cash_reconciliations.period_start',
                 '<=',
                 $reconciliation->period_end
             )
             ->where(
-                'period_end',
+                'cash_reconciliations.period_end',
                 '>=',
                 $reconciliation->period_start
             )
@@ -650,9 +716,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Ensure the user has the required permission.
-     */
     protected function assertPermission(
         User $user,
         string $permission
@@ -662,27 +725,6 @@ class CashReconciliationService
         }
     }
 
-    /**
-     * Ensure that the reconciliation belongs to the authenticated collector.
-     */
-    protected function assertCollectorOwns(
-        User $user,
-        CashReconciliation $reconciliation
-    ): void {
-        if (
-            (string) $reconciliation->collector_id
-            !== (string) $user->getKey()
-        ) {
-            abort(
-                403,
-                'You are not authorized to modify this reconciliation.'
-            );
-        }
-    }
-
-    /**
-     * Ensure that the reconciliation is editable.
-     */
     protected function assertEditable(
         CashReconciliation $reconciliation
     ): void {
@@ -698,10 +740,6 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     | Monetary Precision
     |--------------------------------------------------------------------------
-    |
-    | Use integer cents for arithmetic and comparisons.
-    | This avoids floating-point arithmetic for financial decisions
-    | and does not require the BCMath PHP extension.
     */
 
     /**

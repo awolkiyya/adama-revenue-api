@@ -8,6 +8,9 @@ use App\Models\AssessmentService as AssessmentServiceModel;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\PaymentSchedule;
+use App\Models\User;
+use App\Services\Authorization\AdministrativeScopeService;
+use App\Services\Authorization\SectorAccessService;
 use App\Services\DocumentSequenceService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -19,15 +22,120 @@ use Illuminate\Validation\ValidationException;
 
 class InvoiceService
 {
+    public function __construct(
+        protected DocumentSequenceService $documentSequenceService,
+        protected AdministrativeScopeService $administrativeScope,
+        protected SectorAccessService $sectorAccessService,
+    ) {
+    }
+
     /*
     |--------------------------------------------------------------------------
-    | CONSTRUCTOR
+    | INVOICE AUTHORIZATION
     |--------------------------------------------------------------------------
     */
 
-    public function __construct(
-        protected DocumentSequenceService $documentSequenceService,
-    ) {
+    /**
+     * Resolve the authenticated application user.
+     */
+    protected function authenticatedUser(): User
+    {
+        $user = Auth::user();
+
+        abort_unless(
+            $user instanceof User,
+            401,
+            'Authentication is required to access invoices.'
+        );
+
+        return $user;
+    }
+
+    /**
+     * Apply administrative and sector authorization to an invoice query.
+     *
+     * Rules:
+     * - SYSTEM_ADMIN has global access.
+     * - All other users are restricted by administrative unit.
+     * - Assessment invoices additionally require access to every
+     *   service associated with the assessment.
+     * - Direct-collection invoices require administrative access only.
+     */
+    protected function applyInvoiceAccessScope(
+        Builder $query,
+        ?User $user = null
+    ): Builder {
+        $user ??= $this->authenticatedUser();
+
+        // Administrative unit and descendant authorization.
+        $this->administrativeScope->applyAdministrativeScope(
+            $query,
+            $user,
+            'invoices.administrative_unit_id'
+        );
+
+        // Global users bypass sector-level restrictions.
+        if ($this->sectorAccessService->isGlobalUser($user)) {
+            return $query;
+        }
+
+        return $query->where(
+            function (Builder $invoiceQuery) use ($user) {
+                // Direct collection / non-assessment invoices.
+                $invoiceQuery->whereNull(
+                    'invoices.assessment_id'
+                );
+
+                // Assessment-based invoices.
+                $invoiceQuery->orWhereHas(
+                    'assessment',
+                    function (Builder $assessmentQuery) use ($user) {
+                        $this->sectorAccessService
+                            ->scopeAssessmentsForUser(
+                                $assessmentQuery,
+                                $user,
+                                requireAllServices: true
+                            );
+                    }
+                );
+            }
+        );
+    }
+
+    /**
+     * Authorize access to an invoice's assessment.
+     *
+     * Administrative authorization must already have been applied
+     * when retrieving the invoice.
+     */
+    protected function authorizeInvoiceAssessment(
+        Invoice $invoice,
+        ?User $user = null
+    ): void {
+        $user ??= $this->authenticatedUser();
+
+        if ($this->sectorAccessService->isGlobalUser($user)) {
+            return;
+        }
+
+        // Direct collection invoices do not require sector authorization.
+        if (!$invoice->assessment_id) {
+            return;
+        }
+
+        $assessment = $invoice->assessment;
+
+        abort_unless(
+            $assessment !== null,
+            404,
+            'Invoice assessment was not found.'
+        );
+
+        $this->sectorAccessService->authorizeAssessment(
+            $user,
+            $assessment,
+            requireAllServices: true
+        );
     }
 
     /*
@@ -40,10 +148,7 @@ class InvoiceService
         array $filters = [],
         int $perPage = 20
     ) {
-        $perPage = max(
-            1,
-            min($perPage, 100)
-        );
+        $perPage = max(1, min($perPage, 100));
 
         $query = Invoice::query()
             ->with([
@@ -56,6 +161,9 @@ class InvoiceService
                 'issuer',
             ]);
 
+        // Always apply authorization before user-supplied filters.
+        $this->applyInvoiceAccessScope($query);
+
         $this->applyListFilters(
             $query,
             $filters
@@ -67,37 +175,17 @@ class InvoiceService
             ->paginate($perPage);
     }
 
-
-
-    
-
     /*
     |--------------------------------------------------------------------------
     | PAGINATE UNPAID INVOICES
-    |--------------------------------------------------------------------------
-    |
-    | Return invoices that still have an outstanding balance.
-    |
-    | Eligible statuses:
-    |
-    | - ISSUED
-    | - PARTIALLY_PAID
-    | - OVERDUE
-    |
-    | Search:
-    |
-    | - Invoice number
-    | - Assessment number
-    |
     |--------------------------------------------------------------------------
     */
 
     public function paginateUnpaid(
         string $search,
-        int $perPage = 20,
+        int $perPage = 20
     ) {
         $search = trim($search);
-
         $perPage = max(1, min($perPage, 50));
 
         if (mb_strlen($search) < 2) {
@@ -110,7 +198,7 @@ class InvoiceService
 
         $searchTerm = "%{$search}%";
 
-        return Invoice::query()
+        $query = Invoice::query()
             ->with([
                 'citizen',
                 'assessment',
@@ -119,24 +207,30 @@ class InvoiceService
                 'administrativeUnit',
                 'creator',
                 'issuer',
-            ])
+            ]);
+
+        // Authorization scope.
+        $this->applyInvoiceAccessScope($query);
+
+        // Financial eligibility.
+        $query
             ->whereIn('status', [
                 'ISSUED',
                 'PARTIALLY_PAID',
                 'OVERDUE',
             ])
-            ->where('balance_due', '>', 0)
-            ->where(function (Builder $query) use ($searchTerm) {
+            ->where('balance_due', '>', 0);
 
-                // Search by invoice number.
-                $query->where(
+        // Search by invoice number or assessment number.
+        $query->where(
+            function (Builder $searchQuery) use ($searchTerm) {
+                $searchQuery->where(
                     'invoice_number',
                     'like',
                     $searchTerm
                 );
 
-                // Search by assessment number.
-                $query->orWhereHas(
+                $searchQuery->orWhereHas(
                     'assessment',
                     function (Builder $assessmentQuery) use ($searchTerm) {
                         $assessmentQuery->where(
@@ -146,14 +240,14 @@ class InvoiceService
                         );
                     }
                 );
-            })
+            }
+        );
+
+        return $query
             ->orderByDesc('created_at')
             ->orderByDesc('id')
             ->paginate($perPage);
     }
-
-
-
 
     /*
     |--------------------------------------------------------------------------
@@ -166,47 +260,29 @@ class InvoiceService
     ): array {
         $query = Invoice::query();
 
+        // Summary must use exactly the same authorization as invoice listing.
+        $this->applyInvoiceAccessScope($query);
+
         $this->applyListFilters(
             $query,
             $filters
         );
 
         $financial = (clone $query)
-            ->selectRaw(
-                'COUNT(*) as total_invoices'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(subtotal), 0) as subtotal'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(discount_amount), 0) as discount_amount'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(interest_amount), 0) as interest_amount'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(total_amount), 0) as total_amount'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(paid_amount), 0) as paid_amount'
-            )
-            ->selectRaw(
-                'COALESCE(SUM(balance_due), 0) as balance_due'
-            )
+            ->selectRaw('COUNT(*) as total_invoices')
+            ->selectRaw('COALESCE(SUM(subtotal), 0) as subtotal')
+            ->selectRaw('COALESCE(SUM(discount_amount), 0) as discount_amount')
+            ->selectRaw('COALESCE(SUM(penalty_amount), 0) as penalty_amount')
+            ->selectRaw('COALESCE(SUM(interest_amount), 0) as interest_amount')
+            ->selectRaw('COALESCE(SUM(total_amount), 0) as total_amount')
+            ->selectRaw('COALESCE(SUM(paid_amount), 0) as paid_amount')
+            ->selectRaw('COALESCE(SUM(balance_due), 0) as balance_due')
             ->first();
 
         $statusCounts = (clone $query)
-            ->selectRaw(
-                'status, COUNT(*) as count'
-            )
+            ->selectRaw('status, COUNT(*) as count')
             ->groupBy('status')
-            ->pluck(
-                'count',
-                'status'
-            );
+            ->pluck('count', 'status');
 
         return [
             'total_invoices' =>
@@ -268,66 +344,55 @@ class InvoiceService
         Builder $query,
         array $filters
     ): void {
-        /*
-        |--------------------------------------------------------------------------
-        | GENERAL SEARCH
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['search'])) {
-            $search = trim(
-                (string) $filters['search']
-            );
+        // General search.
+        if (!empty($filters['search'])) {
+            $search = trim((string) $filters['search']);
 
             if ($search !== '') {
-                $query->where(function (Builder $q) use ($search) {
-                    $q->where(
-                        'invoice_number',
-                        'like',
-                        "%{$search}%"
-                    );
+                $query->where(
+                    function (Builder $q) use ($search) {
+                        $q->where(
+                            'invoice_number',
+                            'like',
+                            "%{$search}%"
+                        );
 
-                    $q->orWhereHas(
-                        'citizen',
-                        function (Builder $citizenQuery) use ($search) {
-                            $citizenQuery
-                                ->where(
-                                    'citizen_number',
-                                    'like',
-                                    "%{$search}%"
-                                )
-                                ->orWhere(
-                                    'name',
+                        $q->orWhereHas(
+                            'citizen',
+                            function (Builder $citizenQuery) use ($search) {
+                                $citizenQuery
+                                    ->where(
+                                        'citizen_number',
+                                        'like',
+                                        "%{$search}%"
+                                    )
+                                    ->orWhere(
+                                        'name',
+                                        'like',
+                                        "%{$search}%"
+                                    );
+                            }
+                        );
+
+                        $q->orWhereHas(
+                            'assessment',
+                            function (Builder $assessmentQuery) use ($search) {
+                                $assessmentQuery->where(
+                                    'assessment_number',
                                     'like',
                                     "%{$search}%"
                                 );
-                        }
-                    );
-
-                    $q->orWhereHas(
-                        'assessment',
-                        function (Builder $assessmentQuery) use ($search) {
-                            $assessmentQuery->where(
-                                'assessment_number',
-                                'like',
-                                "%{$search}%"
-                            );
-                        }
-                    );
-                });
+                            }
+                        );
+                    }
+                );
             }
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | FISCAL YEAR
-        |--------------------------------------------------------------------------
-        */
-
+        // Fiscal year.
         if (
             isset($filters['fiscal_year'])
-            &&
-            $filters['fiscal_year'] !== ''
+            && $filters['fiscal_year'] !== ''
         ) {
             $query->where(
                 'fiscal_year',
@@ -335,35 +400,24 @@ class InvoiceService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | STATUS
-        |--------------------------------------------------------------------------
-        */
-
+        // Status: supports a single status or an array of statuses.
         if (
             isset($filters['status'])
-            &&
-            $filters['status'] !== ''
+            && $filters['status'] !== ''
         ) {
             if (is_array($filters['status'])) {
                 $statuses = array_values(
                     array_filter(
                         array_map(
-                            static fn ($status) =>
-                                trim((string) $status),
+                            static fn ($status) => trim((string) $status),
                             $filters['status']
                         ),
-                        static fn ($status) =>
-                            $status !== ''
+                        static fn ($status) => $status !== ''
                     )
                 );
 
                 if ($statuses !== []) {
-                    $query->whereIn(
-                        'status',
-                        $statuses
-                    );
+                    $query->whereIn('status', $statuses);
                 }
             } else {
                 $query->where(
@@ -373,39 +427,24 @@ class InvoiceService
             }
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | SOURCE TYPE
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['source_type'])) {
+        // Source type.
+        if (!empty($filters['source_type'])) {
             $query->where(
                 'source_type',
                 $filters['source_type']
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | ADMINISTRATIVE UNIT
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['administrative_unit_id'])) {
+        // Administrative unit.
+        if (!empty($filters['administrative_unit_id'])) {
             $query->where(
                 'administrative_unit_id',
                 $filters['administrative_unit_id']
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | DUE DATE FROM
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['due_date_from'])) {
+        // Due date range.
+        if (!empty($filters['due_date_from'])) {
             $query->whereDate(
                 'due_date',
                 '>=',
@@ -413,13 +452,7 @@ class InvoiceService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | DUE DATE TO
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['due_date_to'])) {
+        if (!empty($filters['due_date_to'])) {
             $query->whereDate(
                 'due_date',
                 '<=',
@@ -427,13 +460,8 @@ class InvoiceService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | ISSUED FROM
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['issued_from'])) {
+        // Issued date range.
+        if (!empty($filters['issued_from'])) {
             $query->whereDate(
                 'issued_at',
                 '>=',
@@ -441,13 +469,7 @@ class InvoiceService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | ISSUED TO
-        |--------------------------------------------------------------------------
-        */
-
-        if (! empty($filters['issued_to'])) {
+        if (!empty($filters['issued_to'])) {
             $query->whereDate(
                 'issued_at',
                 '<=',
@@ -456,146 +478,73 @@ class InvoiceService
         }
     }
 
-
-
-
-
     /*
     |--------------------------------------------------------------------------
     | FIND INVOICE FOR DETAILS
     |--------------------------------------------------------------------------
     |
-    | Return one invoice with all relationships required by
-    | InvoiceDetailResource.
+    | The invoice is retrieved through the same authorization scope used
+    | by listing and summary queries.
     |
-    | The service owns eager loading.
-    | The resource owns the API response shape.
-    |
+    | Unauthorized invoices are therefore returned as not found.
     |--------------------------------------------------------------------------
     */
-    
+
     public function findForDetails(
         string $id
     ): ?Invoice {
-        return Invoice::query()
+        $query = Invoice::query()
             ->with([
-                /*
-                |--------------------------------------------------------------------------
-                | INVOICE SOURCE / OWNER
-                |--------------------------------------------------------------------------
-                */
-    
+                // Invoice source / owner.
                 'citizen',
                 'assessment',
                 'administrativeUnit',
-    
-                /*
-                |--------------------------------------------------------------------------
-                | INVOICE ITEMS
-                |--------------------------------------------------------------------------
-                */
-    
+
+                // Invoice items.
                 'items.service',
                 'items.assessmentService',
                 'items.paymentSchedule',
-    
-                /*
-                |--------------------------------------------------------------------------
-                | PAYMENT HISTORY
-                |--------------------------------------------------------------------------
-                |
-                | Load actual payment records and their relationships.
-                | The Invoice model defines payments() as a HasMany.
-                |
-                */
-    
+
+                // Payment history.
                 'payments.processedBy',
                 'payments.verifiedBy',
-    
-                /*
-                |--------------------------------------------------------------------------
-                | PAYMENT METHOD DETAILS
-                |--------------------------------------------------------------------------
-                */
-    
+
+                // Payment method details.
                 'payments.cashDetails',
                 'payments.bankTransferDetails',
                 'payments.onlineDetails',
-    
-                /*
-                |--------------------------------------------------------------------------
-                | PAYMENT FILES AND RECEIPTS
-                |--------------------------------------------------------------------------
-                */
-    
+
+                // Payment files and receipts.
                 'payments.files',
                 'payments.receipt',
-    
-                /*
-                |--------------------------------------------------------------------------
-                | AUDIT
-                |--------------------------------------------------------------------------
-                */
-    
+
+                // Audit relationships.
                 'creator',
                 'issuer',
                 'cancelledBy',
                 'voidedBy',
-            ])
-            ->find($id);
+            ]);
+
+        $this->applyInvoiceAccessScope($query);
+
+        $invoice = $query->find($id);
+
+        if ($invoice) {
+            $this->authorizeInvoiceAssessment($invoice);
+        }
+
+        return $invoice;
     }
-    
-    
 
     /*
     |--------------------------------------------------------------------------
     | CREATE INVOICE FROM APPROVED ASSESSMENT SERVICES
     |--------------------------------------------------------------------------
     |
-    | Business workflow:
+    | This method creates DRAFT invoices only.
     |
-    |     APPROVED ASSESSMENT
-    |             ↓
-    |     InvoiceService
-    |             ↓
-    |       CREATE DRAFT
-    |             ↓
-    |    InvoiceIssuanceService
-    |             ↓
-    |          ISSUED
-    |
-    | IMPORTANT:
-    |
-    | InvoiceService ONLY constructs the invoice.
-    |
-    | InvoiceIssuanceService is the single authority responsible
-    | for changing an invoice from DRAFT to ISSUED.
-    |
-    |--------------------------------------------------------------------------
-    |
-    | Responsibilities:
-    |
-    | - Validate approved assessment
-    | - Validate invoiceable services
-    | - Lock authoritative records
-    | - Generate invoice number
-    | - Create invoice
-    | - Create invoice items
-    | - Preserve Decision Provider snapshots
-    | - Preserve authoritative due date
-    | - Aggregate invoice totals
-    |
-    | Does NOT:
-    |
-    | - issue invoice
-    | - set issued_by
-    | - set issued_at
-    | - calculate tariff
-    | - calculate penalty
-    | - calculate interest
-    | - process payment
-    | - send SMS
-    |
+    | InvoiceIssuanceService remains the only authority responsible
+    | for the DRAFT -> ISSUED transition.
     |--------------------------------------------------------------------------
     */
 
@@ -621,9 +570,7 @@ class InvoiceService
                         'services.values',
                     ])
                     ->lockForUpdate()
-                    ->findOrFail(
-                        $assessment->id
-                    );
+                    ->findOrFail($assessment->id);
 
                 /*
                 |--------------------------------------------------------------------------
@@ -655,29 +602,24 @@ class InvoiceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 4. LOCKED SERVICE MAP
+                | 4. BUILD LOCKED SERVICE MAP
                 |--------------------------------------------------------------------------
                 */
 
-                $loadedServices = $assessment->services
-                    ->keyBy(
-                        fn (
-                            AssessmentServiceModel $service
-                        ) => (string) $service->id
-                    );
+                $loadedServices = $assessment->services->keyBy(
+                    fn (AssessmentServiceModel $service) =>
+                        (string) $service->id
+                );
 
                 /*
                 |--------------------------------------------------------------------------
-                | 5. VALIDATE OWNERSHIP + TYPE
+                | 5. VALIDATE OWNERSHIP AND TYPE
                 |--------------------------------------------------------------------------
                 */
 
-                foreach (
-                    $invoiceableServices
-                    as $assessmentService
-                ) {
+                foreach ($invoiceableServices as $assessmentService) {
                     if (
-                        ! $assessmentService
+                        !$assessmentService
                         instanceof AssessmentServiceModel
                     ) {
                         throw ValidationException::withMessages([
@@ -687,14 +629,9 @@ class InvoiceService
                         ]);
                     }
 
-                    $serviceId =
-                        (string) $assessmentService->id;
+                    $serviceId = (string) $assessmentService->id;
 
-                    if (
-                        ! $loadedServices->has(
-                            $serviceId
-                        )
-                    ) {
+                    if (!$loadedServices->has($serviceId)) {
                         throw ValidationException::withMessages([
                             'assessment' => [
                                 'One or more invoiceable services do not belong to this assessment.',
@@ -705,23 +642,18 @@ class InvoiceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 6. REPLACE WITH LOCKED MODELS
+                | 6. REPLACE INPUT WITH LOCKED MODELS
                 |--------------------------------------------------------------------------
                 */
 
-                $invoiceableServices =
-                    $invoiceableServices
-                        ->map(
-                            fn (
-                                AssessmentServiceModel $service
-                            ) =>
-                                $loadedServices->get(
-                                    (string) $service->id
-                                )
-                        )
-                        ->filter()
-                        ->unique('id')
-                        ->values();
+                $invoiceableServices = $invoiceableServices
+                    ->map(
+                        fn (AssessmentServiceModel $service) =>
+                            $loadedServices->get((string) $service->id)
+                    )
+                    ->filter()
+                    ->unique('id')
+                    ->values();
 
                 /*
                 |--------------------------------------------------------------------------
@@ -731,14 +663,8 @@ class InvoiceService
 
                 $assessmentDueDate = null;
 
-                foreach (
-                    $invoiceableServices
-                    as $assessmentService
-                ) {
-                    if (
-                        $assessmentService->status
-                        !== 'COMPLETED'
-                    ) {
+                foreach ($invoiceableServices as $assessmentService) {
+                    if ($assessmentService->status !== 'COMPLETED') {
                         throw ValidationException::withMessages([
                             'assessment' => [
                                 'All invoiceable assessment services must be completed before an invoice can be generated.',
@@ -746,10 +672,7 @@ class InvoiceService
                         ]);
                     }
 
-                    if (
-                        $assessmentService->computed_amount
-                        === null
-                    ) {
+                    if ($assessmentService->computed_amount === null) {
                         throw ValidationException::withMessages([
                             'assessment' => [
                                 'Every invoiceable assessment service must have a computed amount before invoicing.',
@@ -757,10 +680,7 @@ class InvoiceService
                         ]);
                     }
 
-                    if (
-                        (float) $assessmentService->computed_amount
-                        < 0
-                    ) {
+                    if ((float) $assessmentService->computed_amount < 0) {
                         throw ValidationException::withMessages([
                             'assessment' => [
                                 'Every invoiceable assessment service must have a non-negative computed amount before invoicing.',
@@ -769,12 +689,8 @@ class InvoiceService
                     }
 
                     if (
-                        $assessmentService->calculation_metadata
-                        !== null
-                        &&
-                        ! is_array(
-                            $assessmentService->calculation_metadata
-                        )
+                        $assessmentService->calculation_metadata !== null
+                        && !is_array($assessmentService->calculation_metadata)
                     ) {
                         throw ValidationException::withMessages([
                             'assessment' => [
@@ -783,9 +699,7 @@ class InvoiceService
                         ]);
                     }
 
-                    if (
-                        ! $assessmentService->service_id
-                    ) {
+                    if (!$assessmentService->service_id) {
                         throw ValidationException::withMessages([
                             'assessment' => [
                                 'Every invoiceable assessment service must reference a revenue service.',
@@ -793,10 +707,7 @@ class InvoiceService
                         ]);
                     }
 
-                    if (
-                        $assessmentService->due_date
-                        === null
-                    ) {
+                    if ($assessmentService->due_date === null) {
                         throw ValidationException::withMessages([
                             'assessment' => [
                                 'Every invoiceable assessment service must have a due date before an invoice can be generated.',
@@ -804,17 +715,11 @@ class InvoiceService
                         ]);
                     }
 
-                    if (
-                        $assessmentDueDate === null
-                    ) {
-                        $assessmentDueDate =
-                            $assessmentService->due_date;
+                    if ($assessmentDueDate === null) {
+                        $assessmentDueDate = $assessmentService->due_date;
                     } elseif (
                         $assessmentDueDate->format('Y-m-d')
-                        !==
-                        $assessmentService
-                            ->due_date
-                            ->format('Y-m-d')
+                        !== $assessmentService->due_date->format('Y-m-d')
                     ) {
                         throw ValidationException::withMessages([
                             'assessment' => [
@@ -830,28 +735,24 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $alreadyInvoicedService =
-                    InvoiceItem::query()
-                        ->whereIn(
-                            'assessment_service_id',
-                            $invoiceableServices->pluck('id')
-                        )
-                        ->whereHas(
-                            'invoice',
-                            function (Builder $query) {
-                                $query->whereIn(
-                                    'status',
-                                    [
-                                        'DRAFT',
-                                        'ISSUED',
-                                        'PARTIALLY_PAID',
-                                        'PAID',
-                                        'OVERDUE',
-                                    ]
-                                );
-                            }
-                        )
-                        ->exists();
+                $alreadyInvoicedService = InvoiceItem::query()
+                    ->whereIn(
+                        'assessment_service_id',
+                        $invoiceableServices->pluck('id')
+                    )
+                    ->whereHas(
+                        'invoice',
+                        function (Builder $query) {
+                            $query->whereIn('status', [
+                                'DRAFT',
+                                'ISSUED',
+                                'PARTIALLY_PAID',
+                                'PAID',
+                                'OVERDUE',
+                            ]);
+                        }
+                    )
+                    ->exists();
 
                 if ($alreadyInvoicedService) {
                     throw ValidationException::withMessages([
@@ -867,22 +768,13 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $invoiceNumber =
-                    $this->documentSequenceService->generate(
-                        sequenceType: 'invoice',
-                    );
+                $invoiceNumber = $this->documentSequenceService->generate(
+                    sequenceType: 'invoice',
+                );
 
                 /*
                 |--------------------------------------------------------------------------
                 | 10. CREATOR
-                |--------------------------------------------------------------------------
-                |
-                | Creation actor is recorded here.
-                |
-                | Issuance actor/time are intentionally NOT recorded here.
-                |
-                | InvoiceIssuanceService owns issuance.
-                |
                 |--------------------------------------------------------------------------
                 */
 
@@ -895,62 +787,25 @@ class InvoiceService
                 */
 
                 $invoice = Invoice::query()->create([
-                    'id' =>
-                        (string) Str::uuid(),
-
-                    'invoice_number' =>
-                        $invoiceNumber,
-
-                    'source_type' =>
-                        'ASSESSMENT',
-
-                    'assessment_id' =>
-                        $assessment->id,
-
-                    'citizen_id' =>
-                        $assessment->citizen_id,
-
-                    'administrative_unit_id' =>
-                        $assessment->administrative_unit_id,
-
-                    'status' =>
-                        'DRAFT',
-
-                    'currency' =>
-                        'ETB',
-
-                    'due_date' =>
-                        $assessmentDueDate,
-
-                    'subtotal' =>
-                        0,
-
-                    'discount_amount' =>
-                        0,
-
-                    'penalty_amount' =>
-                        0,
-
-                    'interest_amount' =>
-                        0,
-
-                    'total_amount' =>
-                        0,
-
-                    'paid_amount' =>
-                        0,
-
-                    'balance_due' =>
-                        0,
-
-                    'created_by' =>
-                        $createdBy,
-
-                    'issued_by' =>
-                        null,
-
-                    'issued_at' =>
-                        null,
+                    'id' => (string) Str::uuid(),
+                    'invoice_number' => $invoiceNumber,
+                    'source_type' => 'ASSESSMENT',
+                    'assessment_id' => $assessment->id,
+                    'citizen_id' => $assessment->citizen_id,
+                    'administrative_unit_id' => $assessment->administrative_unit_id,
+                    'status' => 'DRAFT',
+                    'currency' => 'ETB',
+                    'due_date' => $assessmentDueDate,
+                    'subtotal' => 0,
+                    'discount_amount' => 0,
+                    'penalty_amount' => 0,
+                    'interest_amount' => 0,
+                    'total_amount' => 0,
+                    'paid_amount' => 0,
+                    'balance_due' => 0,
+                    'created_by' => $createdBy,
+                    'issued_by' => null,
+                    'issued_at' => null,
                 ]);
 
                 /*
@@ -961,122 +816,54 @@ class InvoiceService
 
                 $lineNumber = 1;
 
-                foreach (
-                    $invoiceableServices
-                    as $assessmentService
-                ) {
-                    $amount =
-                        $assessmentService
-                            ->computed_amount;
+                foreach ($invoiceableServices as $assessmentService) {
+                    $amount = $assessmentService->computed_amount;
 
-                    $metadata =
-                        is_array(
-                            $assessmentService
-                                ->calculation_metadata
-                        )
-                            ? $assessmentService
-                                ->calculation_metadata
-                            : [];
+                    $metadata = is_array(
+                        $assessmentService->calculation_metadata
+                    )
+                        ? $assessmentService->calculation_metadata
+                        : [];
 
                     $tariffVersionId =
-                        $metadata[
-                            'tariff_version_id'
-                        ]
-                        ?? null;
+                        $metadata['tariff_version_id'] ?? null;
 
                     $tariffRuleId =
-                        $metadata[
-                            'tariff_rule_id'
-                        ]
-                        ?? null;
+                        $metadata['tariff_rule_id'] ?? null;
 
-                    $inputSnapshot =
-                        $assessmentService
-                            ->values
-                            ->mapWithKeys(
-                                function ($value) {
-                                    return [
-                                        $value->field_code =>
-                                            $value->value,
-                                    ];
-                                }
-                            )
-                            ->toArray();
+                    $inputSnapshot = $assessmentService->values
+                        ->mapWithKeys(
+                            function ($value) {
+                                return [
+                                    $value->field_code => $value->value,
+                                ];
+                            }
+                        )
+                        ->toArray();
 
                     InvoiceItem::query()->create([
-                        'id' =>
-                            (string) Str::uuid(),
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'assessment_service_id' =>
-                            $assessmentService->id,
-
-                        'payment_schedule_id' =>
-                            null,
-
-                        'service_id' =>
-                            $assessmentService->service_id,
-
-                        'line_number' =>
-                            $lineNumber,
-
+                        'id' => (string) Str::uuid(),
+                        'invoice_id' => $invoice->id,
+                        'assessment_service_id' => $assessmentService->id,
+                        'payment_schedule_id' => null,
+                        'service_id' => $assessmentService->service_id,
+                        'line_number' => $lineNumber,
                         'description' =>
-                            $assessmentService
-                                ->service
-                                ?->name
+                            $assessmentService->service?->name
                             ?? 'Revenue Service',
-
-                        'quantity' =>
-                            $metadata[
-                                'quantity'
-                            ]
-                            ?? null,
-
-                        'unit' =>
-                            $metadata[
-                                'unit'
-                            ]
-                            ?? null,
-
-                        'unit_price' =>
-                            $metadata[
-                                'unit_price'
-                            ]
-                            ?? null,
-
-                        'amount' =>
-                            $amount,
-
-                        'discount_amount' =>
-                            0,
-
-                        'penalty_amount' =>
-                            0,
-
-                        'interest_amount' =>
-                            0,
-
-                        'total_amount' =>
-                            $amount,
-
-                        'currency' =>
-                            $assessmentService
-                                ->currency_code
-                            ?? 'ETB',
-
-                        'tariff_version_id' =>
-                            $tariffVersionId,
-
-                        'tariff_rule_id' =>
-                            $tariffRuleId,
-
-                        'input_snapshot' =>
-                            $inputSnapshot,
-
-                        'calculation_snapshot' =>
-                            $metadata,
+                        'quantity' => $metadata['quantity'] ?? null,
+                        'unit' => $metadata['unit'] ?? null,
+                        'unit_price' => $metadata['unit_price'] ?? null,
+                        'amount' => $amount,
+                        'discount_amount' => 0,
+                        'penalty_amount' => 0,
+                        'interest_amount' => 0,
+                        'total_amount' => $amount,
+                        'currency' => $assessmentService->currency_code ?? 'ETB',
+                        'tariff_version_id' => $tariffVersionId,
+                        'tariff_rule_id' => $tariffRuleId,
+                        'input_snapshot' => $inputSnapshot,
+                        'calculation_snapshot' => $metadata,
                     ]);
 
                     $lineNumber++;
@@ -1088,73 +875,32 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $totals =
-                    InvoiceItem::query()
-                        ->where(
-                            'invoice_id',
-                            $invoice->id
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(amount), 0) as subtotal'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(discount_amount), 0) as discount_amount'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(interest_amount), 0) as interest_amount'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(total_amount), 0) as total_amount'
-                        )
-                        ->first();
+                $totals = InvoiceItem::query()
+                    ->where('invoice_id', $invoice->id)
+                    ->selectRaw('COALESCE(SUM(amount), 0) as subtotal')
+                    ->selectRaw('COALESCE(SUM(discount_amount), 0) as discount_amount')
+                    ->selectRaw('COALESCE(SUM(penalty_amount), 0) as penalty_amount')
+                    ->selectRaw('COALESCE(SUM(interest_amount), 0) as interest_amount')
+                    ->selectRaw('COALESCE(SUM(total_amount), 0) as total_amount')
+                    ->first();
 
                 /*
                 |--------------------------------------------------------------------------
                 | 14. UPDATE FINAL TOTALS
                 |--------------------------------------------------------------------------
-                |
-                | Status remains DRAFT.
-                |
-                | InvoiceIssuanceService is responsible for:
-                |
-                |     DRAFT → ISSUED
-                |
-                |--------------------------------------------------------------------------
                 */
 
                 $invoice->update([
-                    'subtotal' =>
-                        $totals->subtotal,
-
-                    'discount_amount' =>
-                        $totals->discount_amount,
-
-                    'penalty_amount' =>
-                        $totals->penalty_amount,
-
-                    'interest_amount' =>
-                        $totals->interest_amount,
-
-                    'total_amount' =>
-                        $totals->total_amount,
-
-                    'paid_amount' =>
-                        0,
-
-                    'balance_due' =>
-                        $totals->total_amount,
-
-                    'status' =>
-                        'DRAFT',
-
-                    'issued_by' =>
-                        null,
-
-                    'issued_at' =>
-                        null,
+                    'subtotal' => $totals->subtotal,
+                    'discount_amount' => $totals->discount_amount,
+                    'penalty_amount' => $totals->penalty_amount,
+                    'interest_amount' => $totals->interest_amount,
+                    'total_amount' => $totals->total_amount,
+                    'paid_amount' => 0,
+                    'balance_due' => $totals->total_amount,
+                    'status' => 'DRAFT',
+                    'issued_by' => null,
+                    'issued_at' => null,
                 ]);
 
                 /*
@@ -1166,26 +912,13 @@ class InvoiceService
                 Log::info(
                     'Invoice created successfully from assessment services.',
                     [
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'invoice_number' =>
-                            $invoice->invoice_number,
-
-                        'assessment_id' =>
-                            $assessment->id,
-
-                        'status' =>
-                            $invoice->status,
-
-                        'total_amount' =>
-                            $invoice->total_amount,
-
-                        'invoiceable_service_count' =>
-                            $invoiceableServices->count(),
-
-                        'created_by' =>
-                            $createdBy,
+                        'invoice_id' => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'assessment_id' => $assessment->id,
+                        'status' => $invoice->status,
+                        'total_amount' => $invoice->total_amount,
+                        'invoiceable_service_count' => $invoiceableServices->count(),
+                        'created_by' => $createdBy,
                     ]
                 );
 
@@ -1212,69 +945,11 @@ class InvoiceService
     | CREATE INVOICE FROM PAYMENT SCHEDULES
     |--------------------------------------------------------------------------
     |
-    | Business workflow:
+    | One selected payment schedule creates one invoice item.
+    | Multiple selected schedules create one invoice with multiple items.
     |
-    |     PAYMENT SCHEDULE
-    |            ↓
-    |     SELECT SCHEDULES
-    |            ↓
-    |       InvoiceService
-    |            ↓
-    |       CREATE DRAFT
-    |            ↓
-    |    InvoiceIssuanceService
-    |            ↓
-    |          ISSUED
-    |            ↓
-    |         PAYMENT
-    |
-    | IMPORTANT:
-    |
-    | InvoiceService creates the invoice only.
-    |
-    | InvoiceIssuanceService is the single authority responsible
-    | for DRAFT → ISSUED.
-    |
-    |--------------------------------------------------------------------------
-    |
-    | One selected payment schedule = one invoice item.
-    |
-    | Multiple selected schedules = ONE invoice with multiple items.
-    |
-    |--------------------------------------------------------------------------
-    |
-    | Responsibilities:
-    |
-    | - Validate approved assessment
-    | - Lock assessment service
-    | - Lock selected payment schedules
-    | - Validate schedule ownership
-    | - Validate financial eligibility
-    | - Resolve invoice due date
-    | - Generate invoice number
-    | - Create DRAFT invoice
-    | - Create invoice items
-    | - Preserve schedule snapshot
-    | - Preserve assessment snapshot
-    | - Aggregate invoice totals
-    |
-    | Does NOT:
-    |
-    | - issue invoice
-    | - set issued_by
-    | - set issued_at
-    | - calculate tariffs
-    | - calculate payment schedule rules
-    | - regenerate schedules
-    | - modify amount_due
-    | - modify amount_paid
-    | - modify schedule status
-    | - modify schedule due dates
-    | - calculate penalties
-    | - calculate interest
-    | - process payment
-    | - send SMS
-    |
+    | This method creates DRAFT invoices only.
+    | InvoiceIssuanceService owns DRAFT -> ISSUED.
     |--------------------------------------------------------------------------
     */
 
@@ -1307,17 +982,14 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $lockedAssessmentService =
-                    AssessmentServiceModel::query()
-                        ->with([
-                            'assessment.citizen',
-                            'service.revenueCode',
-                            'values',
-                        ])
-                        ->lockForUpdate()
-                        ->findOrFail(
-                            $assessmentService->id
-                        );
+                $lockedAssessmentService = AssessmentServiceModel::query()
+                    ->with([
+                        'assessment.citizen',
+                        'service.revenueCode',
+                        'values',
+                    ])
+                    ->lockForUpdate()
+                    ->findOrFail($assessmentService->id);
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1325,9 +997,7 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                if (
-                    ! $lockedAssessmentService->assessment
-                ) {
+                if (!$lockedAssessmentService->assessment) {
                     throw ValidationException::withMessages([
                         'assessment_service_id' => [
                             'The assessment service is not associated with an assessment.',
@@ -1343,11 +1013,8 @@ class InvoiceService
 
                 if (
                     strtoupper(
-                        (string) $lockedAssessmentService
-                            ->assessment
-                            ->status
-                    )
-                    !== 'APPROVED'
+                        (string) $lockedAssessmentService->assessment->status
+                    ) !== 'APPROVED'
                 ) {
                     throw ValidationException::withMessages([
                         'assessment_service_id' => [
@@ -1362,20 +1029,17 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $paymentScheduleIds =
-                    $paymentSchedules
-                        ->pluck('id')
-                        ->map(
-                            static fn ($id) =>
-                                (string) $id
-                        )
-                        ->filter(
-                            static fn ($id) =>
-                                trim($id) !== ''
-                        )
-                        ->unique()
-                        ->values()
-                        ->all();
+                $paymentScheduleIds = $paymentSchedules
+                    ->pluck('id')
+                    ->map(
+                        static fn ($id) => (string) $id
+                    )
+                    ->filter(
+                        static fn ($id) => trim($id) !== ''
+                    )
+                    ->unique()
+                    ->values()
+                    ->all();
 
                 if ($paymentScheduleIds === []) {
                     throw ValidationException::withMessages([
@@ -1387,34 +1051,22 @@ class InvoiceService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 6. RELOAD + LOCK SELECTED SCHEDULES
-                |--------------------------------------------------------------------------
-                |
-                | The database is authoritative.
-                |
-                | Client-supplied schedule objects are never trusted.
-                |
+                | 6. RELOAD AND LOCK SELECTED SCHEDULES
                 |--------------------------------------------------------------------------
                 */
 
-                $lockedSchedules =
-                    PaymentSchedule::query()
-                        ->where(
-                            'assessment_service_id',
-                            $lockedAssessmentService->id
-                        )
-                        ->whereIn(
-                            'id',
-                            $paymentScheduleIds
-                        )
-                        ->with([
-                            'invoiceItems',
-                        ])
-                        ->lockForUpdate()
-                        ->orderBy(
-                            'installment_number'
-                        )
-                        ->get();
+                $lockedSchedules = PaymentSchedule::query()
+                    ->where(
+                        'assessment_service_id',
+                        $lockedAssessmentService->id
+                    )
+                    ->whereIn('id', $paymentScheduleIds)
+                    ->with([
+                        'invoiceItems',
+                    ])
+                    ->lockForUpdate()
+                    ->orderBy('installment_number')
+                    ->get();
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1422,27 +1074,22 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $foundScheduleIds =
-                    $lockedSchedules
-                        ->pluck('id')
-                        ->map(
-                            static fn ($id) =>
-                                (string) $id
-                        )
-                        ->values()
-                        ->all();
+                $foundScheduleIds = $lockedSchedules
+                    ->pluck('id')
+                    ->map(
+                        static fn ($id) => (string) $id
+                    )
+                    ->values()
+                    ->all();
 
-                $missingScheduleIds =
-                    array_values(
-                        array_diff(
-                            $paymentScheduleIds,
-                            $foundScheduleIds
-                        )
-                    );
+                $missingScheduleIds = array_values(
+                    array_diff(
+                        $paymentScheduleIds,
+                        $foundScheduleIds
+                    )
+                );
 
-                if (
-                    $missingScheduleIds !== []
-                ) {
+                if ($missingScheduleIds !== []) {
                     throw ValidationException::withMessages([
                         'payment_schedule_ids' => [
                             'One or more selected payment schedules do not belong to this assessment service.',
@@ -1456,9 +1103,7 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                if (
-                    ! $lockedAssessmentService->service_id
-                ) {
+                if (!$lockedAssessmentService->service_id) {
                     throw ValidationException::withMessages([
                         'assessment_service_id' => [
                             'The assessment service must reference a revenue service before an invoice can be generated.',
@@ -1473,14 +1118,8 @@ class InvoiceService
                 */
 
                 if (
-                    $lockedAssessmentService
-                        ->calculation_metadata
-                    !== null
-                    &&
-                    ! is_array(
-                        $lockedAssessmentService
-                            ->calculation_metadata
-                    )
+                    $lockedAssessmentService->calculation_metadata !== null
+                    && !is_array($lockedAssessmentService->calculation_metadata)
                 ) {
                     throw ValidationException::withMessages([
                         'assessment_service_id' => [
@@ -1495,21 +1134,8 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                foreach (
-                    $lockedSchedules
-                    as $schedule
-                ) {
-                    /*
-                    |--------------------------------------------------------------------------
-                    | ALREADY INVOICED
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if (
-                        $schedule
-                            ->invoiceItems
-                            ->isNotEmpty()
-                    ) {
+                foreach ($lockedSchedules as $schedule) {
+                    if ($schedule->invoiceItems->isNotEmpty()) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} has already been invoiced.",
@@ -1517,30 +1143,15 @@ class InvoiceService
                         ]);
                     }
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | STATUS
-                    |--------------------------------------------------------------------------
-                    */
+                    $status = $schedule->status;
 
-                    $status =
-                        $schedule->status;
-
-                    if (
-                        $status === null
-                    ) {
+                    if ($status === null) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} has no valid payment schedule status.",
                             ],
                         ]);
                     }
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | PAID / CANCELLED
-                    |--------------------------------------------------------------------------
-                    */
 
                     if (
                         in_array(
@@ -1563,21 +1174,9 @@ class InvoiceService
                         ]);
                     }
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | AMOUNT DUE
-                    |--------------------------------------------------------------------------
-                    */
+                    $amountDue = (float) ($schedule->amount_due ?? 0);
 
-                    $amountDue =
-                        (float) (
-                            $schedule->amount_due
-                            ?? 0
-                        );
-
-                    if (
-                        $amountDue < 0
-                    ) {
+                    if ($amountDue < 0) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} has an invalid amount due.",
@@ -1585,21 +1184,9 @@ class InvoiceService
                         ]);
                     }
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | AMOUNT PAID
-                    |--------------------------------------------------------------------------
-                    */
+                    $amountPaid = (float) ($schedule->amount_paid ?? 0);
 
-                    $amountPaid =
-                        (float) (
-                            $schedule->amount_paid
-                            ?? 0
-                        );
-
-                    if (
-                        $amountPaid < 0
-                    ) {
+                    if ($amountPaid < 0) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} has an invalid paid amount.",
@@ -1607,15 +1194,7 @@ class InvoiceService
                         ]);
                     }
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | PREVENT OVERPAYMENT
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if (
-                        $amountPaid > $amountDue
-                    ) {
+                    if ($amountPaid > $amountDue) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} has a paid amount greater than its amount due.",
@@ -1623,21 +1202,12 @@ class InvoiceService
                         ]);
                     }
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | REMAINING AMOUNT
-                    |--------------------------------------------------------------------------
-                    */
+                    $remainingAmount = max(
+                        $amountDue - $amountPaid,
+                        0
+                    );
 
-                    $remainingAmount =
-                        max(
-                            $amountDue - $amountPaid,
-                            0
-                        );
-
-                    if (
-                        $remainingAmount <= 0
-                    ) {
+                    if ($remainingAmount <= 0) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} has no remaining amount to invoice.",
@@ -1645,15 +1215,7 @@ class InvoiceService
                         ]);
                     }
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | DUE DATE
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if (
-                        ! $schedule->due_date
-                    ) {
+                    if (!$schedule->due_date) {
                         throw ValidationException::withMessages([
                             'payment_schedule_ids' => [
                                 "Installment {$schedule->installment_number} cannot be invoiced because its due date is missing.",
@@ -1666,23 +1228,11 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 | 11. RESOLVE INVOICE DUE DATE
                 |--------------------------------------------------------------------------
-                |
-                | One invoice has one due date.
-                |
-                | If multiple schedules are selected, use the earliest
-                | selected schedule due date.
-                |
-                |--------------------------------------------------------------------------
                 */
 
-                $invoiceDueDate =
-                    $lockedSchedules->min(
-                        'due_date'
-                    );
+                $invoiceDueDate = $lockedSchedules->min('due_date');
 
-                if (
-                    ! $invoiceDueDate
-                ) {
+                if (!$invoiceDueDate) {
                     throw ValidationException::withMessages([
                         'payment_schedule_ids' => [
                             'The selected payment schedules do not contain a valid due date.',
@@ -1696,20 +1246,13 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $invoiceNumber =
-                    $this->documentSequenceService->generate(
-                        sequenceType: 'invoice',
-                    );
+                $invoiceNumber = $this->documentSequenceService->generate(
+                    sequenceType: 'invoice',
+                );
 
                 /*
                 |--------------------------------------------------------------------------
                 | 13. CREATOR
-                |--------------------------------------------------------------------------
-                |
-                | InvoiceIssuanceService owns issuance.
-                |
-                | Therefore only created_by is populated here.
-                |
                 |--------------------------------------------------------------------------
                 */
 
@@ -1722,69 +1265,25 @@ class InvoiceService
                 */
 
                 $invoice = Invoice::query()->create([
-                    'id' =>
-                        (string) Str::uuid(),
-
-                    'invoice_number' =>
-                        $invoiceNumber,
-
-                    'source_type' =>
-                        'ASSESSMENT',
-
-                    'assessment_id' =>
-                        $lockedAssessmentService
-                            ->assessment_id,
-
-                    'citizen_id' =>
-                        $lockedAssessmentService
-                            ->assessment
-                            ->citizen_id,
-
-                    'administrative_unit_id' =>
-                        $lockedAssessmentService
-                            ->assessment
-                            ->administrative_unit_id,
-
-                    'status' =>
-                        'DRAFT',
-
-                    'currency' =>
-                        $lockedAssessmentService
-                            ->currency_code
-                        ?? 'ETB',
-
-                    'due_date' =>
-                        $invoiceDueDate,
-
-                    'subtotal' =>
-                        0,
-
-                    'discount_amount' =>
-                        0,
-
-                    'penalty_amount' =>
-                        0,
-
-                    'interest_amount' =>
-                        0,
-
-                    'total_amount' =>
-                        0,
-
-                    'paid_amount' =>
-                        0,
-
-                    'balance_due' =>
-                        0,
-
-                    'created_by' =>
-                        $createdBy,
-
-                    'issued_by' =>
-                        null,
-
-                    'issued_at' =>
-                        null,
+                    'id' => (string) Str::uuid(),
+                    'invoice_number' => $invoiceNumber,
+                    'source_type' => 'ASSESSMENT',
+                    'assessment_id' => $lockedAssessmentService->assessment_id,
+                    'citizen_id' => $lockedAssessmentService->assessment->citizen_id,
+                    'administrative_unit_id' => $lockedAssessmentService->assessment->administrative_unit_id,
+                    'status' => 'DRAFT',
+                    'currency' => $lockedAssessmentService->currency_code ?? 'ETB',
+                    'due_date' => $invoiceDueDate,
+                    'subtotal' => 0,
+                    'discount_amount' => 0,
+                    'penalty_amount' => 0,
+                    'interest_amount' => 0,
+                    'total_amount' => 0,
+                    'paid_amount' => 0,
+                    'balance_due' => 0,
+                    'created_by' => $createdBy,
+                    'issued_by' => null,
+                    'issued_at' => null,
                 ]);
 
                 /*
@@ -1793,45 +1292,27 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $assessmentMetadata =
-                    is_array(
-                        $lockedAssessmentService
-                            ->calculation_metadata
-                    )
-                        ? $lockedAssessmentService
-                            ->calculation_metadata
-                        : [];
+                $assessmentMetadata = is_array(
+                    $lockedAssessmentService->calculation_metadata
+                )
+                    ? $lockedAssessmentService->calculation_metadata
+                    : [];
 
                 $tariffVersionId =
-                    $assessmentMetadata[
-                        'tariff_version_id'
-                    ]
-                    ?? null;
+                    $assessmentMetadata['tariff_version_id'] ?? null;
 
                 $tariffRuleId =
-                    $assessmentMetadata[
-                        'tariff_rule_id'
-                    ]
-                    ?? null;
+                    $assessmentMetadata['tariff_rule_id'] ?? null;
 
-                /*
-                |--------------------------------------------------------------------------
-                | INPUT SNAPSHOT
-                |--------------------------------------------------------------------------
-                */
-
-                $inputSnapshot =
-                    $lockedAssessmentService
-                        ->values
-                        ->mapWithKeys(
-                            function ($value) {
-                                return [
-                                    $value->field_code =>
-                                        $value->value,
-                                ];
-                            }
-                        )
-                        ->toArray();
+                $inputSnapshot = $lockedAssessmentService->values
+                    ->mapWithKeys(
+                        function ($value) {
+                            return [
+                                $value->field_code => $value->value,
+                            ];
+                        }
+                    )
+                    ->toArray();
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1841,103 +1322,41 @@ class InvoiceService
 
                 $lineNumber = 1;
 
-                foreach (
-                    $lockedSchedules
-                    as $schedule
-                ) {
-                    /*
-                    |--------------------------------------------------------------------------
-                    | AUTHORITATIVE AMOUNT
-                    |--------------------------------------------------------------------------
-                    |
-                    | Invoice amount = remaining persisted schedule amount.
-                    |
-                    |--------------------------------------------------------------------------
-                    */
+                foreach ($lockedSchedules as $schedule) {
+                    $amountDue = (float) ($schedule->amount_due ?? 0);
+                    $amountPaid = (float) ($schedule->amount_paid ?? 0);
 
-                    $amountDue =
-                        (float) (
-                            $schedule->amount_due
-                            ?? 0
-                        );
-
-                    $amountPaid =
-                        (float) (
-                            $schedule->amount_paid
-                            ?? 0
-                        );
-
-                    $remainingAmount =
-                        max(
-                            $amountDue - $amountPaid,
-                            0
-                        );
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | SERVICE NAME
-                    |--------------------------------------------------------------------------
-                    */
+                    $remainingAmount = max(
+                        $amountDue - $amountPaid,
+                        0
+                    );
 
                     $serviceName =
-                        $lockedAssessmentService
-                            ->service
-                            ?->name
+                        $lockedAssessmentService->service?->name
                         ?? 'Revenue Service';
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | DESCRIPTION
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $description =
-                        sprintf(
-                            '%s - Installment %d',
-                            $serviceName,
-                            $schedule->installment_number
-                        );
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | PAYMENT SCHEDULE SNAPSHOT
-                    |--------------------------------------------------------------------------
-                    */
+                    $description = sprintf(
+                        '%s - Installment %d',
+                        $serviceName,
+                        $schedule->installment_number
+                    );
 
                     $paymentScheduleSnapshot = [
-                        'source' =>
-                            'PAYMENT_SCHEDULE',
-
+                        'source' => 'PAYMENT_SCHEDULE',
                         'assessment_service_id' =>
-                            (string)
-                            $lockedAssessmentService
-                                ->id,
-
+                            (string) $lockedAssessmentService->id,
                         'payment_schedule_id' =>
-                            (string)
-                            $schedule->id,
-
+                            (string) $schedule->id,
                         'installment_number' =>
-                            (int)
-                            $schedule->installment_number,
-
+                            (int) $schedule->installment_number,
                         'rule_percentage' =>
-                            $schedule
-                                ->rule_percentage,
-
+                            $schedule->rule_percentage,
                         'due_date' =>
-                            $schedule
-                                ->due_date
-                                ?->toDateString(),
-
+                            $schedule->due_date?->toDateString(),
                         'amount_due' =>
-                            $schedule
-                                ->amount_due,
-
+                            $schedule->amount_due,
                         'amount_paid_before_invoice' =>
-                            $schedule
-                                ->amount_paid,
-
+                            $schedule->amount_paid,
                         'remaining_amount_invoiced' =>
                             number_format(
                                 $remainingAmount,
@@ -1945,86 +1364,33 @@ class InvoiceService
                                 '.',
                                 ''
                             ),
-
                         'schedule_status' =>
-                            $schedule
-                                ->status
-                                ?->value,
-
+                            $schedule->status?->value,
                         'assessment_calculation' =>
                             $assessmentMetadata,
                     ];
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | CREATE INVOICE ITEM
-                    |--------------------------------------------------------------------------
-                    */
-
                     InvoiceItem::query()->create([
-                        'id' =>
-                            (string) Str::uuid(),
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'assessment_service_id' =>
-                            $lockedAssessmentService
-                                ->id,
-
-                        'payment_schedule_id' =>
-                            $schedule->id,
-
-                        'service_id' =>
-                            $lockedAssessmentService
-                                ->service_id,
-
-                        'line_number' =>
-                            $lineNumber,
-
-                        'description' =>
-                            $description,
-
-                        'quantity' =>
-                            1,
-
-                        'unit' =>
-                            'installment',
-
-                        'unit_price' =>
-                            null,
-
-                        'amount' =>
-                            $remainingAmount,
-
-                        'discount_amount' =>
-                            0,
-
-                        'penalty_amount' =>
-                            0,
-
-                        'interest_amount' =>
-                            0,
-
-                        'total_amount' =>
-                            $remainingAmount,
-
-                        'currency' =>
-                            $lockedAssessmentService
-                                ->currency_code
-                            ?? 'ETB',
-
-                        'tariff_version_id' =>
-                            $tariffVersionId,
-
-                        'tariff_rule_id' =>
-                            $tariffRuleId,
-
-                        'input_snapshot' =>
-                            $inputSnapshot,
-
-                        'calculation_snapshot' =>
-                            $paymentScheduleSnapshot,
+                        'id' => (string) Str::uuid(),
+                        'invoice_id' => $invoice->id,
+                        'assessment_service_id' => $lockedAssessmentService->id,
+                        'payment_schedule_id' => $schedule->id,
+                        'service_id' => $lockedAssessmentService->service_id,
+                        'line_number' => $lineNumber,
+                        'description' => $description,
+                        'quantity' => 1,
+                        'unit' => 'installment',
+                        'unit_price' => null,
+                        'amount' => $remainingAmount,
+                        'discount_amount' => 0,
+                        'penalty_amount' => 0,
+                        'interest_amount' => 0,
+                        'total_amount' => $remainingAmount,
+                        'currency' => $lockedAssessmentService->currency_code ?? 'ETB',
+                        'tariff_version_id' => $tariffVersionId,
+                        'tariff_rule_id' => $tariffRuleId,
+                        'input_snapshot' => $inputSnapshot,
+                        'calculation_snapshot' => $paymentScheduleSnapshot,
                     ]);
 
                     $lineNumber++;
@@ -2036,73 +1402,32 @@ class InvoiceService
                 |--------------------------------------------------------------------------
                 */
 
-                $totals =
-                    InvoiceItem::query()
-                        ->where(
-                            'invoice_id',
-                            $invoice->id
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(amount), 0) as subtotal'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(discount_amount), 0) as discount_amount'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(penalty_amount), 0) as penalty_amount'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(interest_amount), 0) as interest_amount'
-                        )
-                        ->selectRaw(
-                            'COALESCE(SUM(total_amount), 0) as total_amount'
-                        )
-                        ->first();
+                $totals = InvoiceItem::query()
+                    ->where('invoice_id', $invoice->id)
+                    ->selectRaw('COALESCE(SUM(amount), 0) as subtotal')
+                    ->selectRaw('COALESCE(SUM(discount_amount), 0) as discount_amount')
+                    ->selectRaw('COALESCE(SUM(penalty_amount), 0) as penalty_amount')
+                    ->selectRaw('COALESCE(SUM(interest_amount), 0) as interest_amount')
+                    ->selectRaw('COALESCE(SUM(total_amount), 0) as total_amount')
+                    ->first();
 
                 /*
                 |--------------------------------------------------------------------------
                 | 18. UPDATE FINAL TOTALS
                 |--------------------------------------------------------------------------
-                |
-                | Status remains DRAFT.
-                |
-                | InvoiceIssuanceService owns:
-                |
-                |     DRAFT → ISSUED
-                |
-                |--------------------------------------------------------------------------
                 */
 
                 $invoice->update([
-                    'subtotal' =>
-                        $totals->subtotal,
-
-                    'discount_amount' =>
-                        $totals->discount_amount,
-
-                    'penalty_amount' =>
-                        $totals->penalty_amount,
-
-                    'interest_amount' =>
-                        $totals->interest_amount,
-
-                    'total_amount' =>
-                        $totals->total_amount,
-
-                    'paid_amount' =>
-                        0,
-
-                    'balance_due' =>
-                        $totals->total_amount,
-
-                    'status' =>
-                        'DRAFT',
-
-                    'issued_by' =>
-                        null,
-
-                    'issued_at' =>
-                        null,
+                    'subtotal' => $totals->subtotal,
+                    'discount_amount' => $totals->discount_amount,
+                    'penalty_amount' => $totals->penalty_amount,
+                    'interest_amount' => $totals->interest_amount,
+                    'total_amount' => $totals->total_amount,
+                    'paid_amount' => 0,
+                    'balance_due' => $totals->total_amount,
+                    'status' => 'DRAFT',
+                    'issued_by' => null,
+                    'issued_at' => null,
                 ]);
 
                 /*
@@ -2114,41 +1439,21 @@ class InvoiceService
                 Log::info(
                     'Invoice created successfully from payment schedules.',
                     [
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'invoice_number' =>
-                            $invoice->invoice_number,
-
-                        'assessment_id' =>
-                            $lockedAssessmentService
-                                ->assessment_id,
-
-                        'assessment_service_id' =>
-                            $lockedAssessmentService
-                                ->id,
-
-                        'invoice_status' =>
-                            $invoice->status,
-
-                        'total_amount' =>
-                            $invoice->total_amount,
-
-                        'selected_payment_schedule_count' =>
-                            $lockedSchedules->count(),
-
-                        'selected_payment_schedule_ids' =>
-                            $lockedSchedules
-                                ->pluck('id')
-                                ->map(
-                                    static fn ($id) =>
-                                        (string) $id
-                                )
-                                ->values()
-                                ->all(),
-
-                        'created_by' =>
-                            $createdBy,
+                        'invoice_id' => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'assessment_id' => $lockedAssessmentService->assessment_id,
+                        'assessment_service_id' => $lockedAssessmentService->id,
+                        'invoice_status' => $invoice->status,
+                        'total_amount' => $invoice->total_amount,
+                        'selected_payment_schedule_count' => $lockedSchedules->count(),
+                        'selected_payment_schedule_ids' => $lockedSchedules
+                            ->pluck('id')
+                            ->map(
+                                static fn ($id) => (string) $id
+                            )
+                            ->values()
+                            ->all(),
+                        'created_by' => $createdBy,
                     ]
                 );
 

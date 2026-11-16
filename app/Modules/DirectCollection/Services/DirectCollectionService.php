@@ -6,28 +6,59 @@ namespace App\Modules\DirectCollection\Services;
 
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\User;
+use App\Services\Authorization\AdministrativeScopeService;
+use Carbon\Carbon;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
-use Carbon\Carbon;
-use Illuminate\Database\Eloquent\Builder;
 
 class DirectCollectionService
 {
+    private const BUSINESS_TIMEZONE = 'Africa/Addis_Ababa';
+
+    private const MAX_SEARCH_LENGTH = 100;
+    private const MAX_SEARCH_TOKENS = 5;
+
+    private const DEFAULT_PER_PAGE = 20;
+    private const MAX_PER_PAGE = 100;
+
     public function __construct(
         protected DirectCollectionInputService $inputService,
         protected DirectCollectionCalculator $calculator,
         protected DirectCollectionInvoiceService $invoiceService,
+        protected AdministrativeScopeService $administrativeScopeService,
     ) {
+    }
+
+    /**
+     * Build a direct-collection invoice query restricted to the
+     * authenticated user's administrative-unit scope.
+     *
+     * Direct-collection invoices do not have an assessment, so
+     * sector authorization is not applied here.
+     */
+    protected function authorizedDirectCollectionInvoiceQuery(
+        User $user
+    ): Builder {
+        $query = Invoice::query()
+            ->where('invoices.source_type', 'DIRECT_COLLECTION');
+
+        $this->administrativeScopeService->applyAdministrativeScope(
+            $query,
+            $user,
+            'invoices.administrative_unit_id'
+        );
+
+        return $query;
     }
 
     /**
      * Calculate direct collection amount.
      *
-     * This does NOT create an invoice.
-     *
-     * Returns only the collection details required by the frontend review.
+     * This does not create an invoice.
      *
      * @param array<string,mixed> $data
      * @return array<string,mixed>
@@ -46,9 +77,8 @@ class DirectCollectionService
         );
     }
 
-
     /**
-     * Build a simple frontend review payload.
+     * Build the frontend review payload.
      *
      * Internal calculation snapshots are intentionally excluded.
      *
@@ -96,20 +126,11 @@ class DirectCollectionService
 
             $reviewEntries[] = [
                 'line_number' => $position + 1,
-
                 'fields' => $reviewFields,
-
-                'quantity' =>
-                    $entryCalculation['quantity'] ?? null,
-
-                'unit' =>
-                    $entryCalculation['unit'] ?? null,
-
-                'unit_price' =>
-                    $entryCalculation['unit_price'] ?? null,
-
-                'amount' =>
-                    $entryCalculation['amount'],
+                'quantity' => $entryCalculation['quantity'] ?? null,
+                'unit' => $entryCalculation['unit'] ?? null,
+                'unit_price' => $entryCalculation['unit_price'] ?? null,
+                'amount' => $entryCalculation['amount'],
             ];
         }
 
@@ -117,13 +138,9 @@ class DirectCollectionService
             'service' => [
                 'name' => $serviceName,
             ],
-
             'entry_count' => count($reviewEntries),
-
             'currency' => $calculation['currency'],
-
             'total_amount' => $calculation['amount'],
-
             'entries' => $reviewEntries,
         ];
     }
@@ -142,7 +159,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | 1. Resolve + Validate Inputs
+        | 1. Resolve and validate inputs
         |--------------------------------------------------------------------------
         */
 
@@ -150,10 +167,9 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | 2. Calculate Every Entry
+        | 2. Calculate every entry on the server
         |--------------------------------------------------------------------------
         |
-        | Always calculate on the server.
         | Never trust frontend amounts or tariff information.
         |
         */
@@ -162,7 +178,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | 3. Create + Issue One Invoice
+        | 3. Create and issue one invoice
         |--------------------------------------------------------------------------
         */
 
@@ -178,12 +194,7 @@ class DirectCollectionService
      *
      * Only ISSUED invoices with no recorded payment can be edited.
      *
-     * The invoice number remains unchanged.
-     *
-     * Existing invoice items are synchronized by line number:
-     * - Existing lines are updated.
-     * - New lines are created.
-     * - Excess lines are deleted.
+     * The invoice number and administrative unit remain unchanged.
      *
      * @param string $invoiceId
      * @param array<string,mixed> $data
@@ -192,32 +203,34 @@ class DirectCollectionService
         string $invoiceId,
         array $data
     ): Invoice {
-        $this->ensureAuthenticated();
+        $user = $this->ensureAuthenticated();
 
         return DB::transaction(
-            function () use ($invoiceId, $data): Invoice {
+            function () use ($invoiceId, $data, $user): Invoice {
 
                 /*
                 |--------------------------------------------------------------------------
-                | 1. Find + Lock Invoice
+                | 1. Find and lock an authorized invoice
                 |--------------------------------------------------------------------------
+                |
+                | The administrative scope is applied before retrieving
+                | the invoice. An invoice outside the user's scope is
+                | therefore not available for modification.
+                |
                 */
 
-                $invoice = Invoice::query()
-                    ->where('source_type', 'DIRECT_COLLECTION')
-                    ->where('id', $invoiceId)
+                $invoice = $this->authorizedDirectCollectionInvoiceQuery($user)
+                    ->where('invoices.id', $invoiceId)
                     ->lockForUpdate()
                     ->firstOrFail();
 
                 /*
                 |--------------------------------------------------------------------------
-                | 2. Verify Invoice Status
+                | 2. Verify invoice status
                 |--------------------------------------------------------------------------
                 */
 
-                $status = strtoupper(
-                    (string) $invoice->status
-                );
+                $status = strtoupper((string) $invoice->status);
 
                 if ($status !== 'ISSUED') {
                     throw ValidationException::withMessages([
@@ -229,13 +242,11 @@ class DirectCollectionService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 3. Verify Payment State
+                | 3. Verify payment state
                 |--------------------------------------------------------------------------
                 */
 
-                $paidAmount = (float) (
-                    $invoice->paid_amount ?? 0
-                );
+                $paidAmount = (float) ($invoice->paid_amount ?? 0);
 
                 if ($paidAmount > 0) {
                     throw ValidationException::withMessages([
@@ -247,7 +258,7 @@ class DirectCollectionService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 4. Resolve New Input
+                | 4. Resolve new input
                 |--------------------------------------------------------------------------
                 */
 
@@ -255,7 +266,7 @@ class DirectCollectionService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 5. Recalculate Every Entry
+                | 5. Recalculate every entry
                 |--------------------------------------------------------------------------
                 */
 
@@ -263,7 +274,7 @@ class DirectCollectionService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 6. Update Invoice
+                | 6. Update invoice
                 |--------------------------------------------------------------------------
                 */
 
@@ -276,7 +287,7 @@ class DirectCollectionService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 7. Synchronize Invoice Items
+                | 7. Synchronize invoice items
                 |--------------------------------------------------------------------------
                 */
 
@@ -288,7 +299,7 @@ class DirectCollectionService
 
                 /*
                 |--------------------------------------------------------------------------
-                | 8. Return Updated Invoice
+                | 8. Return updated invoice
                 |--------------------------------------------------------------------------
                 */
 
@@ -327,12 +338,6 @@ class DirectCollectionService
 
         $currency = null;
 
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate Each Entry
-        |--------------------------------------------------------------------------
-        */
-
         foreach ($entries as $position => $entry) {
             $inputs = $entry['fields'] ?? [];
 
@@ -346,7 +351,7 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Individual Tariff Calculation
+            | Individual tariff calculation
             |--------------------------------------------------------------------------
             */
 
@@ -359,7 +364,7 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Validate Entry Amount
+            | Validate entry amount
             |--------------------------------------------------------------------------
             */
 
@@ -379,7 +384,7 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Resolve Currency
+            | Resolve currency
             |--------------------------------------------------------------------------
             */
 
@@ -407,7 +412,7 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Aggregate Amount
+            | Aggregate amount
             |--------------------------------------------------------------------------
             */
 
@@ -423,22 +428,20 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Preserve Entry Calculation
+            | Preserve entry calculation
             |--------------------------------------------------------------------------
             */
 
             $calculatedEntries[] = [
                 'index' => (int) ($entry['index'] ?? $position),
-
                 'fields' => $inputs,
-
                 'calculation' => $entryCalculation,
             ];
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Validate Total Amount
+        | Validate total amount
         |--------------------------------------------------------------------------
         */
 
@@ -452,7 +455,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Build Aggregate Input Snapshot
+        | Build aggregate input snapshot
         |--------------------------------------------------------------------------
         */
 
@@ -470,7 +473,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Build Aggregate Calculation Snapshot
+        | Build aggregate calculation snapshot
         |--------------------------------------------------------------------------
         |
         | Direct collection does not use due dates.
@@ -480,27 +483,19 @@ class DirectCollectionService
 
         $calculationSnapshot = [
             'calculation_type' => 'MULTI_ENTRY',
-
             'entry_count' => count($calculatedEntries),
-
             'total_amount' => $this->decimal($totalAmount),
-
             'currency' => $currency,
 
             'entries' => array_map(
                 fn (array $entry): array => [
                     'entry_index' => $entry['index'],
-
                     'amount' => $entry['calculation']['amount'],
-
                     'currency' => $entry['calculation']['currency'],
-
                     'tariff_version_id' =>
                         $entry['calculation']['tariff_version_id'],
-
                     'tariff_rule_id' =>
                         $entry['calculation']['tariff_rule_id'],
-
                     'calculation_snapshot' =>
                         $entry['calculation']['calculation_snapshot'],
                 ],
@@ -510,15 +505,8 @@ class DirectCollectionService
             'calculated_at' => now()->toISOString(),
         ];
 
-        /*
-        |--------------------------------------------------------------------------
-        | Return Aggregate Calculation
-        |--------------------------------------------------------------------------
-        */
-
         return [
             'taxpayer_id' => (string) $context['taxpayer']->id,
-
             'revenue_service_id' => (string) $context['service']->id,
 
             'service' => [
@@ -531,21 +519,20 @@ class DirectCollectionService
             ],
 
             'amount' => $this->decimal($totalAmount),
-
             'currency' => $currency,
-
             'entry_count' => count($calculatedEntries),
-
             'entries' => $calculatedEntries,
-
             'input_snapshot' => $inputSnapshot,
-
             'calculation_snapshot' => $calculationSnapshot,
         ];
     }
 
     /**
      * Update invoice financial information and metadata.
+     *
+     * The administrative_unit_id is deliberately not updated from
+     * request data. A client must not be able to move an invoice
+     * between administrative units through this update operation.
      *
      * @param array<string,mixed> $context
      * @param array<string,mixed> $calculation
@@ -565,30 +552,24 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Financial Values
+        | Financial values
         |--------------------------------------------------------------------------
         */
 
         $invoice->subtotal = $amount;
-
         $invoice->discount_amount = 0;
-
         $invoice->penalty_amount = 0;
-
         $invoice->interest_amount = 0;
-
         $invoice->total_amount = $amount;
 
         /*
         |--------------------------------------------------------------------------
-        | Payment State
+        | Payment state
         |--------------------------------------------------------------------------
         */
 
         $invoice->paid_amount = 0;
-
         $invoice->balance_due = $amount;
-
         $invoice->paid_at = null;
 
         /*
@@ -597,17 +578,14 @@ class DirectCollectionService
         |--------------------------------------------------------------------------
         */
 
-        $invoice->currency = strtoupper(
-            (string) $currency
-        );
+        $invoice->currency = strtoupper((string) $currency);
 
         /*
         |--------------------------------------------------------------------------
-        | Due Date
+        | Due date
         |--------------------------------------------------------------------------
         |
-        | Direct collection is paid immediately through the cash
-        | collection workflow. It does not have a due date.
+        | Direct collection does not have a due date.
         |
         */
 
@@ -623,14 +601,13 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Administrative Unit
+        | Administrative unit
         |--------------------------------------------------------------------------
+        |
+        | Intentionally preserved from the existing invoice.
+        | Do not assign administrative_unit_id from request data.
+        |
         */
-
-        if (array_key_exists('administrative_unit_id', $data)) {
-            $invoice->administrative_unit_id =
-                $data['administrative_unit_id'];
-        }
 
         /*
         |--------------------------------------------------------------------------
@@ -644,7 +621,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Preserve ISSUED Status
+        | Preserve ISSUED status
         |--------------------------------------------------------------------------
         */
 
@@ -652,7 +629,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Updated By
+        | Updated by
         |--------------------------------------------------------------------------
         */
 
@@ -662,7 +639,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Source Metadata
+        | Source metadata
         |--------------------------------------------------------------------------
         */
 
@@ -671,7 +648,6 @@ class DirectCollectionService
             : [];
 
         $metadata['last_edited_at'] = now()->toISOString();
-
         $metadata['last_edited_by'] = Auth::id();
 
         $metadata['calculation'] =
@@ -684,8 +660,10 @@ class DirectCollectionService
             fn (array $entry): array => [
                 'entry_index' => $entry['index'],
                 'fields' => $entry['fields'],
-                'calculation' => $entry['calculation']['calculation_snapshot'],
-                'input_snapshot' => $entry['calculation']['input_snapshot'],
+                'calculation' =>
+                    $entry['calculation']['calculation_snapshot'],
+                'input_snapshot' =>
+                    $entry['calculation']['input_snapshot'],
             ],
             $calculation['entries'],
         );
@@ -703,7 +681,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Edit Reason
+        | Edit reason
         |--------------------------------------------------------------------------
         */
 
@@ -711,9 +689,7 @@ class DirectCollectionService
             isset($data['reason'])
             && trim((string) $data['reason']) !== ''
         ) {
-            $metadata['edit_reason'] = trim(
-                (string) $data['reason']
-            );
+            $metadata['edit_reason'] = trim((string) $data['reason']);
         }
 
         $invoice->source_metadata = $metadata;
@@ -738,7 +714,7 @@ class DirectCollectionService
     ): void {
         /*
         |--------------------------------------------------------------------------
-        | Lock Existing Items
+        | Lock existing items
         |--------------------------------------------------------------------------
         */
 
@@ -751,7 +727,7 @@ class DirectCollectionService
 
         /*
         |--------------------------------------------------------------------------
-        | Synchronize Each Entry
+        | Synchronize each entry
         |--------------------------------------------------------------------------
         */
 
@@ -767,7 +743,7 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Create Missing Item
+            | Create missing item
             |--------------------------------------------------------------------------
             */
 
@@ -775,15 +751,13 @@ class DirectCollectionService
                 $item = new InvoiceItem();
 
                 $item->invoice_id = $invoice->id;
-
                 $item->assessment_service_id = null;
-
                 $item->line_number = $lineNumber;
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Revenue Service
+            | Revenue service
             |--------------------------------------------------------------------------
             */
 
@@ -810,40 +784,24 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Quantity
+            | Quantity and unit
             |--------------------------------------------------------------------------
             */
 
             $item->quantity = $entryCalculation['quantity'] ?? null;
-
-            /*
-            |--------------------------------------------------------------------------
-            | Unit
-            |--------------------------------------------------------------------------
-            */
-
             $item->unit = $entryCalculation['unit'] ?? null;
 
             /*
             |--------------------------------------------------------------------------
-            | Unit Price
+            | Unit price and amount
             |--------------------------------------------------------------------------
             */
 
             $item->unit_price = $entryCalculation['unit_price'] ?? null;
-
-            /*
-            |--------------------------------------------------------------------------
-            | Amount
-            |--------------------------------------------------------------------------
-            */
-
             $item->amount = $entryCalculation['amount'];
 
             $item->discount_amount = 0;
-
             $item->penalty_amount = 0;
-
             $item->interest_amount = 0;
 
             $item->total_amount = $entryCalculation['amount'];
@@ -858,52 +816,34 @@ class DirectCollectionService
 
             /*
             |--------------------------------------------------------------------------
-            | Tariff Version
+            | Tariff version and rule
             |--------------------------------------------------------------------------
             */
 
             $item->tariff_version_id =
                 $entryCalculation['tariff_version_id'];
 
-            /*
-            |--------------------------------------------------------------------------
-            | Tariff Rule
-            |--------------------------------------------------------------------------
-            */
-
             $item->tariff_rule_id =
                 $entryCalculation['tariff_rule_id'];
 
             /*
             |--------------------------------------------------------------------------
-            | Input Snapshot
+            | Input and calculation snapshots
             |--------------------------------------------------------------------------
             */
 
             $item->input_snapshot =
                 $entryCalculation['input_snapshot'];
 
-            /*
-            |--------------------------------------------------------------------------
-            | Calculation Snapshot
-            |--------------------------------------------------------------------------
-            */
-
             $item->calculation_snapshot =
                 $entryCalculation['calculation_snapshot'];
-
-            /*
-            |--------------------------------------------------------------------------
-            | Save
-            |--------------------------------------------------------------------------
-            */
 
             $item->save();
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Delete Excess Items
+        | Delete excess items
         |--------------------------------------------------------------------------
         */
 
@@ -917,474 +857,434 @@ class DirectCollectionService
             );
     }
 
+    /**
+     * Get paginated direct collections.
+     *
+     * Supported filters:
+     * - search              Invoice number, taxpayer name, or phone.
+     * - status              One status or comma-separated statuses.
+     * - taxpayer_id         Filter by taxpayer.
+     * - revenue_service_id  Filter by revenue service.
+     * - from_date           Inclusive YYYY-MM-DD.
+     * - to_date             Inclusive YYYY-MM-DD.
+     * - per_page            Number of results per page (1-100).
+     *
+     * @param array<string,mixed> $filters
+     */
+    public function paginate(array $filters = []): LengthAwarePaginator
+    {
+        $user = $this->ensureAuthenticated();
 
-/**
- * Timezone used by field collectors.
- *
- * Date filters are interpreted as calendar dates in Africa/Addis_Ababa,
- * then converted to the configured Laravel application timezone.
- */
-private const BUSINESS_TIMEZONE = 'Africa/Addis_Ababa';
-
-private const MAX_SEARCH_LENGTH = 100;
-private const MAX_SEARCH_TOKENS = 5;
-
-private const DEFAULT_PER_PAGE = 20;
-private const MAX_PER_PAGE = 100;
-
-/**
- * Get paginated direct collections.
- *
- * Supported filters:
- * - search              Invoice number, taxpayer name, or phone.
- * - status              One status or comma-separated statuses.
- * - taxpayer_id         Filter by taxpayer.
- * - revenue_service_id  Filter by revenue service.
- * - from_date           Inclusive YYYY-MM-DD.
- * - to_date             Inclusive YYYY-MM-DD.
- * - per_page            Number of results per page (1-100).
- *
- * @param array<string, mixed> $filters
- */
-public function paginate(array $filters = []): LengthAwarePaginator
-{
-    $this->ensureAuthenticated();
-
-    $query = Invoice::query()
-        ->with([
-            'citizen',
-            'items',
-            'items.service',
-        ])
-        ->where('source_type', 'DIRECT_COLLECTION');
-
-    $this->applySearch(
-        $query,
-        $filters['search'] ?? null
-    );
-
-    $this->applyStatus(
-        $query,
-        $filters['status'] ?? null
-    );
-
-    $this->applyTaxpayer(
-        $query,
-        $filters['taxpayer_id'] ?? null
-    );
-
-    $this->applyRevenueService(
-        $query,
-        $filters['revenue_service_id'] ?? null
-    );
-
-    $this->applyDateRange(
-        $query,
-        $filters['from_date'] ?? null,
-        $filters['to_date'] ?? null
-    );
-
-    // Stable ordering prevents duplicate or skipped records
-    // when multiple invoices have the same creation timestamp.
-    $query
-        ->orderByDesc('created_at')
-        ->orderByDesc('id');
-
-    $requestedPerPage = $filters['per_page']
-        ?? self::DEFAULT_PER_PAGE;
-
-    $perPage = max(
-        1,
-        min(
-            (int) $requestedPerPage,
-            self::MAX_PER_PAGE
-        )
-    );
-
-    return $query->paginate($perPage);
-}
-
-
-/**
- * Search direct collections by:
- *
- * - Invoice number
- * - Citizen full name
- * - Citizen phone number
- * - Citizen email
- * - Citizen national ID
- * - Citizen UID
- *
- * Multi-word names are supported.
- *
- * Examples:
- * Abebe
- * Abebe Kebede
- * 0911234567
- * +251911234567
- * 911234567
- */
-private function applySearch(
-    Builder $query,
-    mixed $value
-): void {
-    $search = $this->cleanString($value);
-
-    if ($search === null) {
-        return;
-    }
-
-    $search = mb_substr(
-        $search,
-        0,
-        self::MAX_SEARCH_LENGTH
-    );
-
-    $tokens = preg_split('/\s+/u', $search) ?: [];
-
-    $tokens = array_slice(
-        array_values(array_filter($tokens)),
-        0,
-        self::MAX_SEARCH_TOKENS
-    );
-
-    if ($tokens === []) {
-        return;
-    }
-
-    $phrasePattern = $this->likePattern($search);
-
-    $query->where(
-        function (Builder $builder) use (
-            $phrasePattern,
-            $tokens
-        ): void {
-
-            // 1. Search invoice number using the complete phrase.
-            $builder->where(
-                'invoice_number',
-                'ilike',
-                $phrasePattern
-            );
-
-            // 2. Search citizen information.
-            $builder->orWhereHas(
+        $query = $this->authorizedDirectCollectionInvoiceQuery($user)
+            ->with([
                 'citizen',
-                function (Builder $citizenQuery) use ($tokens): void {
+                'items',
+                'items.service',
+            ]);
 
-                    // Every search token must match at least one citizen field.
-                    foreach ($tokens as $token) {
-                        $pattern = $this->likePattern($token);
-                        $phone = $this->normalizePhone($token);
-
-                        $citizenQuery->where(
-                            function (Builder $group) use (
-                                $pattern,
-                                $phone
-                            ): void {
-
-                                $group
-                                    ->where('full_name', 'ilike', $pattern)
-                                    ->orWhere('phone', 'ilike', $pattern)
-                                    ->orWhere('email', 'ilike', $pattern)
-                                    ->orWhere('national_id', 'ilike', $pattern)
-                                    ->orWhere('citizen_uid', 'ilike', $pattern);
-
-                                // Also support Ethiopian phone formats.
-                                if ($phone !== null) {
-                                    $group->orWhere(
-                                        'phone',
-                                        'ilike',
-                                        $this->likePattern($phone)
-                                    );
-                                }
-                            }
-                        );
-                    }
-                }
-            );
-        }
-    );
-}
-
-
-// ============================================================================
-// STATUS
-// ============================================================================
-
-/**
- * Supports:
- *
- * PAID
- * paid
- * ISSUED,OVERDUE
- * PAID,PARTIALLY_PAID
- */
-private function applyStatus(
-    Builder $query,
-    mixed $value
-): void {
-    $raw = $this->cleanString($value);
-
-    if ($raw === null) {
-        return;
-    }
-
-    $statuses = array_values(array_unique(array_filter(
-        array_map(
-            static fn (string $status): string => strtoupper(trim($status)),
-            explode(',', $raw)
-        )
-    )));
-
-    if ($statuses === []) {
-        return;
-    }
-
-    if (count($statuses) === 1) {
-        $query->where('status', $statuses[0]);
-
-        return;
-    }
-
-    $query->whereIn('status', $statuses);
-}
-
-// ============================================================================
-// TAXPAYER
-// ============================================================================
-
-private function applyTaxpayer(
-    Builder $query,
-    mixed $value
-): void {
-    $taxpayerId = $this->cleanString($value);
-
-    if ($taxpayerId === null) {
-        return;
-    }
-
-    $query->where('citizen_id', $taxpayerId);
-}
-
-// ============================================================================
-// REVENUE SERVICE
-// ============================================================================
-
-/**
- * Filter invoices containing at least one item belonging
- * to the selected revenue service.
- */
-private function applyRevenueService(
-    Builder $query,
-    mixed $value
-): void {
-    $serviceId = $this->cleanString($value);
-
-    if ($serviceId === null) {
-        return;
-    }
-
-    $query->whereHas(
-        'items',
-        function (Builder $itemQuery) use ($serviceId): void {
-            $itemQuery->where('service_id', $serviceId);
-        }
-    );
-}
-
-// ============================================================================
-// DATE RANGE
-// ============================================================================
-
-/**
- * Apply inclusive date filtering using the business timezone.
- *
- * from_date = 2026-11-01
- * to_date   = 2026-11-06
- *
- * Includes all records created during those calendar days
- * in Africa/Addis_Ababa.
- *
- * Uses direct timestamp comparisons instead of whereDate(),
- * allowing normal indexes on created_at to be used.
- */
-private function applyDateRange(
-    Builder $query,
-    mixed $from,
-    mixed $to
-): void {
-    $start = $this->parseDay($from);
-    $end = $this->parseDay($to);
-
-    // Swap reversed dates instead of silently returning no results.
-    if (
-        $start !== null &&
-        $end !== null &&
-        $start->gt($end)
-    ) {
-        [$start, $end] = [$end, $start];
-    }
-
-    $appTimezone = config('app.timezone', 'UTC');
-
-    if ($start !== null) {
-        $query->where(
-            'created_at',
-            '>=',
-            $start
-                ->copy()
-                ->startOfDay()
-                ->setTimezone($appTimezone)
+        $this->applySearch(
+            $query,
+            $filters['search'] ?? null
         );
-    }
 
-    if ($end !== null) {
-        $query->where(
-            'created_at',
-            '<=',
-            $end
-                ->copy()
-                ->endOfDay()
-                ->setTimezone($appTimezone)
+        $this->applyStatus(
+            $query,
+            $filters['status'] ?? null
         );
-    }
-}
 
-/**
- * Strictly parse YYYY-MM-DD using the business timezone.
- *
- * Invalid dates such as 2026-02-31 return null.
- */
-private function parseDay(mixed $value): ?Carbon
-{
-    $string = $this->cleanString($value);
-
-    if ($string === null) {
-        return null;
-    }
-
-    try {
-        $date = Carbon::createFromFormat(
-            '!Y-m-d',
-            $string,
-            self::BUSINESS_TIMEZONE
+        $this->applyTaxpayer(
+            $query,
+            $filters['taxpayer_id'] ?? null
         );
-    } catch (\Throwable) {
-        return null;
+
+        $this->applyRevenueService(
+            $query,
+            $filters['revenue_service_id'] ?? null
+        );
+
+        $this->applyDateRange(
+            $query,
+            $filters['from_date'] ?? null,
+            $filters['to_date'] ?? null
+        );
+
+        $query
+            ->orderByDesc('invoices.created_at')
+            ->orderByDesc('invoices.id');
+
+        $requestedPerPage = $filters['per_page']
+            ?? self::DEFAULT_PER_PAGE;
+
+        $perPage = max(
+            1,
+            min(
+                (int) $requestedPerPage,
+                self::MAX_PER_PAGE
+            )
+        );
+
+        return $query->paginate($perPage);
     }
-
-    if (
-        $date === false ||
-        $date->format('Y-m-d') !== $string
-    ) {
-        return null;
-    }
-
-    return $date;
-}
-
-// ============================================================================
-// GENERAL HELPERS
-// ============================================================================
-
-/**
- * Convert scalar input to a trimmed string.
- *
- * Returns null for null, empty, or non-scalar values.
- */
-private function cleanString(mixed $value): ?string
-{
-    if (
-        $value === null ||
-        !is_scalar($value)
-    ) {
-        return null;
-    }
-
-    $string = trim((string) $value);
-
-    return $string === '' ? null : $string;
-}
-
-/**
- * Escape LIKE wildcard characters supplied by the user.
- *
- * PostgreSQL uses backslash as the default LIKE escape character.
- */
-private function likePattern(string $term): string
-{
-    $escaped = str_replace(
-        ['\\', '%', '_'],
-        ['\\\\', '\\%', '\\_'],
-        $term
-    );
-
-    return "%{$escaped}%";
-}
-
-/**
- * Normalize Ethiopian phone numbers for flexible searching.
- *
- * Examples:
- *
- * 0911234567   => 911234567
- * +251911234567 => 911234567
- * 251911234567  => 911234567
- * 911234567     => 911234567
- *
- * Returns null when the token does not look like a phone number.
- */
-private function normalizePhone(string $token): ?string
-{
-    $digits = preg_replace('/\D+/', '', $token) ?? '';
-
-    if (strlen($digits) < 5) {
-        return null;
-    }
-
-    if (str_starts_with($digits, '251')) {
-        $digits = substr($digits, 3);
-    } elseif (str_starts_with($digits, '0')) {
-        $digits = substr($digits, 1);
-    }
-
-    return strlen($digits) >= 4
-        ? $digits
-        : null;
-}
-
 
     /**
-     * Find one direct collection.
+     * Search direct collections by invoice and citizen information.
+     *
+     * Supports:
+     * - Invoice number
+     * - Citizen full name
+     * - Citizen phone number
+     * - Citizen email
+     * - Citizen national ID
+     * - Citizen UID
+     *
+     * Multi-word names are supported.
+     */
+    private function applySearch(
+        Builder $query,
+        mixed $value
+    ): void {
+        $search = $this->cleanString($value);
+
+        if ($search === null) {
+            return;
+        }
+
+        $search = mb_substr(
+            $search,
+            0,
+            self::MAX_SEARCH_LENGTH
+        );
+
+        $tokens = preg_split('/\s+/u', $search) ?: [];
+
+        $tokens = array_slice(
+            array_values(array_filter($tokens)),
+            0,
+            self::MAX_SEARCH_TOKENS
+        );
+
+        if ($tokens === []) {
+            return;
+        }
+
+        $phrasePattern = $this->likePattern($search);
+
+        $query->where(
+            function (Builder $builder) use (
+                $phrasePattern,
+                $tokens
+            ): void {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Invoice number
+                |--------------------------------------------------------------------------
+                */
+
+                $builder->where(
+                    'invoices.invoice_number',
+                    'ilike',
+                    $phrasePattern
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Citizen information
+                |--------------------------------------------------------------------------
+                */
+
+                $builder->orWhereHas(
+                    'citizen',
+                    function (Builder $citizenQuery) use ($tokens): void {
+
+                        foreach ($tokens as $token) {
+                            $pattern = $this->likePattern($token);
+                            $phone = $this->normalizePhone($token);
+
+                            $citizenQuery->where(
+                                function (Builder $group) use (
+                                    $pattern,
+                                    $phone
+                                ): void {
+
+                                    $group
+                                        ->where('full_name', 'ilike', $pattern)
+                                        ->orWhere('phone', 'ilike', $pattern)
+                                        ->orWhere('email', 'ilike', $pattern)
+                                        ->orWhere('national_id', 'ilike', $pattern)
+                                        ->orWhere('citizen_uid', 'ilike', $pattern);
+
+                                    if ($phone !== null) {
+                                        $group->orWhere(
+                                            'phone',
+                                            'ilike',
+                                            $this->likePattern($phone)
+                                        );
+                                    }
+                                }
+                            );
+                        }
+                    }
+                );
+            }
+        );
+    }
+
+    /**
+     * Apply status filter.
+     *
+     * Supports:
+     * PAID
+     * paid
+     * ISSUED,OVERDUE
+     * PAID,PARTIALLY_PAID
+     */
+    private function applyStatus(
+        Builder $query,
+        mixed $value
+    ): void {
+        $raw = $this->cleanString($value);
+
+        if ($raw === null) {
+            return;
+        }
+
+        $statuses = array_values(array_unique(array_filter(
+            array_map(
+                static fn (string $status): string => strtoupper(trim($status)),
+                explode(',', $raw)
+            )
+        )));
+
+        if ($statuses === []) {
+            return;
+        }
+
+        if (count($statuses) === 1) {
+            $query->where('invoices.status', $statuses[0]);
+
+            return;
+        }
+
+        $query->whereIn('invoices.status', $statuses);
+    }
+
+    /**
+     * Filter by taxpayer.
+     */
+    private function applyTaxpayer(
+        Builder $query,
+        mixed $value
+    ): void {
+        $taxpayerId = $this->cleanString($value);
+
+        if ($taxpayerId === null) {
+            return;
+        }
+
+        $query->where('invoices.citizen_id', $taxpayerId);
+    }
+
+    /**
+     * Filter invoices containing at least one item belonging
+     * to the selected revenue service.
+     */
+    private function applyRevenueService(
+        Builder $query,
+        mixed $value
+    ): void {
+        $serviceId = $this->cleanString($value);
+
+        if ($serviceId === null) {
+            return;
+        }
+
+        $query->whereHas(
+            'items',
+            function (Builder $itemQuery) use ($serviceId): void {
+                $itemQuery->where('service_id', $serviceId);
+            }
+        );
+    }
+
+    /**
+     * Apply inclusive date filtering using the business timezone.
+     *
+     * Date values are interpreted as calendar dates in
+     * Africa/Addis_Ababa and converted to the application timezone.
+     */
+    private function applyDateRange(
+        Builder $query,
+        mixed $from,
+        mixed $to
+    ): void {
+        $start = $this->parseDay($from);
+        $end = $this->parseDay($to);
+
+        if (
+            $start !== null
+            && $end !== null
+            && $start->gt($end)
+        ) {
+            [$start, $end] = [$end, $start];
+        }
+
+        $appTimezone = config('app.timezone', 'UTC');
+
+        if ($start !== null) {
+            $query->where(
+                'invoices.created_at',
+                '>=',
+                $start
+                    ->copy()
+                    ->startOfDay()
+                    ->setTimezone($appTimezone)
+            );
+        }
+
+        if ($end !== null) {
+            $query->where(
+                'invoices.created_at',
+                '<=',
+                $end
+                    ->copy()
+                    ->endOfDay()
+                    ->setTimezone($appTimezone)
+            );
+        }
+    }
+
+    /**
+     * Strictly parse YYYY-MM-DD using the business timezone.
+     *
+     * Invalid dates such as 2026-02-31 return null.
+     */
+    private function parseDay(mixed $value): ?Carbon
+    {
+        $string = $this->cleanString($value);
+
+        if ($string === null) {
+            return null;
+        }
+
+        try {
+            $date = Carbon::createFromFormat(
+                '!Y-m-d',
+                $string,
+                self::BUSINESS_TIMEZONE
+            );
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (
+            $date === false
+            || $date->format('Y-m-d') !== $string
+        ) {
+            return null;
+        }
+
+        return $date;
+    }
+
+    /**
+     * Convert scalar input to a trimmed string.
+     *
+     * Returns null for null, empty, or non-scalar values.
+     */
+    private function cleanString(mixed $value): ?string
+    {
+        if (
+            $value === null
+            || ! is_scalar($value)
+        ) {
+            return null;
+        }
+
+        $string = trim((string) $value);
+
+        return $string === '' ? null : $string;
+    }
+
+    /**
+     * Escape LIKE wildcard characters supplied by the user.
+     *
+     * PostgreSQL uses backslash as the default LIKE escape character.
+     */
+    private function likePattern(string $term): string
+    {
+        $escaped = str_replace(
+            ['\\', '%', '_'],
+            ['\\\\', '\\%', '\\_'],
+            $term
+        );
+
+        return "%{$escaped}%";
+    }
+
+    /**
+     * Normalize Ethiopian phone numbers for flexible searching.
+     *
+     * Examples:
+     * 0911234567    => 911234567
+     * +251911234567 => 911234567
+     * 251911234567  => 911234567
+     * 911234567     => 911234567
+     *
+     * Returns null when the token does not look like a phone number.
+     */
+    private function normalizePhone(string $token): ?string
+    {
+        $digits = preg_replace('/\D+/', '', $token) ?? '';
+
+        if (strlen($digits) < 5) {
+            return null;
+        }
+
+        if (str_starts_with($digits, '251')) {
+            $digits = substr($digits, 3);
+        } elseif (str_starts_with($digits, '0')) {
+            $digits = substr($digits, 1);
+        }
+
+        return strlen($digits) >= 4
+            ? $digits
+            : null;
+    }
+
+    /**
+     * Find one authorized direct collection.
      */
     public function find(string $invoiceId): Invoice
     {
-        $this->ensureAuthenticated();
+        $user = $this->ensureAuthenticated();
 
-        return Invoice::query()
+        return $this->authorizedDirectCollectionInvoiceQuery($user)
             ->with([
                 'citizen',
                 'items',
                 'items.service',
             ])
-            ->where('source_type', 'DIRECT_COLLECTION')
-            ->where('id', $invoiceId)
+            ->where('invoices.id', $invoiceId)
             ->firstOrFail();
     }
 
     /**
-     * Require authenticated user.
+     * Require an authenticated user.
      */
-    protected function ensureAuthenticated(): void
+    protected function ensureAuthenticated(): User
     {
-        if (! Auth::user()) {
+        $user = Auth::user();
+
+        if (! $user instanceof User) {
             throw ValidationException::withMessages([
                 'user' => [
                     'An authenticated user is required.',
                 ],
             ]);
         }
+
+        return $user;
     }
 
     /**

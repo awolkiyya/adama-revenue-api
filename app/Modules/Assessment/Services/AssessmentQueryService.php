@@ -9,10 +9,23 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class AssessmentQueryService
 {
+    /**
+     * ============================================================
+     * CONSTANTS
+     * ============================================================
+     */
+
+    private const SOURCE_TYPES = [
+        'NEW',
+        'EXISTING_LIZZ',
+    ];
+
     /**
      * ============================================================
      * DEPENDENCIES
@@ -29,9 +42,6 @@ class AssessmentQueryService
      * ============================================================
      */
 
-    /**
-     * Log assessment query operations with consistent context.
-     */
     protected function log(
         string $level,
         string $message,
@@ -72,9 +82,23 @@ class AssessmentQueryService
     {
         return [
             'taxpayer',
-            'creator',
-            'updater',
-            'decisionOfficer',
+
+            // Assessment administrative unit, independent of creator.
+            'administrativeUnit.parent.parent',
+
+            // Creator.
+            'creator.administrativeUnit.parent.parent',
+            'creator.sector',
+
+            // Updater.
+            'updater.administrativeUnit.parent.parent',
+            'updater.sector',
+
+            // Decision officer.
+            'decisionOfficer.administrativeUnit.parent.parent',
+            'decisionOfficer.sector',
+
+            // Assessment services.
             'services',
             'services.service',
             'services.values',
@@ -98,7 +122,10 @@ class AssessmentQueryService
         $user = request()->user();
 
         if (!$user instanceof User) {
-            $this->log('warning', 'Assessment query rejected: unauthenticated user.');
+            $this->log(
+                'warning',
+                'Assessment query rejected: unauthenticated user.'
+            );
 
             abort(401, 'Unauthenticated.');
         }
@@ -148,21 +175,210 @@ class AssessmentQueryService
     }
 
     /**
-     * Build the base assessment query with authorization
-     * and eager-loaded relationships.
+     * Build the base assessment query with eager-loaded relationships.
      */
     protected function query(): Builder
     {
+        $relations = $this->assessmentRelations();
+
         $this->log(
             'debug',
             'Building assessment query with eager-loaded relationships.',
             [
-                'relations' => $this->assessmentRelations(),
+                'relations' => $relations,
             ]
         );
 
-        return $this->authorizedQuery()
-            ->with($this->assessmentRelations());
+        return $this->authorizedQuery()->with($relations);
+    }
+
+    /**
+     * ============================================================
+     * DATE FILTER NORMALIZATION
+     * ============================================================
+     */
+
+    /**
+     * Read a date filter while supporting both snake_case and
+     * camelCase request parameter names.
+     */
+    protected function getDateFilter(
+        Request $request,
+        string $snakeCase,
+        string $camelCase
+    ): ?string {
+        $value = $request->input($snakeCase);
+
+        if ($value === null) {
+            $value = $request->input($camelCase);
+        }
+
+        if (!is_string($value) && !is_numeric($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        return $value !== '' ? $value : null;
+    }
+
+    /**
+     * Normalize and validate creation date filters.
+     *
+     * Expected format: YYYY-MM-DD
+     *
+     * These filters apply to assessments.created_at.
+     *
+     * @throws ValidationException
+     */
+    protected function normalizeDateFilters(Request $request): array
+    {
+        $dateFrom = $this->getDateFilter(
+            $request,
+            'date_from',
+            'dateFrom'
+        );
+
+        $dateTo = $this->getDateFilter(
+            $request,
+            'date_to',
+            'dateTo'
+        );
+
+        $validator = Validator::make(
+            [
+                'date_from' => $dateFrom,
+                'date_to' => $dateTo,
+            ],
+            [
+                'date_from' => [
+                    'nullable',
+                    'date_format:Y-m-d',
+                ],
+                'date_to' => [
+                    'nullable',
+                    'date_format:Y-m-d',
+                    'after_or_equal:date_from',
+                ],
+            ],
+            [
+                'date_from.date_format' => 'The start date must use YYYY-MM-DD format.',
+                'date_to.date_format' => 'The end date must use YYYY-MM-DD format.',
+                'date_to.after_or_equal' => 'The end date must be on or after the start date.',
+            ]
+        );
+
+        if ($validator->fails()) {
+            $this->log(
+                'warning',
+                'Invalid assessment creation date filters supplied.',
+                [
+                    'date_from' => $dateFrom,
+                    'date_to' => $dateTo,
+                    'validation_errors' => $validator->errors()->toArray(),
+                ]
+            );
+
+            $validator->validate();
+        }
+
+        $normalized = [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+        ];
+
+        $this->log(
+            'debug',
+            'Assessment creation date filters normalized successfully.',
+            $normalized
+        );
+
+        return $normalized;
+    }
+
+    /**
+     * ============================================================
+     * SOURCE TYPE FILTER NORMALIZATION
+     * ============================================================
+     */
+
+    /**
+     * Normalize and validate assessment source type.
+     *
+     * Supported values:
+     *
+     * NEW
+     * EXISTING_LIZZ
+     *
+     * If omitted, all source types are included.
+     *
+     * Supports both:
+     * source_type
+     * sourceType
+     *
+     * @throws ValidationException
+     */
+    protected function normalizeSourceTypeFilter(
+        Request $request
+    ): ?string {
+        $sourceType = $request->input('source_type');
+
+        if ($sourceType === null) {
+            $sourceType = $request->input('sourceType');
+        }
+
+        if ($sourceType === null || $sourceType === '') {
+            return null;
+        }
+
+        if (!is_string($sourceType)) {
+            $this->log(
+                'warning',
+                'Invalid assessment source type supplied.',
+                [
+                    'source_type' => $sourceType,
+                ]
+            );
+
+            throw ValidationException::withMessages([
+                'source_type' => [
+                    'The source type must be NEW or EXISTING_LIZZ.',
+                ],
+            ]);
+        }
+
+        $sourceType = strtoupper(trim($sourceType));
+
+        $validator = Validator::make(
+            [
+                'source_type' => $sourceType,
+            ],
+            [
+                'source_type' => [
+                    'required',
+                    'string',
+                    'in:' . implode(',', self::SOURCE_TYPES),
+                ],
+            ],
+            [
+                'source_type.in' => 'The selected source type is invalid.',
+            ]
+        );
+
+        if ($validator->fails()) {
+            $this->log(
+                'warning',
+                'Assessment source type validation failed.',
+                [
+                    'source_type' => $sourceType,
+                    'validation_errors' => $validator->errors()->toArray(),
+                ]
+            );
+
+            $validator->validate();
+        }
+
+        return $sourceType;
     }
 
     /**
@@ -173,24 +389,48 @@ class AssessmentQueryService
 
     /**
      * Apply request filters.
+     *
+     * @param Builder $query
+     * @param Request $request
+     * @param bool $includeStatus Whether to apply pending/status filters.
+     *
+     * @return Builder
      */
     protected function applyAssessmentFilters(
         Builder $query,
-        Request $request
+        Request $request,
+        bool $includeStatus = true
     ): Builder {
+        $dates = $this->normalizeDateFilters($request);
+
+        $sourceType = $this->normalizeSourceTypeFilter($request);
+
+        $search = trim((string) $request->input('search', ''));
+
+        $taxpayerId = $request->input('taxpayerId')
+            ?? $request->input('taxpayer_id');
+
+        $serviceId = $request->input('serviceId')
+            ?? $request->input('service_id');
+
+        $serviceCode = $request->input('serviceCode')
+            ?? $request->input('service_code');
 
         $this->log(
             'debug',
             'Applying assessment request filters.',
             [
-                'has_search' => filled($request->input('search')),
-                'has_taxpayer_filter' => filled($request->input('taxpayerId')),
+                'has_search' => filled($search),
+                'has_taxpayer_filter' => filled($taxpayerId),
+                'source_type' => $sourceType,
                 'pending' => $request->boolean('pending'),
                 'has_status_filter' => filled($request->input('status')),
-                'has_service_filter' => filled($request->input('serviceId')),
-                'has_service_code_filter' => filled($request->input('serviceCode')),
-                'date_from' => $request->input('date_from'),
-                'date_to' => $request->input('date_to'),
+                'include_status' => $includeStatus,
+                'has_service_filter' => filled($serviceId),
+                'has_service_code_filter' => filled($serviceCode),
+                'date_from' => $dates['date_from'],
+                'date_to' => $dates['date_to'],
+                'date_filter_column' => 'assessments.created_at',
             ]
         );
 
@@ -200,14 +440,19 @@ class AssessmentQueryService
         |--------------------------------------------------------------------------
         */
 
-        if ($search = trim((string) $request->input('search'))) {
-
-            $this->log('debug', 'Applying assessment search filter.');
+        if ($search !== '') {
+            $this->log(
+                'debug',
+                'Applying assessment search filter.',
+                [
+                    'search' => $search,
+                ]
+            );
 
             $query->where(function (Builder $query) use ($search) {
                 $query
                     ->where(
-                        'assessment_number',
+                        'assessments.assessment_number',
                         'ilike',
                         "%{$search}%"
                     )
@@ -228,37 +473,93 @@ class AssessmentQueryService
         |--------------------------------------------------------------------------
         */
 
-        if ($taxpayerId = $request->input('taxpayerId')) {
+        if (filled($taxpayerId)) {
+            $this->log(
+                'debug',
+                'Applying taxpayer filter.',
+                [
+                    'taxpayer_id' => $taxpayerId,
+                ]
+            );
 
-            $this->log('debug', 'Applying taxpayer filter.');
+            $query->where(
+                'assessments.citizen_id',
+                $taxpayerId
+            );
+        }
 
-            $query->where('citizen_id', $taxpayerId);
+        /*
+        |--------------------------------------------------------------------------
+        | Source Type
+        |--------------------------------------------------------------------------
+        |
+        | NEW:
+        |   Only new assessments.
+        |
+        | EXISTING_LIZZ:
+        |   Only assessments created from existing LIZZ agreements.
+        |
+        | Omitted:
+        |   Both source types.
+        |
+        | This filter is applied to both pagination and summary.
+        |
+        */
+
+        if ($sourceType !== null) {
+            $this->log(
+                'debug',
+                'Applying assessment source type filter.',
+                [
+                    'column' => 'assessments.source_type',
+                    'source_type' => $sourceType,
+                ]
+            );
+
+            $query->where(
+                'assessments.source_type',
+                $sourceType
+            );
         }
 
         /*
         |--------------------------------------------------------------------------
         | Pending / Status
         |--------------------------------------------------------------------------
+        |
+        | Status filters apply only to the paginated list.
+        | Summary counts all statuses using the other active filters.
+        |
         */
 
-        if ($request->boolean('pending')) {
+        if ($includeStatus) {
+            if ($request->boolean('pending')) {
+                $this->log(
+                    'debug',
+                    'Applying pending approval filter.'
+                );
 
-            $this->log(
-                'debug',
-                'Applying pending approval filter.'
-            );
+                $query->where(
+                    'assessments.status',
+                    'PENDING_APPROVAL'
+                );
 
-            $query->where('status', 'PENDING_APPROVAL');
+            } elseif (filled($request->input('status'))) {
+                $status = $request->input('status');
 
-        } elseif ($status = $request->input('status')) {
+                $this->log(
+                    'debug',
+                    'Applying assessment status filter.',
+                    [
+                        'status' => $status,
+                    ]
+                );
 
-            $this->log(
-                'debug',
-                'Applying assessment status filter.',
-                ['status' => $status]
-            );
-
-            $query->where('status', $status);
+                $query->where(
+                    'assessments.status',
+                    $status
+                );
+            }
         }
 
         /*
@@ -267,12 +568,13 @@ class AssessmentQueryService
         |--------------------------------------------------------------------------
         */
 
-        if ($serviceId = $request->input('serviceId')) {
-
+        if (filled($serviceId)) {
             $this->log(
                 'debug',
                 'Applying assessment service filter.',
-                ['service_id' => $serviceId]
+                [
+                    'service_id' => $serviceId,
+                ]
             );
 
             $query->whereHas(
@@ -289,12 +591,13 @@ class AssessmentQueryService
         |--------------------------------------------------------------------------
         */
 
-        if ($serviceCode = $request->input('serviceCode')) {
-
+        if (filled($serviceCode)) {
             $this->log(
                 'debug',
                 'Applying assessment service code filter.',
-                ['service_code' => $serviceCode]
+                [
+                    'service_code' => $serviceCode,
+                ]
             );
 
             $query->whereHas(
@@ -307,35 +610,64 @@ class AssessmentQueryService
 
         /*
         |--------------------------------------------------------------------------
-        | Assessment Date
+        | CREATED DATE
         |--------------------------------------------------------------------------
+        |
+        | Filter by when the assessment record was created.
+        | Do NOT use assessment_date here.
+        |
+        | Both boundaries are inclusive.
+        |
         */
 
-        if ($dateFrom = $request->input('date_from')) {
-
+        if ($dates['date_from'] !== null) {
             $this->log(
                 'debug',
-                'Applying assessment start date filter.',
-                ['date_from' => $dateFrom]
+                'Applying assessment creation start date filter.',
+                [
+                    'column' => 'assessments.created_at',
+                    'operator' => '>=',
+                    'date_from' => $dates['date_from'],
+                ]
             );
 
-            $query->whereDate('assessment_date', '>=', $dateFrom);
+            $query->whereDate(
+                'assessments.created_at',
+                '>=',
+                $dates['date_from']
+            );
         }
 
-        if ($dateTo = $request->input('date_to')) {
-
+        if ($dates['date_to'] !== null) {
             $this->log(
                 'debug',
-                'Applying assessment end date filter.',
-                ['date_to' => $dateTo]
+                'Applying assessment creation end date filter.',
+                [
+                    'column' => 'assessments.created_at',
+                    'operator' => '<=',
+                    'date_to' => $dates['date_to'],
+                ]
             );
 
-            $query->whereDate('assessment_date', '<=', $dateTo);
+            $query->whereDate(
+                'assessments.created_at',
+                '<=',
+                $dates['date_to']
+            );
         }
 
         $this->log(
             'debug',
-            'Assessment request filters applied successfully.'
+            'Assessment request filters applied successfully.',
+            [
+                'include_status' => $includeStatus,
+                'source_type' => $sourceType,
+                'date_from' => $dates['date_from'],
+                'date_to' => $dates['date_to'],
+                'date_filter_column' => 'assessments.created_at',
+                'sql' => $query->toSql(),
+                'bindings' => $query->getBindings(),
+            ]
         );
 
         return $query;
@@ -358,14 +690,40 @@ class AssessmentQueryService
 
         $this->log(
             'info',
-            'Starting assessment pagination.'
+            'Starting assessment pagination.',
+            [
+                'request_filters' => $request->only([
+                    'search',
+                    'status',
+                    'pending',
+                    'source_type',
+                    'sourceType',
+                    'taxpayerId',
+                    'taxpayer_id',
+                    'serviceId',
+                    'service_id',
+                    'serviceCode',
+                    'service_code',
+                    'date_from',
+                    'date_to',
+                    'dateFrom',
+                    'dateTo',
+                    'page',
+                    'per_page',
+                    'sort',
+                    'direction',
+                ]),
+            ]
         );
 
         try {
-
             $query = $this->query();
 
-            $this->applyAssessmentFilters($query, $request);
+            $this->applyAssessmentFilters(
+                $query,
+                $request,
+                includeStatus: true
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -386,7 +744,9 @@ class AssessmentQueryService
                 $this->log(
                     'warning',
                     'Invalid assessment sort column supplied. Using default.',
-                    ['requested_sort' => $sort]
+                    [
+                        'requested_sort' => $sort,
+                    ]
                 );
 
                 $sort = 'created_at';
@@ -400,13 +760,18 @@ class AssessmentQueryService
                 $this->log(
                     'warning',
                     'Invalid assessment sort direction supplied. Using default.',
-                    ['requested_direction' => $direction]
+                    [
+                        'requested_direction' => $direction,
+                    ]
                 );
 
                 $direction = 'desc';
             }
 
-            $query->orderBy($sort, $direction);
+            $query->orderBy(
+                'assessments.' . $sort,
+                $direction
+            );
 
             $this->log(
                 'debug',
@@ -450,7 +815,6 @@ class AssessmentQueryService
             return $result;
 
         } catch (Throwable $e) {
-
             $this->log(
                 'error',
                 'Assessment pagination failed.',
@@ -478,10 +842,16 @@ class AssessmentQueryService
 
     /**
      * Get authorized assessment status summary.
+     *
+     * Uses the same search, taxpayer, source type, service and
+     * creation-date filters as pagination, but intentionally
+     * excludes status filtering.
      */
-    public function summary(): array
+    public function summary(?Request $request = null): array
     {
         $startedAt = microtime(true);
+
+        $request ??= request();
 
         $this->log(
             'info',
@@ -489,25 +859,39 @@ class AssessmentQueryService
         );
 
         try {
-
             $query = $this->authorizedQuery();
+
+            $this->applyAssessmentFilters(
+                $query,
+                $request,
+                includeStatus: false
+            );
+
+            $this->log(
+                'debug',
+                'Executing assessment summary query.',
+                [
+                    'sql' => $query->toSql(),
+                    'bindings' => $query->getBindings(),
+                ]
+            );
 
             $result = $query
                 ->selectRaw('COUNT(*) as total')
                 ->selectRaw(
-                    "COUNT(*) FILTER (WHERE status = 'DRAFT') as draft"
+                    "COUNT(*) FILTER (WHERE assessments.status = 'DRAFT') as draft"
                 )
                 ->selectRaw(
-                    "COUNT(*) FILTER (WHERE status = 'PENDING_APPROVAL') as pending_approval"
+                    "COUNT(*) FILTER (WHERE assessments.status = 'PENDING_APPROVAL') as pending_approval"
                 )
                 ->selectRaw(
-                    "COUNT(*) FILTER (WHERE status = 'RETURNED') as returned"
+                    "COUNT(*) FILTER (WHERE assessments.status = 'RETURNED') as returned"
                 )
                 ->selectRaw(
-                    "COUNT(*) FILTER (WHERE status = 'APPROVED') as approved"
+                    "COUNT(*) FILTER (WHERE assessments.status = 'APPROVED') as approved"
                 )
                 ->selectRaw(
-                    "COUNT(*) FILTER (WHERE status = 'CANCELLED') as cancelled"
+                    "COUNT(*) FILTER (WHERE assessments.status = 'CANCELLED') as cancelled"
                 )
                 ->first();
 
@@ -524,6 +908,8 @@ class AssessmentQueryService
                 'info',
                 'Assessment summary calculated successfully.',
                 array_merge($summary, [
+                    'source_type' => $request->input('source_type')
+                        ?? $request->input('sourceType'),
                     'duration_ms' => round(
                         (microtime(true) - $startedAt) * 1000,
                         2
@@ -534,7 +920,6 @@ class AssessmentQueryService
             return $summary;
 
         } catch (Throwable $e) {
-
             $this->log(
                 'error',
                 'Assessment summary calculation failed.',
@@ -576,7 +961,6 @@ class AssessmentQueryService
         );
 
         try {
-
             $assessment = $this->query()->findOrFail($id);
 
             $this->log(
@@ -596,7 +980,6 @@ class AssessmentQueryService
             return $assessment;
 
         } catch (Throwable $e) {
-
             $this->log(
                 $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException
                     ? 'warning'

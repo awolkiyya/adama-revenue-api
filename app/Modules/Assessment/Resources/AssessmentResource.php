@@ -7,9 +7,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
 
 class AssessmentResource extends JsonResource
 {
-    public function toArray(
-        Request $request
-    ): array {
+    public function toArray(Request $request): array
+    {
         return [
 
             /*
@@ -18,14 +17,9 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'id' =>
-                $this->id,
-
-            'assessmentNumber' =>
-                $this->assessment_number,
-
-            'citizenId' =>
-                $this->citizen_id,
+            'id' => $this->id,
+            'assessmentNumber' => $this->assessment_number,
+            'citizenId' => $this->citizen_id,
 
             /*
             |--------------------------------------------------------------------------
@@ -33,19 +27,14 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'sourceType' =>
-                $this->source_type,
+            'sourceType' => $this->source_type,
 
-            'assessmentDate' =>
-                optional(
-                    $this->assessment_date
-                )->format('Y-m-d'),
+            'assessmentDate' => optional(
+                $this->assessment_date
+            )->format('Y-m-d'),
 
-            'status' =>
-                $this->status,
-
-            'notes' =>
-                $this->notes,
+            'status' => $this->status,
+            'notes' => $this->notes,
 
             /*
             |--------------------------------------------------------------------------
@@ -53,10 +42,9 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'submittedAt' =>
-                optional(
-                    $this->submitted_at
-                )->toISOString(),
+            'submittedAt' => optional(
+                $this->submitted_at
+            )->toISOString(),
 
             /*
             |--------------------------------------------------------------------------
@@ -64,124 +52,53 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'decision' =>
-                $this->decision,
-
-            'decisionNotes' =>
-                $this->decision_notes,
+            'decision' => $this->decision,
+            'decisionNotes' => $this->decision_notes,
 
             /*
             |--------------------------------------------------------------------------
             | Decision Maker
             |--------------------------------------------------------------------------
-            |
-            | Return the decision maker as a user object instead of
-            | returning only the decided_by user ID.
-            |
             */
 
-            'decidedBy' =>
-                $this->whenLoaded(
-                    'decider',
-                    function () {
+            'decidedBy' => $this->whenLoaded(
+                'decider',
+                fn () => $this->transformUser($this->decider)
+            ),
 
-                        if (!$this->decider) {
-                            return null;
-                        }
+            'decidedAt' => optional(
+                $this->decided_at
+            )->toISOString(),
 
-                        return [
-                            'id' =>
-                                $this->decider->id,
+            'approvedAt' => optional(
+                $this->approved_at
+            )->toISOString(),
 
-                            'name' =>
-                                $this->decider->name,
+            'rejectedAt' => optional(
+                $this->rejected_at
+            )->toISOString(),
 
-                            'label' =>
-                                $this->decider->label,
-
-                            'email' =>
-                                $this->decider->email,
-
-                            'phone' =>
-                                $this->decider->phone,
-
-                            'userType' =>
-                                $this->decider->user_type,
-
-                            'isActive' =>
-                                $this->decider->is_active,
-
-                            'administrativeUnitId' =>
-                                $this->decider->administrative_unit_id,
-
-                            'administrativeUnit' =>
-                                $this->decider->relationLoaded(
-                                    'administrativeUnit'
-                                )
-                                    ? $this->transformAdministrativeUnit(
-                                        $this->decider->administrativeUnit
-                                    )
-                                    : null,
-
-                            'sectorId' =>
-                                $this->decider->sector_id,
-
-                            'sector' =>
-                                $this->decider->relationLoaded(
-                                    'sector'
-                                )
-                                    ? $this->transformSector(
-                                        $this->decider->sector
-                                    )
-                                    : null,
-
-                            'createdAt' =>
-                                optional(
-                                    $this->decider->created_at
-                                )->toISOString(),
-
-                            'updatedAt' =>
-                                optional(
-                                    $this->decider->updated_at
-                                )->toISOString(),
-                        ];
-                    }
-                ),
-
-            'decidedAt' =>
-                optional(
-                    $this->decided_at
-                )->toISOString(),
-
-            'approvedAt' =>
-                optional(
-                    $this->approved_at
-                )->toISOString(),
-
-            'rejectedAt' =>
-                optional(
-                    $this->rejected_at
-                )->toISOString(),
-
-            'decisionMetadata' =>
-                $this->decision_metadata,
+            'decisionMetadata' => $this->decision_metadata,
 
             /*
             |--------------------------------------------------------------------------
-            | Administrative Unit
+            | Assessment Administrative Unit
             |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            | This is the administrative unit assigned to the assessment.
+            | It is independent of the creator's current administrative unit.
+            |
             */
 
-            'administrativeUnitId' =>
-                $this->administrative_unit_id,
+            'administrativeUnitId' => $this->administrative_unit_id,
 
-            'administrativeUnit' =>
-                $this->whenLoaded(
-                    'administrativeUnit',
-                    fn () => $this->transformAdministrativeUnit(
-                        $this->administrativeUnit
-                    )
-                ),
+            'administrativeUnit' => $this->whenLoaded(
+                'administrativeUnit',
+                fn () => $this->transformAdministrativeUnit(
+                    $this->administrativeUnit
+                )
+            ),
 
             /*
             |--------------------------------------------------------------------------
@@ -189,46 +106,31 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'taxpayer' =>
-                $this->whenLoaded(
-                    'taxpayer',
-                    function () {
-
-                        return [
-                            'id' =>
-                                $this->taxpayer->id,
-
-                            'citizenUid' =>
-                                $this->taxpayer->citizen_uid,
-
-                            'fullName' =>
-                                $this->taxpayer->full_name,
-
-                            'nationalId' =>
-                                $this->taxpayer->national_id,
-
-                            'phone' =>
-                                $this->taxpayer->phone,
-
-                            'email' =>
-                                $this->taxpayer->email,
-
-                            'gender' =>
-                                $this->taxpayer->gender,
-
-                            'dateOfBirth' =>
-                                optional(
-                                    $this->taxpayer->date_of_birth
-                                )->format('Y-m-d'),
-
-                            'address' =>
-                                $this->taxpayer->address,
-
-                            'isActive' =>
-                                $this->taxpayer->is_active,
-                        ];
+            'taxpayer' => $this->whenLoaded(
+                'taxpayer',
+                function () {
+                    if (!$this->taxpayer) {
+                        return null;
                     }
-                ),
+
+                    return [
+                        'id' => $this->taxpayer->id,
+                        'citizenUid' => $this->taxpayer->citizen_uid,
+                        'fullName' => $this->taxpayer->full_name,
+                        'nationalId' => $this->taxpayer->national_id,
+                        'phone' => $this->taxpayer->phone,
+                        'email' => $this->taxpayer->email,
+                        'gender' => $this->taxpayer->gender,
+
+                        'dateOfBirth' => optional(
+                            $this->taxpayer->date_of_birth
+                        )->format('Y-m-d'),
+
+                        'address' => $this->taxpayer->address,
+                        'isActive' => $this->taxpayer->is_active,
+                    ];
+                }
+            ),
 
             /*
             |--------------------------------------------------------------------------
@@ -236,316 +138,189 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'services' =>
-                $this->whenLoaded(
-                    'services',
-                    function () {
+            'services' => $this->whenLoaded(
+                'services',
+                function () {
+                    return $this->services
+                        ->map(function ($service) {
+                            return [
 
-                        return $this->services
-                            ->map(
-                                function ($service) {
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Assessment Service Identity
+                                |--------------------------------------------------------------------------
+                                */
 
-                                    return [
+                                'id' => $service->id,
+                                'assessmentId' => $service->assessment_id,
+                                'serviceId' => $service->service_id,
+                                'revenueServiceId' => $service->service_id,
+                                'serviceCode' => $service->service_code,
+                                'serviceOrder' => $service->service_order,
+                                'status' => $service->status,
 
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Assessment Service Identity
-                                        |--------------------------------------------------------------------------
-                                        */
+                                'paymentPlanType' =>
+                                    $service->service?->revenueCode?->paymentScheduleRule?->payment_plan_type
+                                    ?? 'ONE_TIME',
 
-                                        'id' =>
-                                            $service->id,
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Calculation
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'assessmentId' =>
-                                            $service->assessment_id,
+                                'computedAmount' => $service->computed_amount,
+                                'currencyCode' => $service->currency_code,
+                                'calculationMetadata' => $service->calculation_metadata,
+                                'calculationError' => $service->calculation_error,
 
-                                        'serviceId' =>
-                                            $service->service_id,
+                                'calculatedAt' => optional(
+                                    $service->calculated_at
+                                )->toISOString(),
 
-                                        'revenueServiceId' =>
-                                            $service->service_id,
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Historical Financial Position
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'serviceCode' =>
-                                            $service->service_code,
+                                'originalObligation' => $service->computed_amount,
+                                'paidAmount' => $service->paid_amount,
+                                'remainingAmount' => $service->remaining_amount,
 
-                                        'serviceOrder' =>
-                                            $service->service_order,
+                                'balanceAsOfDate' => optional(
+                                    $service->balance_as_of_date
+                                )->format('Y-m-d'),
 
-                                        'status' =>
-                                            $service->status,
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Payment Tracking
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'paymentPlanType' =>
-                                            $service->service?->revenueCode?->paymentScheduleRule?->payment_plan_type
-                                            ?? 'ONE_TIME',
+                                'paymentStatus' => $service->payment_status,
+                                'paidPrincipalAmount' => $service->paid_principal_amount,
 
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Calculation
-                                        |--------------------------------------------------------------------------
-                                        */
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Payment Obligation
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'computedAmount' =>
-                                            $service->computed_amount,
+                                'dueDate' => optional(
+                                    $service->due_date
+                                )->format('Y-m-d'),
 
-                                        'currencyCode' =>
-                                            $service->currency_code,
+                                'agreementDate' => optional(
+                                    $service->agreement_date
+                                )->format('Y-m-d'),
 
-                                        'calculationMetadata' =>
-                                            $service->calculation_metadata,
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Applied Financial Rules
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'calculationError' =>
-                                            $service->calculation_error,
+                                'penaltyRuleId' => $service->penalty_rule_id,
+                                'interestRuleId' => $service->interest_rule_id,
 
-                                        'calculatedAt' =>
-                                            optional(
-                                                $service->calculated_at
-                                            )->toISOString(),
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Revenue Service
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Historical Financial Position
-                                        |--------------------------------------------------------------------------
-                                        */
+                                'service' => $service->relationLoaded('service')
+                                    ? $this->transformRevenueService(
+                                        $service->service
+                                    )
+                                    : null,
 
-                                        'originalObligation' =>
-                                            $service->computed_amount,
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Captured Service Values
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'paidAmount' =>
-                                            $service->paid_amount,
-
-                                        'remainingAmount' =>
-                                            $service->remaining_amount,
-
-                                        'balanceAsOfDate' =>
-                                            optional(
-                                                $service->balance_as_of_date
-                                            )->format('Y-m-d'),
-
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Payment Tracking
-                                        |--------------------------------------------------------------------------
-                                        */
-
-                                        'paymentStatus' =>
-                                            $service->payment_status,
-
-                                        'paidPrincipalAmount' =>
-                                            $service->paid_principal_amount,
-
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Payment Obligation
-                                        |--------------------------------------------------------------------------
-                                        */
-
-                                        'dueDate' =>
-                                            optional(
-                                                $service->due_date
-                                            )->format('Y-m-d'),
-
-                                        'agreementDate' =>
-                                            optional(
-                                                $service->agreement_date
-                                            )->format('Y-m-d'),
-
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Applied Financial Rules
-                                        |--------------------------------------------------------------------------
-                                        */
-
-                                        'penaltyRuleId' =>
-                                            $service->penalty_rule_id,
-
-                                        'interestRuleId' =>
-                                            $service->interest_rule_id,
-
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Revenue Service
-                                        |--------------------------------------------------------------------------
-                                        */
-
-                                        'service' =>
-                                            $service->relationLoaded(
-                                                'service'
+                                'values' => $service->relationLoaded('values')
+                                    ? $service->values
+                                        ->map(
+                                            fn ($value) => $this->transformServiceValue(
+                                                $value
                                             )
-                                                ? $this->transformRevenueService(
-                                                    $service->service
-                                                )
-                                                : null,
+                                        )
+                                        ->values()
+                                    : [],
 
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Captured Service Values
-                                        |--------------------------------------------------------------------------
-                                        */
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Payment Schedules
+                                |--------------------------------------------------------------------------
+                                */
 
-                                        'values' =>
-                                            $service->relationLoaded(
-                                                'values'
-                                            )
-                                                ? $service->values
-                                                    ->map(
-                                                        fn ($value) =>
-                                                            $this->transformServiceValue(
-                                                                $value
-                                                            )
-                                                    )
-                                                    ->values()
-                                                : [],
+                                'paymentSchedules' => $service->relationLoaded(
+                                    'paymentSchedules'
+                                )
+                                    ? $service->paymentSchedules
+                                        ->map(function ($schedule) {
+                                            return [
+                                                'id' => $schedule->id,
+                                                'assessmentServiceId' => $schedule->assessment_service_id,
+                                                'installmentNumber' => $schedule->installment_number,
 
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Payment Schedules
-                                        |--------------------------------------------------------------------------
-                                        */
+                                                'dueDate' => optional(
+                                                    $schedule->due_date
+                                                )->format('Y-m-d'),
 
-                                        'paymentSchedules' =>
-                                            $service->relationLoaded(
-                                                'paymentSchedules'
-                                            )
-                                                ? $service->paymentSchedules
-                                                    ->map(
-                                                        function ($schedule) {
+                                                'amount' => $schedule->amount,
+                                                'paidAmount' => $schedule->paid_amount ?? null,
+                                                'remainingAmount' => $schedule->remaining_amount ?? null,
+                                                'status' => $schedule->status,
 
-                                                            return [
+                                                'createdAt' => optional(
+                                                    $schedule->created_at
+                                                )->toISOString(),
 
-                                                                'id' =>
-                                                                    $schedule->id,
+                                                'updatedAt' => optional(
+                                                    $schedule->updated_at
+                                                )->toISOString(),
+                                            ];
+                                        })
+                                        ->values()
+                                    : [],
 
-                                                                'assessmentServiceId' =>
-                                                                    $schedule->assessment_service_id,
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Assessment Service Audit
+                                |--------------------------------------------------------------------------
+                                */
 
-                                                                'installmentNumber' =>
-                                                                    $schedule->installment_number,
+                                'createdAt' => optional(
+                                    $service->created_at
+                                )->toISOString(),
 
-                                                                'dueDate' =>
-                                                                    optional(
-                                                                        $schedule->due_date
-                                                                    )->format('Y-m-d'),
-
-                                                                'amount' =>
-                                                                    $schedule->amount,
-
-                                                                'paidAmount' =>
-                                                                    $schedule->paid_amount
-                                                                    ?? null,
-
-                                                                'remainingAmount' =>
-                                                                    $schedule->remaining_amount
-                                                                    ?? null,
-
-                                                                'status' =>
-                                                                    $schedule->status,
-
-                                                                'createdAt' =>
-                                                                    optional(
-                                                                        $schedule->created_at
-                                                                    )->toISOString(),
-
-                                                                'updatedAt' =>
-                                                                    optional(
-                                                                        $schedule->updated_at
-                                                                    )->toISOString(),
-                                                            ];
-                                                        }
-                                                    )
-                                                    ->values()
-                                                : [],
-
-                                        /*
-                                        |--------------------------------------------------------------------------
-                                        | Assessment Service Audit
-                                        |--------------------------------------------------------------------------
-                                        */
-
-                                        'createdAt' =>
-                                            optional(
-                                                $service->created_at
-                                            )->toISOString(),
-
-                                        'updatedAt' =>
-                                            optional(
-                                                $service->updated_at
-                                            )->toISOString(),
-                                    ];
-                                }
-                            )
-                            ->values();
-                    }
-                ),
+                                'updatedAt' => optional(
+                                    $service->updated_at
+                                )->toISOString(),
+                            ];
+                        })
+                        ->values();
+                }
+            ),
 
             /*
             |--------------------------------------------------------------------------
             | Audit - Created By
             |--------------------------------------------------------------------------
+            |
+            | This administrative unit belongs to the creator, not the assessment.
+            |
             */
 
-            'createdBy' =>
-                $this->whenLoaded(
-                    'creator',
-                    function () {
-
-                        return [
-                            'id' =>
-                                $this->creator->id,
-
-                            'name' =>
-                                $this->creator->name,
-
-                            'label' =>
-                                $this->creator->label,
-
-                            'email' =>
-                                $this->creator->email,
-
-                            'phone' =>
-                                $this->creator->phone,
-
-                            'userType' =>
-                                $this->creator->user_type,
-
-                            'isActive' =>
-                                $this->creator->is_active,
-
-                            'administrativeUnitId' =>
-                                $this->creator->administrative_unit_id,
-
-                            'administrativeUnit' =>
-                                $this->creator->relationLoaded(
-                                    'administrativeUnit'
-                                )
-                                    ? $this->transformAdministrativeUnit(
-                                        $this->creator->administrativeUnit
-                                    )
-                                    : null,
-
-                            'sectorId' =>
-                                $this->creator->sector_id,
-
-                            'sector' =>
-                                $this->creator->relationLoaded(
-                                    'sector'
-                                )
-                                    ? $this->transformSector(
-                                        $this->creator->sector
-                                    )
-                                    : null,
-
-                            'createdAt' =>
-                                optional(
-                                    $this->creator->created_at
-                                )->toISOString(),
-
-                            'updatedAt' =>
-                                optional(
-                                    $this->creator->updated_at
-                                )->toISOString(),
-                        ];
-                    }
-                ),
+            'createdBy' => $this->whenLoaded(
+                'creator',
+                fn () => $this->transformUser($this->creator)
+            ),
 
             /*
             |--------------------------------------------------------------------------
@@ -553,69 +328,10 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'updatedBy' =>
-                $this->whenLoaded(
-                    'updater',
-                    function () {
-
-                        return [
-                            'id' =>
-                                $this->updater->id,
-
-                            'name' =>
-                                $this->updater->name,
-
-                            'label' =>
-                                $this->updater->label,
-
-                            'email' =>
-                                $this->updater->email,
-
-                            'phone' =>
-                                $this->updater->phone,
-
-                            'userType' =>
-                                $this->updater->user_type,
-
-                            'isActive' =>
-                                $this->updater->is_active,
-
-                            'administrativeUnitId' =>
-                                $this->updater->administrative_unit_id,
-
-                            'administrativeUnit' =>
-                                $this->updater->relationLoaded(
-                                    'administrativeUnit'
-                                )
-                                    ? $this->transformAdministrativeUnit(
-                                        $this->updater->administrativeUnit
-                                    )
-                                    : null,
-
-                            'sectorId' =>
-                                $this->updater->sector_id,
-
-                            'sector' =>
-                                $this->updater->relationLoaded(
-                                    'sector'
-                                )
-                                    ? $this->transformSector(
-                                        $this->updater->sector
-                                    )
-                                    : null,
-
-                            'createdAt' =>
-                                optional(
-                                    $this->updater->created_at
-                                )->toISOString(),
-
-                            'updatedAt' =>
-                                optional(
-                                    $this->updater->updated_at
-                                )->toISOString(),
-                        ];
-                    }
-                ),
+            'updatedBy' => $this->whenLoaded(
+                'updater',
+                fn () => $this->transformUser($this->updater)
+            ),
 
             /*
             |--------------------------------------------------------------------------
@@ -623,15 +339,60 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'createdAt' =>
-                optional(
-                    $this->created_at
-                )->toISOString(),
+            'createdAt' => optional(
+                $this->created_at
+            )->toISOString(),
 
-            'updatedAt' =>
-                optional(
-                    $this->updated_at
-                )->toISOString(),
+            'updatedAt' => optional(
+                $this->updated_at
+            )->toISOString(),
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | USER
+    |--------------------------------------------------------------------------
+    */
+
+    protected function transformUser(mixed $user): ?array
+    {
+        if (!$user) {
+            return null;
+        }
+
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'label' => $user->label,
+            'email' => $user->email,
+            'phone' => $user->phone,
+            'userType' => $user->user_type,
+            'isActive' => $user->is_active,
+
+            'administrativeUnitId' => $user->administrative_unit_id,
+
+            'administrativeUnit' => $user->relationLoaded(
+                'administrativeUnit'
+            )
+                ? $this->transformAdministrativeUnit(
+                    $user->administrativeUnit
+                )
+                : null,
+
+            'sectorId' => $user->sector_id,
+
+            'sector' => $user->relationLoaded('sector')
+                ? $this->transformSector($user->sector)
+                : null,
+
+            'createdAt' => optional(
+                $user->created_at
+            )->toISOString(),
+
+            'updatedAt' => optional(
+                $user->updated_at
+            )->toISOString(),
         ];
     }
 
@@ -644,42 +405,26 @@ class AssessmentResource extends JsonResource
     protected function transformRevenueService(
         mixed $service
     ): ?array {
-
         if (!$service) {
             return null;
         }
 
         return [
-            'id' =>
-                $service->id,
+            'id' => $service->id,
+            'name' => $service->name ?? null,
+            'code' => $service->code ?? null,
+            'description' => $service->description ?? null,
+            'category' => $service->category ?? null,
+            'collectionMode' => $service->collection_mode ?? null,
+            'isActive' => $service->is_active ?? null,
 
-            'name' =>
-                $service->name ?? null,
+            'createdAt' => optional(
+                $service->created_at
+            )->toISOString(),
 
-            'code' =>
-                $service->code ?? null,
-
-            'description' =>
-                $service->description ?? null,
-
-            'category' =>
-                $service->category ?? null,
-
-            'collectionMode' =>
-                $service->collection_mode ?? null,
-
-            'isActive' =>
-                $service->is_active ?? null,
-
-            'createdAt' =>
-                optional(
-                    $service->created_at
-                )->toISOString(),
-
-            'updatedAt' =>
-                optional(
-                    $service->updated_at
-                )->toISOString(),
+            'updatedAt' => optional(
+                $service->updated_at
+            )->toISOString(),
         ];
     }
 
@@ -692,7 +437,6 @@ class AssessmentResource extends JsonResource
     protected function transformAdministrativeUnit(
         mixed $unit
     ): ?array {
-
         if (!$unit) {
             return null;
         }
@@ -706,51 +450,32 @@ class AssessmentResource extends JsonResource
         $node = $unit;
 
         while ($node) {
-
             $level = strtolower(
                 $node->level ?? ''
             );
 
             if (
-                array_key_exists(
-                    $level,
-                    $context
-                ) &&
+                array_key_exists($level, $context) &&
                 $context[$level] === null
             ) {
                 $context[$level] = [
-                    'id' =>
-                        $node->id,
-
-                    'name' =>
-                        $node->name,
-
-                    'code' =>
-                        $node->code ?? null,
+                    'id' => $node->id,
+                    'name' => $node->name,
+                    'code' => $node->code ?? null,
                 ];
             }
 
-            $node =
-                $node->relationLoaded('parent')
-                    ? $node->parent
-                    : null;
+            $node = $node->relationLoaded('parent')
+                ? $node->parent
+                : null;
         }
 
         return [
-            'id' =>
-                $unit->id,
-
-            'name' =>
-                $unit->name,
-
-            'code' =>
-                $unit->code ?? null,
-
-            'level' =>
-                $unit->level,
-
-            'context' =>
-                $context,
+            'id' => $unit->id,
+            'name' => $unit->name,
+            'code' => $unit->code ?? null,
+            'level' => $unit->level,
+            'context' => $context,
         ];
     }
 
@@ -763,23 +488,15 @@ class AssessmentResource extends JsonResource
     protected function transformSector(
         mixed $sector
     ): ?array {
-
         if (!$sector) {
             return null;
         }
 
         return [
-            'id' =>
-                $sector->id,
-
-            'name' =>
-                $sector->name,
-
-            'code' =>
-                $sector->code ?? null,
-
-            'isActive' =>
-                $sector->is_active ?? null,
+            'id' => $sector->id,
+            'name' => $sector->name,
+            'code' => $sector->code ?? null,
+            'isActive' => $sector->is_active ?? null,
         ];
     }
 
@@ -792,41 +509,18 @@ class AssessmentResource extends JsonResource
     protected function transformServiceValue(
         mixed $value
     ): array {
-
         return [
-
-            'id' =>
-                $value->id,
-
-            'assessmentServiceId' =>
-                $value->assessment_service_id,
-
-            'revenueServiceFieldId' =>
-                $value->revenue_service_field_id,
-
-            'fieldCode' =>
-                $value->field_code,
-
-            'fieldLabel' =>
-                $value->field_label,
-
-            'dataType' =>
-                $value->data_type,
-
-            'inputType' =>
-                $value->input_type,
-
-            'value' =>
-                $value->value,
-
-            'displayValue' =>
-                $value->display_value,
-
-            'measurementUnitId' =>
-                $value->measurement_unit_id,
-
-            'sortOrder' =>
-                $value->sort_order,
+            'id' => $value->id,
+            'assessmentServiceId' => $value->assessment_service_id,
+            'revenueServiceFieldId' => $value->revenue_service_field_id,
+            'fieldCode' => $value->field_code,
+            'fieldLabel' => $value->field_label,
+            'dataType' => $value->data_type,
+            'inputType' => $value->input_type,
+            'value' => $value->value,
+            'displayValue' => $value->display_value,
+            'measurementUnitId' => $value->measurement_unit_id,
+            'sortOrder' => $value->sort_order,
 
             /*
             |--------------------------------------------------------------------------
@@ -834,32 +528,19 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'files' =>
-                $value->relationLoaded('files')
-                    ? $value->files
-                        ->map(
-                            function ($file) {
-
-                                return [
-                                    'id' =>
-                                        $file->uuid,
-
-                                    'name' =>
-                                        $file->original_name,
-
-                                    'mimeType' =>
-                                        $file->mime_type,
-
-                                    'size' =>
-                                        $file->size,
-
-                                    'status' =>
-                                        $file->status,
-                                ];
-                            }
-                        )
-                        ->values()
-                    : [],
+            'files' => $value->relationLoaded('files')
+                ? $value->files
+                    ->map(function ($file) {
+                        return [
+                            'id' => $file->uuid,
+                            'name' => $file->original_name,
+                            'mimeType' => $file->mime_type,
+                            'size' => $file->size,
+                            'status' => $file->status,
+                        ];
+                    })
+                    ->values()
+                : [],
 
             /*
             |--------------------------------------------------------------------------
@@ -867,15 +548,13 @@ class AssessmentResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'createdAt' =>
-                optional(
-                    $value->created_at
-                )->toISOString(),
+            'createdAt' => optional(
+                $value->created_at
+            )->toISOString(),
 
-            'updatedAt' =>
-                optional(
-                    $value->updated_at
-                )->toISOString(),
+            'updatedAt' => optional(
+                $value->updated_at
+            )->toISOString(),
         ];
     }
 }
