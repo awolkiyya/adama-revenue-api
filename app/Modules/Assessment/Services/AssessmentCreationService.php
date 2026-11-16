@@ -8,6 +8,7 @@ use App\Services\AssessmentCalculationService;
 use App\Services\DocumentSequenceService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class AssessmentCreationService
 {
@@ -25,7 +26,10 @@ class AssessmentCreationService
      *
      * Responsibilities:
      *
+     * - Retrieve the authenticated officer
+     * - Validate the officer's administrative unit
      * - Create assessment header
+     * - Assign officer's administrative unit
      * - Generate assessment number using centralized sequence
      * - Store assessment services
      * - Store dynamic service values
@@ -35,8 +39,31 @@ class AssessmentCreationService
     public function create(
         StoreAssessmentRequest $request
     ): Assessment {
+        // Retrieve authenticated user.
+        $user = $request->user();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Administrative Unit
+        |--------------------------------------------------------------------------
+        |
+        | Every assessment created by an ordinary officer must
+        | belong to the officer's assigned administrative unit.
+        |
+        | The administrative unit is obtained from the authenticated
+        | user, never from frontend-submitted data.
+        |
+        */
+
+        if (!$user || !$user->administrative_unit_id) {
+            throw ValidationException::withMessages([
+                'administrative_unit_id' =>
+                    'The authenticated officer is not assigned to an administrative unit.',
+            ]);
+        }
+
         $assessment = DB::transaction(
-            function () use ($request): Assessment {
+            function () use ($request, $user): Assessment {
 
                 /*
                 |--------------------------------------------------------------------------
@@ -65,6 +92,12 @@ class AssessmentCreationService
                 |--------------------------------------------------------------------------
                 | Create Assessment
                 |--------------------------------------------------------------------------
+                |
+                | administrative_unit_id is automatically assigned
+                | from the authenticated officer.
+                |
+                | created_by identifies the officer who created it.
+                |
                 */
 
                 $assessment = Assessment::create([
@@ -75,6 +108,9 @@ class AssessmentCreationService
 
                     'citizen_id' =>
                         $request->taxpayerId(),
+
+                    'administrative_unit_id' =>
+                        $user->administrative_unit_id,
 
                     'assessment_date' =>
                         now()->toDateString(),
@@ -91,7 +127,7 @@ class AssessmentCreationService
                             : null,
 
                     'created_by' =>
-                        auth()->id(),
+                        $user->id,
                 ]);
 
                 /*

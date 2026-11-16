@@ -22,6 +22,7 @@ class AssessmentUpdateService
      *
      * Responsibilities:
      * - Validate the assessment lifecycle state.
+     * - Preserve administrative unit ownership.
      * - Update only supplied header fields.
      * - Replace services when services are supplied.
      * - Preserve existing FILE and MULTI_FILE values.
@@ -36,6 +37,22 @@ class AssessmentUpdateService
             $assessment,
             $request
         ): Assessment {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Retrieve Authenticated User
+            |--------------------------------------------------------------------------
+            */
+
+            $user = $request->user();
+
+            if (!$user) {
+                throw ValidationException::withMessages([
+                    'authentication' => [
+                        'An authenticated user is required to update this assessment.',
+                    ],
+                ]);
+            }
 
             /*
             |--------------------------------------------------------------------------
@@ -59,10 +76,16 @@ class AssessmentUpdateService
             |--------------------------------------------------------------------------
             | Update Assessment Header
             |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            |
+            | administrative_unit_id is intentionally not updated.
+            | Administrative ownership is established during creation.
+            |
             */
 
             $headerData = [
-                'updated_by' => auth()->id(),
+                'updated_by' => $user->id,
             ];
 
             if ($request->has('taxpayerId')) {
@@ -210,7 +233,7 @@ class AssessmentUpdateService
     protected function assertEditable(
         Assessment $assessment
     ): void {
-        if (! in_array(
+        if (!in_array(
             $assessment->status,
             [
                 'DRAFT',
