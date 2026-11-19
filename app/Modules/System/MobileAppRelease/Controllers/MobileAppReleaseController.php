@@ -523,91 +523,133 @@ class MobileAppReleaseController extends Controller
         }
     }
 
-    /**
-     * Download a published APK.
-     */
-    public function download(
-        MobileAppRelease $mobile_app_release
-    ): StreamedResponse|JsonResponse {
-        $startedAt = microtime(true);
-        $userId = auth()->id();
+   
+/**
+ * Download a published APK.
+ */
+public function download(
+    MobileAppRelease $mobile_app_release
+): StreamedResponse|JsonResponse {
+    $startedAt = microtime(true);
+    $userId = auth()->id();
 
-        try {
-            $release = $mobile_app_release->loadMissing('apkFile');
+    try {
+        $release = $mobile_app_release->loadMissing('apkFile');
 
-            if (! $release->isDownloadable()) {
-                Log::warning(
-                    'Mobile app release controller: download unavailable.',
-                    [
-                        'user_id' => $userId,
-                        'release_id' => $release->getKey(),
-                        'status' => $release->status,
-                        'apk_file_id' => $release->apkFile?->getKey(),
-                        'ip_address' => request()->ip(),
-                    ]
-                );
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Release Availability
+        |--------------------------------------------------------------------------
+        */
 
-                return ApiResponse::notFound(
-                    'The APK is not available for download.'
-                );
-            }
-
-            $file = $release->apkFile;
-
-            if (
-                $file === null
-                || ! Storage::disk($file->disk)->exists($file->path)
-            ) {
-                Log::warning(
-                    'Mobile app release controller: APK disappeared before download.',
-                    [
-                        'release_id' => $release->getKey(),
-                        'apk_file_id' => $file?->getKey(),
-                        'ip_address' => request()->ip(),
-                    ]
-                );
-
-                return ApiResponse::notFound(
-                    'The APK file is no longer available.'
-                );
-            }
-
-            Log::info(
-                'Mobile app release controller: APK download started.',
+        if (! $release->isDownloadable()) {
+            Log::warning(
+                'Mobile app release controller: download unavailable.',
                 [
                     'user_id' => $userId,
                     'release_id' => $release->getKey(),
-                    'version_name' => $release->version_name,
-                    'version_code' => $release->version_code,
-                    'apk_file_id' => $file->getKey(),
+                    'status' => $release->status,
+                    'apk_file_id' => $release->apkFile?->getKey(),
                     'ip_address' => request()->ip(),
-                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
-            return Storage::disk($file->disk)->download(
-                $file->path,
-                $file->original_name,
-                [
-                    'Content-Type' => 'application/vnd.android.package-archive',
-                    'X-Content-Type-Options' => 'nosniff',
-                    'Cache-Control' => 'private, no-store',
-                ]
+            return ApiResponse::notFound(
+                'The APK is not available for download.'
             );
-        } catch (Throwable $exception) {
-            $this->logFailure(
-                'download',
-                $exception,
-                $this->releaseContext($mobile_app_release, [
-                    'user_id' => $userId,
-                    'ip_address' => request()->ip(),
-                    'duration_ms' => $this->durationMs($startedAt),
-                ])
-            );
-
-            throw $exception;
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate APK File
+        |--------------------------------------------------------------------------
+        */
+
+        $file = $release->apkFile;
+
+        if (
+            $file === null
+            || ! Storage::disk($file->disk)->exists($file->path)
+        ) {
+            Log::warning(
+                'Mobile app release controller: APK disappeared before download.',
+                [
+                    'release_id' => $release->getKey(),
+                    'apk_file_id' => $file?->getKey(),
+                    'ip_address' => request()->ip(),
+                ]
+            );
+
+            return ApiResponse::notFound(
+                'The APK file is no longer available.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Prepare Download Filename
+        |--------------------------------------------------------------------------
+        */
+
+        $fileName = basename(
+            $file->original_name ?: 'adama-field-collector.apk'
+        );
+
+        if (! str_ends_with(strtolower($fileName), '.apk')) {
+            $fileName .= '.apk';
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Log Download
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info(
+            'Mobile app release controller: APK download started.',
+            [
+                'user_id' => $userId,
+                'release_id' => $release->getKey(),
+                'version_name' => $release->version_name,
+                'version_code' => $release->version_code,
+                'apk_file_id' => $file->getKey(),
+                'file_name' => $fileName,
+                'ip_address' => request()->ip(),
+                'duration_ms' => $this->durationMs($startedAt),
+            ]
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Stream APK Download
+        |--------------------------------------------------------------------------
+        */
+
+        return Storage::disk($file->disk)->download(
+            $file->path,
+            $fileName,
+            [
+                'Content-Type' => 'application/vnd.android.package-archive',
+                'X-Content-Type-Options' => 'nosniff',
+                'Cache-Control' => 'private, no-store, no-cache, must-revalidate',
+                'Pragma' => 'no-cache',
+            ]
+        );
+    } catch (Throwable $exception) {
+        $this->logFailure(
+            'download',
+            $exception,
+            $this->releaseContext($mobile_app_release, [
+                'user_id' => $userId,
+                'ip_address' => request()->ip(),
+                'duration_ms' => $this->durationMs($startedAt),
+            ])
+        );
+
+        throw $exception;
     }
+}
+
 
     /*
     |--------------------------------------------------------------------------
