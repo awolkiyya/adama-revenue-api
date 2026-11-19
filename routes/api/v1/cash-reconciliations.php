@@ -42,19 +42,38 @@ Route::prefix('cash-reconciliations')
         |--------------------------------------------------------------------------
         | Summaries
         |--------------------------------------------------------------------------
-        |
-        | Expected, counted and difference totals grouped by collector.
-        | Collectors without view_all only receive their own figures.
-        |
-        | Keep this above the '/{cashReconciliation}' routes so that
-        | static paths are always matched first.
-        |
         */
 
         Route::get('/expected-by-collector', [
             CashReconciliationController::class,
             'expectedByCollector',
         ])->name('expected-by-collector');
+
+       /*
+        |--------------------------------------------------------------------------
+        | Notify Collector About Cash Reconciliation
+        |--------------------------------------------------------------------------
+        |
+        | Sends an immediate notification to the selected cash collector.
+        |
+        | Covers:
+        | - Collected cash without a reconciliation record.
+        | - Existing DRAFT reconciliation not yet submitted.
+        | - RETURNED reconciliation requiring correction and resubmission.
+        | - Any other outstanding reconciliation situation supported
+        |   by the reconciliation business rules.
+        |
+        | Every request sends a new notification.
+        | Duplicate notifications are intentionally allowed.
+        |
+        | POST /api/v1/cash-reconciliations/notify-collector
+        |
+        */
+
+        Route::post('/notify-collector', [
+            CashReconciliationController::class,
+            'notifyCollector',
+        ])->name('notify-collector');
 
         /*
         |--------------------------------------------------------------------------
@@ -74,11 +93,6 @@ Route::prefix('cash-reconciliations')
         ])->whereUuid('cashReconciliation')
             ->name('update');
 
-        /*
-         * Delete is restricted to DRAFT reconciliations.
-         * Ownership and status must also be checked by the policy
-         * and CashReconciliationService.
-         */
         Route::delete('/{cashReconciliation}', [
             CashReconciliationController::class,
             'destroy',

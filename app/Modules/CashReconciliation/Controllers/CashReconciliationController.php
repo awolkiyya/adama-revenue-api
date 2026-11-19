@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 use App\Modules\CashReconciliation\Requests\ExpectedByCollectorRequest;
 use App\Services\ApiResponse;
+use App\Modules\CashReconciliation\Requests\NotifyCollectorRequest;
+use App\Modules\System\Notification\Notifications\CashReconciliationReminderNotification;
 
 class CashReconciliationController extends Controller
 {
@@ -595,6 +597,90 @@ public function expectedByCollector(
         Log::error('Failed to retrieve expected cash by collector.', [
             'user_id' => $user?->getKey(),
             'filters' => $filters,
+            'exception' => $exception->getMessage(),
+            'exception_class' => get_class($exception),
+            'file' => $exception->getFile(),
+            'line' => $exception->getLine(),
+        ]);
+
+        throw $exception;
+    }
+}
+
+/**
+ * Notify a cash collector about outstanding collected cash.
+ *
+ * Every successful request creates a new database notification.
+ *
+ * POST /api/v1/cash-reconciliations/notify-collector
+ */
+public function notifyCollector(
+    NotifyCollectorRequest $request
+): JsonResponse {
+    $user = $request->user();
+
+    // abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+    $validated = $request->validated();
+
+    $collectorId = $validated['collector_id'];
+
+    try {
+        Log::info('Cash reconciliation notification requested.', [
+            'requested_by' => $user->getKey(),
+            'collector_id' => $collectorId,
+            'date_from' => $validated['date_from'] ?? null,
+            'date_to' => $validated['date_to'] ?? null,
+        ]);
+
+        $details = $this->service->getCollectorOutstandingCash(
+            user: $user,
+            collectorId: $collectorId,
+            filters: $validated,
+        );
+
+        $collector = $details['collector'];
+
+        // Database notification is created immediately.
+        $collector->notify(
+            new CashReconciliationReminderNotification(
+                details: $details,
+            )
+        );
+
+        Log::info('Cash reconciliation notification sent successfully.', [
+            'requested_by' => $user->getKey(),
+            'collector_id' => $collector->getKey(),
+            'collector_name' => $collector->name,
+            'expected_total' => $details['expected_total'],
+            'reconciled_total' => $details['reconciled_total'],
+            'outstanding_total' => $details['outstanding_total'],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Cash reconciliation reminder sent successfully.',
+            'data' => [
+                'collector_id' => $details['collector_id'],
+                'collector_name' => $details['collector_name'],
+                'date_from' => $details['date_from'],
+                'date_to' => $details['date_to'],
+                'payments_count' => $details['payments_count'],
+                'expected_total' => $details['expected_total'],
+                'reconciliations_count' => $details['reconciliations_count'],
+                'reconciled_total' => $details['reconciled_total'],
+                'outstanding_total' => $details['outstanding_total'],
+                'notification_type' => 'cash_reconciliation.reminder',
+            ],
+            'errors' => null,
+        ], 200);
+
+    } catch (Throwable $exception) {
+        Log::error('Failed to send cash reconciliation notification.', [
+            'requested_by' => $user->getKey(),
+            'collector_id' => $collectorId,
+            'date_from' => $validated['date_from'] ?? null,
+            'date_to' => $validated['date_to'] ?? null,
             'exception' => $exception->getMessage(),
             'exception_class' => get_class($exception),
             'file' => $exception->getFile(),

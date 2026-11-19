@@ -317,6 +317,13 @@ Route::prefix('v1')->group(function () {
             'routes/api/v1/dashboard.php'
         );
 
+        // notification
+         // Dashboard
+
+         require base_path(
+            'routes/api/v1/notification.php'
+        );
+
         // ====================================================
         // PRIVATE FILE ACCESS
         // ====================================================

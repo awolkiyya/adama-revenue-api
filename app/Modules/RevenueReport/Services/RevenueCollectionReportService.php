@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\RevenueReport\Services;
 
 use App\Models\Payment;
@@ -10,13 +12,27 @@ use Illuminate\Validation\ValidationException;
 
 class RevenueCollectionReportService
 {
+    private const PAYMENT_CASH = 'CASH';
+
+    private const PAYMENT_COMPLETED = 'COMPLETED';
+
+    private const RECONCILIATION_RECONCILED = 'RECONCILED';
+
+    private const RECONCILIATION_DISCREPANCY = 'DISCREPANCY';
+
     /**
      * Generate an aggregated Revenue Collection Report.
      *
-     * This report does not return individual payment transactions.
+     * Officially collected revenue consists of:
      *
-     * Collected revenue is calculated from COMPLETED payments only.
-     * Invoice-item totals are not treated as collected revenue.
+     * 1. Completed non-cash payments.
+     * 2. Completed cash payments covered by a RECONCILED
+     *    cash reconciliation.
+     *
+     * Cash under DISCREPANCY, DRAFT, PENDING_REVIEW, RETURNED,
+     * or without a reconciliation is not officially collected.
+     *
+     * No individual payment transactions are returned.
      */
     public function generate(array $filters): array
     {
@@ -66,8 +82,10 @@ class RevenueCollectionReportService
     /**
      * Build the common payment query.
      *
-     * No invoice_items join is performed here, preventing a payment
-     * from being duplicated when an invoice contains multiple services.
+     * No invoice_items or cash_reconciliations joins are performed here.
+     *
+     * This prevents duplicate payment records when invoices contain
+     * multiple services or when reconciliation records are involved.
      */
     private function baseQuery(array $filters): Builder
     {
@@ -127,8 +145,10 @@ class RevenueCollectionReportService
 
         /*
          * Classification filters select payments whose invoice contains
-         * at least one matching service. They do not allocate a payment
-         * between multiple services or revenue domains.
+         * at least one matching service.
+         *
+         * They do not allocate a payment between multiple services
+         * or revenue domains.
          */
         if (
             !empty($filters['revenue_domain'])
@@ -171,20 +191,186 @@ class RevenueCollectionReportService
     }
 
     /**
-     * Summarize payment amounts and counts by status.
+     * Determine whether a completed cash payment belongs to
+     * a successfully reconciled cash reconciliation.
      *
-     * total_collected includes COMPLETED payments only.
+     * The reconciliation must:
+     *
+     * - Belong to the same collector as payments.processed_by.
+     * - Have status RECONCILED.
+     * - Cover the payment's creation date.
+     *
+     * Uses EXISTS to prevent duplicate payment records.
+     */
+    private function hasReconciledCash(): \Closure
+    {
+        return function ($query) {
+            $query->whereExists(
+                function ($reconciliationQuery) {
+                    $reconciliationQuery
+                        ->selectRaw('1')
+                        ->from(
+                            'cash_reconciliations as report_reconciliations'
+                        )
+                        ->whereColumn(
+                            'report_reconciliations.collector_id',
+                            'payments.processed_by'
+                        )
+                        ->where(
+                            'report_reconciliations.status',
+                            self::RECONCILIATION_RECONCILED
+                        )
+                        ->whereRaw(
+                            'payments.created_at >= report_reconciliations.period_start'
+                        )
+                        ->whereRaw(
+                            "payments.created_at < (
+                                report_reconciliations.period_end
+                                + INTERVAL '1 day'
+                            )"
+                        );
+                }
+            );
+        };
+    }
+
+    /**
+     * Determine whether a completed cash payment belongs to
+     * a reconciliation reviewed with DISCREPANCY status.
+     */
+    private function hasDiscrepancyCash(): \Closure
+    {
+        return function ($query) {
+            $query->whereExists(
+                function ($reconciliationQuery) {
+                    $reconciliationQuery
+                        ->selectRaw('1')
+                        ->from(
+                            'cash_reconciliations as report_reconciliations'
+                        )
+                        ->whereColumn(
+                            'report_reconciliations.collector_id',
+                            'payments.processed_by'
+                        )
+                        ->where(
+                            'report_reconciliations.status',
+                            self::RECONCILIATION_DISCREPANCY
+                        )
+                        ->whereRaw(
+                            'payments.created_at >= report_reconciliations.period_start'
+                        )
+                        ->whereRaw(
+                            "payments.created_at < (
+                                report_reconciliations.period_end
+                                + INTERVAL '1 day'
+                            )"
+                        );
+                }
+            );
+        };
+    }
+
+    /**
+     * Build the officially collected payment query.
+     *
+     * Includes:
+     *
+     * - Completed non-cash payments.
+     * - Completed reconciled cash payments.
+     *
+     * Excludes:
+     *
+     * - Pending and failed payments.
+     * - Unreconciled cash.
+     * - Discrepancy cash.
+     *
+     * The original filters are preserved.
+     */
+    private function collectedQuery(array $filters): Builder
+    {
+        return $this->baseQuery($filters)
+            ->where(
+                'payments.status',
+                self::PAYMENT_COMPLETED
+            )
+            ->where(function (Builder $query) {
+                $query
+                    ->where(function (Builder $nonCashQuery) {
+                        $nonCashQuery
+                            ->where(
+                                'payments.payment_method',
+                                '<>',
+                                self::PAYMENT_CASH
+                            )
+                            ->whereNotNull('payments.payment_method');
+                    })
+                    ->orWhere(function (Builder $cashQuery) {
+                        $cashQuery
+                            ->where(
+                                'payments.payment_method',
+                                self::PAYMENT_CASH
+                            )
+                            ->where(
+                                $this->hasReconciledCash()
+                            );
+                    });
+            });
+    }
+
+    /**
+     * Build the completed cash payment query.
+     */
+    private function completedCashQuery(array $filters): Builder
+    {
+        return $this->baseQuery($filters)
+            ->where(
+                'payments.status',
+                self::PAYMENT_COMPLETED
+            )
+            ->where(
+                'payments.payment_method',
+                self::PAYMENT_CASH
+            );
+    }
+
+    /**
+     * Build the completed non-cash payment query.
+     */
+    private function completedNonCashQuery(array $filters): Builder
+    {
+        return $this->baseQuery($filters)
+            ->where(
+                'payments.status',
+                self::PAYMENT_COMPLETED
+            )
+            ->where(
+                'payments.payment_method',
+                '<>',
+                self::PAYMENT_CASH
+            )
+            ->whereNotNull('payments.payment_method');
+    }
+
+    /**
+     * Summarize payments and cash reconciliation figures.
+     *
+     * total_collected:
+     * Completed non-cash + reconciled cash.
+     *
+     * unreconciled_cash:
+     * Completed cash without RECONCILED or DISCREPANCY reconciliation.
+     *
+     * discrepancy_cash:
+     * Completed cash belonging to DISCREPANCY reconciliations.
      */
     private function summary(array $filters): array
     {
+        /*
+         * General payment transaction statistics.
+         *
+         * These statistics include all payment statuses.
+         */
         $row = $this->baseQuery($filters)
-            ->selectRaw("
-                COALESCE(
-                    SUM(payments.amount)
-                        FILTER (WHERE payments.status = 'COMPLETED'),
-                    0
-                ) AS total_collected
-            ")
             ->selectRaw("
                 COUNT(*) FILTER (
                     WHERE payments.status = 'COMPLETED'
@@ -251,48 +437,180 @@ class RevenueCollectionReportService
             ->selectRaw('COUNT(*) AS total_transactions')
             ->first();
 
-        $totalCollected = (float) $row->total_collected;
-        $completedCount = (int) $row->completed_count;
+        /*
+         * Officially collected revenue.
+         */
+        $collected = $this->collectedQuery($filters)
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS total_collected'
+            )
+            ->selectRaw(
+                'COUNT(*) AS collected_count'
+            )
+            ->first();
+
+        /*
+         * Reconciled cash.
+         */
+        $reconciledCash = $this->completedCashQuery($filters)
+            ->where($this->hasReconciledCash())
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS amount'
+            )
+            ->selectRaw(
+                'COUNT(*) AS payment_count'
+            )
+            ->first();
+
+        /*
+         * Unreconciled cash.
+         *
+         * Excludes both RECONCILED and DISCREPANCY cash.
+         *
+         * Includes:
+         * - No reconciliation.
+         * - DRAFT.
+         * - PENDING_REVIEW.
+         * - RETURNED.
+         */
+        $unreconciledCash = $this->completedCashQuery($filters)
+            ->where(function (Builder $query) {
+                $query
+                    ->whereNot(
+                        $this->hasReconciledCash()
+                    )
+                    ->whereNot(
+                        $this->hasDiscrepancyCash()
+                    );
+            })
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS amount'
+            )
+            ->selectRaw(
+                'COUNT(*) AS payment_count'
+            )
+            ->first();
+
+        /*
+         * Discrepancy cash.
+         *
+         * Reported separately and excluded from official collections.
+         */
+        $discrepancyCash = $this->completedCashQuery($filters)
+            ->where($this->hasDiscrepancyCash())
+            ->whereNot($this->hasReconciledCash())
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS amount'
+            )
+            ->selectRaw(
+                'COUNT(*) AS payment_count'
+            )
+            ->first();
+
+        /*
+         * Completed non-cash collections.
+         */
+        $nonCash = $this->completedNonCashQuery($filters)
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS amount'
+            )
+            ->selectRaw(
+                'COUNT(*) AS payment_count'
+            )
+            ->first();
+
+        $totalCollected = (float) $collected->total_collected;
+        $collectedCount = (int) $collected->collected_count;
 
         return [
-            'total_collected' => $this->money($totalCollected),
+            /*
+             * Officially recognized collections.
+             */
+            'total_collected' => $this->money(
+                $totalCollected
+            ),
+
+            'collected_count' => $collectedCount,
+
+            /*
+             * Cash reconciliation breakdown.
+             */
+            'reconciled_cash' => $this->money(
+                (float) $reconciledCash->amount
+            ),
+
+            'reconciled_cash_count' => (int) $reconciledCash->payment_count,
+
+            'unreconciled_cash' => $this->money(
+                (float) $unreconciledCash->amount
+            ),
+
+            'unreconciled_cash_count' => (int) $unreconciledCash->payment_count,
+
+            'discrepancy_cash' => $this->money(
+                (float) $discrepancyCash->amount
+            ),
+
+            'discrepancy_cash_count' => (int) $discrepancyCash->payment_count,
+
+            /*
+             * Non-cash collections.
+             */
+            'non_cash_collected' => $this->money(
+                (float) $nonCash->amount
+            ),
+
+            'non_cash_collected_count' => (int) $nonCash->payment_count,
+
+            /*
+             * General payment transaction statistics.
+             */
             'total_transactions' => (int) $row->total_transactions,
 
-            'completed_count' => $completedCount,
+            'completed_count' => (int) $row->completed_count,
 
             'pending_amount' => $this->money(
                 (float) $row->pending_amount
             ),
+
             'pending_count' => (int) $row->pending_count,
 
             'processing_amount' => $this->money(
                 (float) $row->processing_amount
             ),
+
             'processing_count' => (int) $row->processing_count,
 
             'failed_amount' => $this->money(
                 (float) $row->failed_amount
             ),
+
             'failed_count' => (int) $row->failed_count,
 
             'reversed_amount' => $this->money(
                 (float) $row->reversed_amount
             ),
+
             'reversed_count' => (int) $row->reversed_count,
 
             'cancelled_count' => (int) $row->cancelled_count,
+
             'expired_count' => (int) $row->expired_count,
 
+            /*
+             * Average payment is based on officially collected payments,
+             * not all completed transactions.
+             */
             'average_payment' => $this->money(
-                $completedCount > 0
-                    ? $totalCollected / $completedCount
+                $collectedCount > 0
+                    ? $totalCollected / $collectedCount
                     : 0
             ),
         ];
     }
 
     /**
-     * Return completed collections grouped by day or month.
+     * Return officially collected revenue grouped by day or month.
      *
      * Periods longer than 62 days are grouped by month.
      */
@@ -307,35 +625,29 @@ class RevenueCollectionReportService
             ? "TO_CHAR(payments.created_at, 'YYYY-MM')"
             : "TO_CHAR(payments.created_at, 'YYYY-MM-DD')";
 
-        return $this->baseQuery($filters)
+        return $this->collectedQuery($filters)
             ->selectRaw("{$periodExpression} AS period")
-            ->selectRaw("
-                COALESCE(
-                    SUM(payments.amount)
-                        FILTER (WHERE payments.status = 'COMPLETED'),
-                    0
-                ) AS completed_amount
-            ")
-            ->selectRaw("
-                COUNT(*) FILTER (
-                    WHERE payments.status = 'COMPLETED'
-                ) AS completed_count
-            ")
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS completed_amount'
+            )
+            ->selectRaw('COUNT(*) AS completed_count')
             ->groupByRaw($periodExpression)
             ->orderBy('period')
             ->get()
             ->map(fn ($row) => [
                 'period' => $row->period,
+
                 'completed_amount' => $this->money(
                     (float) $row->completed_amount
                 ),
+
                 'completed_count' => (int) $row->completed_count,
             ])
             ->all();
     }
 
     /**
-     * Group payments by an explicitly allowed payment column.
+     * Group officially collected payments by an allowed payment column.
      */
     private function groupedPayments(
         array $filters,
@@ -350,45 +662,37 @@ class RevenueCollectionReportService
             return [];
         }
 
-        return $this->baseQuery($filters)
+        return $this->collectedQuery($filters)
             ->selectRaw(
                 "COALESCE(payments.{$column}::text, 'UNKNOWN') AS label"
             )
-            ->selectRaw("
-                COALESCE(
-                    SUM(payments.amount)
-                        FILTER (WHERE payments.status = 'COMPLETED'),
-                    0
-                ) AS completed_amount
-            ")
-            ->selectRaw("
-                COUNT(*) FILTER (
-                    WHERE payments.status = 'COMPLETED'
-                ) AS completed_count
-            ")
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS completed_amount'
+            )
+            ->selectRaw('COUNT(*) AS completed_count')
             ->groupBy("payments.{$column}")
             ->orderBy('label')
             ->get()
             ->map(fn ($row) => [
                 'label' => $row->label,
+
                 'completed_amount' => $this->money(
                     (float) $row->completed_amount
                 ),
+
                 'completed_count' => (int) $row->completed_count,
             ])
             ->all();
     }
 
     /**
-     * Group completed payments by revenue domain.
+     * Group officially collected payments by revenue domain.
      *
-     * To avoid counting one payment in multiple domains, only invoices
-     * whose non-deleted services resolve to exactly one distinct domain
-     * are included in this breakdown.
+     * Only invoices whose non-deleted services resolve to exactly
+     * one distinct revenue domain are included.
      *
-     * This is not a payment allocation. Multi-domain invoices are
-     * deliberately excluded from this breakdown until an authoritative
-     * allocation rule exists.
+     * Multi-domain invoices are deliberately excluded until
+     * an authoritative payment allocation rule exists.
      */
     private function revenueDomains(array $filters): array
     {
@@ -424,7 +728,7 @@ class RevenueCollectionReportService
                 'COUNT(DISTINCT revenue_categories.revenue_domain) = 1'
             );
 
-        $query = $this->baseQuery($filters)
+        return $this->collectedQuery($filters)
             ->joinSub(
                 $singleDomainInvoices,
                 'report_single_domain',
@@ -435,41 +739,37 @@ class RevenueCollectionReportService
                         'report_single_domain.invoice_id'
                     );
                 }
-            );
-
-        return $query
+            )
             ->select('report_single_domain.revenue_domain')
-            ->selectRaw("
-                COALESCE(
-                    SUM(payments.amount)
-                        FILTER (WHERE payments.status = 'COMPLETED'),
-                    0
-                ) AS completed_amount
-            ")
-            ->selectRaw("
-                COUNT(*) FILTER (
-                    WHERE payments.status = 'COMPLETED'
-                ) AS completed_count
-            ")
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS completed_amount'
+            )
+            ->selectRaw('COUNT(*) AS completed_count')
             ->groupBy('report_single_domain.revenue_domain')
             ->orderBy('report_single_domain.revenue_domain')
             ->get()
             ->map(fn ($row) => [
                 'revenue_domain' => $row->revenue_domain,
+
                 'completed_amount' => $this->money(
                     (float) $row->completed_amount
                 ),
+
                 'completed_count' => (int) $row->completed_count,
             ])
             ->all();
     }
 
     /**
-     * Summarize completed payments by invoice administrative unit.
+     * Summarize officially collected payments by invoice
+     * administrative unit.
+     *
+     * Administrative unit is obtained through the invoice.
+     * cash_reconciliations has no administrative_unit_id column.
      */
     private function administrativeUnitBreakdown(array $filters): array
     {
-        return $this->baseQuery($filters)
+        return $this->collectedQuery($filters)
             ->leftJoin(
                 'invoices as report_unit_invoices',
                 'report_unit_invoices.id',
@@ -491,18 +791,10 @@ class RevenueCollectionReportService
                     'Unassigned'
                 ) AS administrative_unit_name
             ")
-            ->selectRaw("
-                COALESCE(
-                    SUM(payments.amount)
-                        FILTER (WHERE payments.status = 'COMPLETED'),
-                    0
-                ) AS completed_amount
-            ")
-            ->selectRaw("
-                COUNT(*) FILTER (
-                    WHERE payments.status = 'COMPLETED'
-                ) AS completed_count
-            ")
+            ->selectRaw(
+                'COALESCE(SUM(payments.amount), 0) AS completed_amount'
+            )
+            ->selectRaw('COUNT(*) AS completed_count')
             ->groupBy(
                 'report_units.id',
                 'report_units.name'
@@ -511,10 +803,13 @@ class RevenueCollectionReportService
             ->get()
             ->map(fn ($row) => [
                 'administrative_unit_id' => $row->administrative_unit_id,
+
                 'administrative_unit_name' => $row->administrative_unit_name,
+
                 'completed_amount' => $this->money(
                     (float) $row->completed_amount
                 ),
+
                 'completed_count' => (int) $row->completed_count,
             ])
             ->all();

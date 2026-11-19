@@ -1,7 +1,11 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\CashReconciliation\Services;
 
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
 use App\Models\CashReconciliation;
 use App\Models\Payment;
 use App\Models\User;
@@ -11,9 +15,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
-use App\Enums\PaymentMethod;
-use App\Enums\PaymentStatus;
-
 
 class CashReconciliationService
 {
@@ -28,6 +29,13 @@ class CashReconciliationService
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Reconciliations belonging to collectors within the authenticated
+     * user's administrative scope.
+     *
+     * Higher-level administrative users can access subordinate units
+     * according to AdministrativeScopeService.
+     */
     protected function administrativelyScopedReconciliationQuery(
         User $user
     ): Builder {
@@ -41,25 +49,50 @@ class CashReconciliationService
             });
     }
 
+    /**
+     * Reconciliation visibility:
+     *
+     * - Collector-only: own reconciliations.
+     * - Without view_all: own reconciliations.
+     * - With view_all: all reconciliations within administrative scope.
+     */
     protected function authorizedReconciliationQuery(
         User $user,
         bool $collectorOnly = false
     ): Builder {
         $query = $this->administrativelyScopedReconciliationQuery($user);
-
-        if (
-            $collectorOnly
-            || ! $user->can('cash_reconciliations.view_all')
-        ) {
+    
+        // Revenue collectors can ONLY access their own reconciliations.
+        if ($user->hasRole('REVENUE_COLLECTOR')) {
+            return $query->where(
+                'cash_reconciliations.collector_id',
+                $user->getKey()
+            );
+        }
+    
+        // Explicit collector-only operations.
+        if ($collectorOnly) {
+            return $query->where(
+                'cash_reconciliations.collector_id',
+                $user->getKey()
+            );
+        }
+    
+        // Other users need view-all permission to access
+        // reconciliations belonging to other collectors.
+        if (! $user->can('cash_reconciliations.view_all')) {
             $query->where(
                 'cash_reconciliations.collector_id',
                 $user->getKey()
             );
         }
-
+    
         return $query;
     }
 
+    /**
+     * Resolve a reconciliation within the appropriate authorization scope.
+     */
     protected function resolveAuthorizedReconciliation(
         User $user,
         CashReconciliation $reconciliation,
@@ -80,6 +113,10 @@ class CashReconciliationService
             ->findOrFail($reconciliation->getKey());
     }
 
+    /**
+     * Payments belonging to invoices within the authenticated user's
+     * administrative scope.
+     */
     protected function authorizedPaymentQuery(User $user): Builder
     {
         return Payment::query()
@@ -90,6 +127,36 @@ class CashReconciliationService
                     'invoices.administrative_unit_id'
                 );
             });
+    }
+
+    /**
+     * Determine whether the user can view all expected-cash collectors
+     * within their administrative scope.
+     */
+    protected function canViewAllExpectedCash(User $user): bool
+    {
+        return $user->can(
+            'cash_reconciliations.view_all_expected_cash'
+        ) || $user->can(
+            'cash_reconciliations.view_all'
+        );
+    }
+
+    /**
+     * Build a collector query constrained by administrative scope.
+     */
+    protected function administrativelyScopedCollectorQuery(
+        User $user
+    ): Builder {
+        $query = User::query();
+
+        $this->administrativeScopeService->applyAdministrativeScope(
+            $query,
+            $user,
+            'users.administrative_unit_id'
+        );
+
+        return $query;
     }
 
     /*
@@ -218,8 +285,6 @@ class CashReconciliationService
     /**
      * Create a reconciliation draft and attach its initial evidence.
      *
-     * Evidence files are uploaded as part of the same create request.
-     *
      * @param array<int, UploadedFile> $evidenceFiles
      */
     public function createDraft(
@@ -268,9 +333,7 @@ class CashReconciliationService
              * can see the current expected amount while the record is
              * still a draft.
              *
-             * This is only a preview. The amount is recalculated again
-             * during submission to capture any payments received after
-             * the draft was created.
+             * The amount is recalculated again during submission.
              */
             $reconciliation->expected_amount = $this->calculateExpectedCash(
                 $user,
@@ -304,11 +367,8 @@ class CashReconciliationService
     /**
      * Update an editable reconciliation and manage its evidence.
      *
-     * New files are attached and selected existing evidence files
-     * are removed through the evidence service.
-     *
      * @param array<int, UploadedFile> $evidenceFiles
-     * @param array<int, string> $removeEvidenceIds UUID file IDs
+     * @param array<int, string> $removeEvidenceIds
      */
     public function updateDraft(
         User $user,
@@ -346,10 +406,6 @@ class CashReconciliationService
 
             $this->validatePeriod($start, $end);
 
-            /*
-             * Update reconciliation fields.
-             */
-
             $reconciliation->period_start = $start;
             $reconciliation->period_end = $end;
 
@@ -364,14 +420,6 @@ class CashReconciliationService
                         );
             }
 
-            /*
-             * Refresh the expected-cash preview whenever the collector
-             * updates the reconciliation. This also handles period
-             * changes and keeps the draft/returned record current.
-             *
-             * The final expected amount and difference are recalculated
-             * again by submit(), immediately before submission.
-             */
             $reconciliation->expected_amount = $this->calculateExpectedCash(
                 $user,
                 $reconciliation
@@ -386,12 +434,6 @@ class CashReconciliationService
 
             $reconciliation->save();
 
-            /*
-             * Remove existing evidence selected by the collector.
-             *
-             * The evidence service verifies that every supplied UUID
-             * belongs to this reconciliation before detaching it.
-             */
             if ($removeEvidenceIds !== []) {
                 $this->evidenceService->remove(
                     $reconciliation,
@@ -399,9 +441,6 @@ class CashReconciliationService
                 );
             }
 
-            /*
-             * Attach newly uploaded evidence.
-             */
             if ($evidenceFiles !== []) {
                 $this->evidenceService->attach(
                     $reconciliation,
@@ -544,13 +583,15 @@ class CashReconciliationService
                 ]);
             }
 
-            if (! in_array(
-                $reconciliation->status,
-                [
-                    CashReconciliation::STATUS_PENDING_REVIEW,
-                ],
-                true
-            )) {
+            if (
+                ! in_array(
+                    $reconciliation->status,
+                    [
+                        CashReconciliation::STATUS_PENDING_REVIEW,
+                    ],
+                    true
+                )
+            ) {
                 throw ValidationException::withMessages([
                     'status' =>
                         'Only pending-review reconciliations can be reviewed.',
@@ -695,31 +736,16 @@ class CashReconciliationService
      * Permanently delete an unsubmitted draft reconciliation.
      *
      * Only the collector who owns the reconciliation may delete it.
-     * The record must have exactly DRAFT status.
-     *
-     * Submitted, returned, reviewed, and cancelled reconciliations
-     * must remain in the database for audit purposes.
+     * Only DRAFT records can be deleted.
      */
     public function deleteDraft(
         User $user,
         CashReconciliation $reconciliation
     ): void {
-        // $this->assertPermission(
-        //     $user,
-        //     'cash_reconciliations.delete'
-        // );
-
         DB::transaction(function () use (
             $user,
             $reconciliation
         ): void {
-            /*
-             * Resolve the record within the authenticated collector's
-             * administrative scope and ownership scope.
-             *
-             * Lock the row to prevent concurrent updates or submission
-             * while the deletion is being processed.
-             */
             $reconciliation = $this->resolveAuthorizedReconciliation(
                 $user,
                 $reconciliation,
@@ -727,12 +753,6 @@ class CashReconciliationService
                 lock: true
             );
 
-            /*
-             * Deletion is intentionally stricter than assertEditable().
-             *
-             * assertEditable() allows both DRAFT and RETURNED records.
-             * Permanent deletion must allow DRAFT only.
-             */
             if (
                 $reconciliation->status
                 !== CashReconciliation::STATUS_DRAFT
@@ -762,8 +782,14 @@ class CashReconciliationService
                 'payments.processed_by',
                 $reconciliation->collector_id
             )
-            ->where('payments.payment_method', 'CASH')
-            ->where('payments.status', 'COMPLETED')
+            ->where(
+                'payments.payment_method',
+                PaymentMethod::CASH->value
+            )
+            ->where(
+                'payments.status',
+                PaymentStatus::COMPLETED->value
+            )
             ->whereBetween('payments.created_at', [
                 $reconciliation->period_start,
                 $reconciliation->period_end,
@@ -922,455 +948,614 @@ class CashReconciliationService
             . $fraction;
     }
 
-
-   
-
-
-
-/**
- * Get expected, reconciled, and outstanding cash grouped by cash collector.
- *
- * Cash collectors are identified from the users recorded in
- * payments.processed_by for CASH payments.
- *
- * Expected cash:
- *     Sum of successfully completed cash payments.
- *
- * Reconciled cash:
- *     Sum of actual_amount from RECONCILED records only.
- *
- * Outstanding cash:
- *     Expected cash - Reconciled cash.
- *
- * Collector identification is independent of the selected date range.
- * This allows previously recorded cash collectors to appear even when
- * they have no cash payments in the selected period.
- *
- * Visibility:
- *     - Users without all-collector access see only their own records.
- *     - Users with all-collector access see collectors within their
- *       authorized administrative scope.
- *     - SYSTEM_ADMIN receives global scope through
- *       AdministrativeScopeService.
- *
- * @param User $user
- * @param array<string, mixed> $filters
- * @param int $perPage
- * @return array<string, mixed>
- */
-public function expectedByCollector(
-    User $user,
-    array $filters,
-    int $perPage = 50
-): array {
     /*
     |--------------------------------------------------------------------------
-    | 1. Determine Collector Visibility
+    | Expected Cash By Collector
     |--------------------------------------------------------------------------
     */
 
-    $canViewAll =  true;
-    // $user->hasPermission(
-    //     'cash_reconciliations.view_all_expected_cash'
-    // );
+    /**
+     * Get expected, reconciled, and outstanding cash grouped by collector.
+     *
+     * Collector identification is based on payments.processed_by
+     * for CASH payments, independently of the selected date range.
+     *
+     * Expected cash:
+     *     COMPLETED CASH payments in the selected payment date range.
+     *
+     * Reconciled cash:
+     *     Actual amounts from RECONCILED records whose periods are
+     *     fully contained within the selected date range.
+     *
+     * Visibility:
+     *     - Users without all-collector access see only their own record.
+     *     - Users with all-collector access see collectors in their
+     *       administrative scope.
+     *     - Higher-level users can see subordinate units according to
+     *       AdministrativeScopeService.
+     *
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    public function expectedByCollector(
+        User $user,
+        array $filters,
+        int $perPage = 50
+    ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Determine Collector Visibility
+        |--------------------------------------------------------------------------
+        */
 
-    /*
-    |--------------------------------------------------------------------------
-    | 2. Normalize Filters
-    |--------------------------------------------------------------------------
-    */
+        $canViewAll = $this->canViewAllExpectedCash($user);
 
-    $dateFrom = $filters['date_from'] ?? null;
-    $dateTo = $filters['date_to'] ?? null;
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Normalize Filters
+        |--------------------------------------------------------------------------
+        */
 
-    $search = trim((string) ($filters['search'] ?? ''));
+        $dateFrom = $filters['date_from'] ?? null;
+        $dateTo = $filters['date_to'] ?? null;
 
-    $perPage = max(1, min($perPage, 100));
-
-    $sortDirection = strtolower(
-        (string) ($filters['sort_dir'] ?? 'desc')
-    ) === 'asc' ? 'asc' : 'desc';
-
-    $sortColumn = match ($filters['sort_by'] ?? 'expected') {
-        'reconciled' => 'reconciled_total',
-        'outstanding' => 'outstanding_total',
-        default => 'expected_total',
-    };
-
-    /*
-    |--------------------------------------------------------------------------
-    | 3. Identify Cash Collectors From Payment Records
-    |--------------------------------------------------------------------------
-    |
-    | IMPORTANT:
-    |
-    | A cash collector is identified by the user recorded in
-    | payments.processed_by when processing a CASH payment.
-    |
-    | Do not identify collectors using:
-    |     - A specific role.
-    |     - All employees.
-    |     - All system users.
-    |
-    | Do not apply the selected date range here.
-    |
-    | This ensures a previously recorded collector remains eligible
-    | even when they have no payments in the selected reporting period.
-    |
-    */
-
-    $collectorIds = Payment::query()
-        ->select('processed_by')
-        ->where(
-            'payment_method',
-            PaymentMethod::CASH->value
-        )
-        ->whereNotNull('processed_by')
-        ->distinct();
-
-    /*
-    |--------------------------------------------------------------------------
-    | 4. Calculate Expected Cash From Payments
-    |--------------------------------------------------------------------------
-    |
-    | Only successfully completed CASH payments are included.
-    |
-    | Payments are grouped by the user recorded in processed_by.
-    |
-    */
-
-    $paymentTotals = Payment::query()
-        ->select('processed_by as collector_id')
-        ->selectRaw('
-            COUNT(*) AS payments_count,
-            COALESCE(SUM(amount), 0) AS expected_total
-        ')
-        ->where(
-            'payment_method',
-            PaymentMethod::CASH->value
-        )
-        ->where(
-            'status',
-            PaymentStatus::COMPLETED->value
-        )
-        ->whereNotNull('processed_by')
-        ->when($dateFrom, function ($query) use ($dateFrom) {
-            $query->whereDate(
-                'created_at',
-                '>=',
-                $dateFrom
-            );
-        })
-        ->when($dateTo, function ($query) use ($dateTo) {
-            $query->whereDate(
-                'created_at',
-                '<=',
-                $dateTo
-            );
-        })
-        ->groupBy('processed_by');
-
-    /*
-    |--------------------------------------------------------------------------
-    | 5. Calculate Reconciled Cash
-    |--------------------------------------------------------------------------
-    |
-    | Only RECONCILED records contribute to reconciled cash.
-    |
-    | Reconciliation periods must be fully contained within the
-    | selected date range.
-    |
-    */
-
-    $reconciliationTotals = CashReconciliation::query()
-        ->select('collector_id')
-        ->selectRaw('
-            COUNT(*) AS reconciliations_count,
-            COALESCE(SUM(actual_amount), 0) AS reconciled_total
-        ')
-        ->where(
-            'status',
-            CashReconciliation::STATUS_RECONCILED
-        )
-        ->when($dateFrom, function ($query) use ($dateFrom) {
-            $query->whereDate(
-                'period_start',
-                '>=',
-                $dateFrom
-            );
-        })
-        ->when($dateTo, function ($query) use ($dateTo) {
-            $query->whereDate(
-                'period_end',
-                '<=',
-                $dateTo
-            );
-        })
-        ->groupBy('collector_id');
-
-    /*
-    |--------------------------------------------------------------------------
-    | 6. Build Cash Collector Query
-    |--------------------------------------------------------------------------
-    |
-    | Only users recorded as processors of CASH payments are included.
-    |
-    | No specific role or user_type is required.
-    |
-    | LEFT JOIN ensures that eligible collectors without payments
-    | or reconciliations in the selected period receive zero totals.
-    |
-    */
-
-    $base = User::query()
-        ->select([
-            'users.id',
-            'users.name',
-            'users.email',
-        ])
-        ->whereIn(
-            'users.id',
-            $collectorIds
+        $search = trim(
+            (string) ($filters['search'] ?? '')
         );
 
-    /*
-    |--------------------------------------------------------------------------
-    | 7. Apply Collector Visibility and Administrative Scope
-    |--------------------------------------------------------------------------
-    */
+        $perPage = max(1, min($perPage, 100));
 
-    if (! $canViewAll) {
-        // Without all-collector access, users see only their own records.
-        $base->where('users.id', $user->id);
-    } else {
-        // All-collector access remains restricted by administrative scope.
-        // SYSTEM_ADMIN receives global scope through the scope service.
+        $sortDirection = strtolower(
+            (string) ($filters['sort_dir'] ?? 'desc')
+        ) === 'asc' ? 'asc' : 'desc';
+
+        $sortColumn = match ($filters['sort_by'] ?? 'expected') {
+            'reconciled' => 'reconciled_total',
+            'outstanding' => 'outstanding_total',
+            default => 'expected_total',
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Identify Cash Collectors
+        |--------------------------------------------------------------------------
+        |
+        | A collector must have processed at least one CASH payment.
+        |
+        | The selected date range is deliberately not applied here.
+        |
+        */
+
+        $collectorIds = Payment::query()
+            ->select('processed_by')
+            ->where(
+                'payment_method',
+                PaymentMethod::CASH->value
+            )
+            ->whereNotNull('processed_by')
+            ->distinct();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. Calculate Expected Cash
+        |--------------------------------------------------------------------------
+        */
+
+        $paymentTotals = Payment::query()
+            ->select('processed_by as collector_id')
+            ->selectRaw('
+                COUNT(*) AS payments_count,
+                COALESCE(SUM(amount), 0) AS expected_total
+            ')
+            ->where(
+                'payment_method',
+                PaymentMethod::CASH->value
+            )
+            ->where(
+                'status',
+                PaymentStatus::COMPLETED->value
+            )
+            ->whereNotNull('processed_by')
+            ->when($dateFrom, function ($query) use ($dateFrom): void {
+                $query->whereDate(
+                    'created_at',
+                    '>=',
+                    $dateFrom
+                );
+            })
+            ->when($dateTo, function ($query) use ($dateTo): void {
+                $query->whereDate(
+                    'created_at',
+                    '<=',
+                    $dateTo
+                );
+            })
+            ->groupBy('processed_by');
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. Calculate Reconciled Cash
+        |--------------------------------------------------------------------------
+        */
+
+        $reconciliationTotals = CashReconciliation::query()
+            ->select('collector_id')
+            ->selectRaw('
+                COUNT(*) AS reconciliations_count,
+                COALESCE(SUM(actual_amount), 0) AS reconciled_total
+            ')
+            ->where(
+                'status',
+                CashReconciliation::STATUS_RECONCILED
+            )
+            ->when($dateFrom, function ($query) use ($dateFrom): void {
+                $query->whereDate(
+                    'period_start',
+                    '>=',
+                    $dateFrom
+                );
+            })
+            ->when($dateTo, function ($query) use ($dateTo): void {
+                $query->whereDate(
+                    'period_end',
+                    '<=',
+                    $dateTo
+                );
+            })
+            ->groupBy('collector_id');
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. Build Collector Query
+        |--------------------------------------------------------------------------
+        */
+
+        $base = User::query()
+            ->select([
+                'users.id',
+                'users.name',
+                'users.email',
+            ])
+            ->whereIn(
+                'users.id',
+                $collectorIds
+            );
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Apply Administrative Scope
+        |--------------------------------------------------------------------------
+        |
+        | Administrative scope is always applied.
+        |
+        | Higher-level administrators receive the subordinate-unit
+        | visibility implemented by AdministrativeScopeService.
+        |
+        | Lower-level users cannot access parent or unrelated units.
+        |
+        | Users without all-collector permission are additionally
+        | restricted to their own collector record.
+        |
+        */
+
         $this->administrativeScopeService->applyAdministrativeScope(
             $base,
             $user,
             'users.administrative_unit_id'
         );
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | 8. Join Payment and Reconciliation Aggregates
-    |--------------------------------------------------------------------------
-    */
+        if (! $canViewAll) {
+            $base->where(
+                'users.id',
+                $user->getKey()
+            );
+        }
 
-    $base
-        ->leftJoinSub(
-            $paymentTotals,
-            'payment_totals',
-            function ($join) {
-                $join->on(
-                    'payment_totals.collector_id',
-                    '=',
-                    'users.id'
-                );
-            }
-        )
-        ->leftJoinSub(
-            $reconciliationTotals,
-            'reconciliation_totals',
-            function ($join) {
-                $join->on(
-                    'reconciliation_totals.collector_id',
-                    '=',
-                    'users.id'
-                );
-            }
-        )
-        ->selectRaw('
-            COALESCE(
-                payment_totals.payments_count,
-                0
-            ) AS payments_count,
+        /*
+        |--------------------------------------------------------------------------
+        | 8. Join Payment and Reconciliation Aggregates
+        |--------------------------------------------------------------------------
+        */
 
-            COALESCE(
-                payment_totals.expected_total,
-                0
-            ) AS expected_total,
+        $base
+            ->leftJoinSub(
+                $paymentTotals,
+                'payment_totals',
+                function ($join): void {
+                    $join->on(
+                        'payment_totals.collector_id',
+                        '=',
+                        'users.id'
+                    );
+                }
+            )
+            ->leftJoinSub(
+                $reconciliationTotals,
+                'reconciliation_totals',
+                function ($join): void {
+                    $join->on(
+                        'reconciliation_totals.collector_id',
+                        '=',
+                        'users.id'
+                    );
+                }
+            )
+            ->selectRaw('
+                COALESCE(
+                    payment_totals.payments_count,
+                    0
+                ) AS payments_count,
 
-            COALESCE(
-                reconciliation_totals.reconciliations_count,
-                0
-            ) AS reconciliations_count,
-
-            COALESCE(
-                reconciliation_totals.reconciled_total,
-                0
-            ) AS reconciled_total,
-
-            (
                 COALESCE(
                     payment_totals.expected_total,
                     0
-                )
-                -
+                ) AS expected_total,
+
+                COALESCE(
+                    reconciliation_totals.reconciliations_count,
+                    0
+                ) AS reconciliations_count,
+
                 COALESCE(
                     reconciliation_totals.reconciled_total,
                     0
-                )
-            ) AS outstanding_total
-        ');
+                ) AS reconciled_total,
 
-    /*
-    |--------------------------------------------------------------------------
-    | 9. Search Collectors
-    |--------------------------------------------------------------------------
-    */
+                (
+                    COALESCE(
+                        payment_totals.expected_total,
+                        0
+                    )
+                    -
+                    COALESCE(
+                        reconciliation_totals.reconciled_total,
+                        0
+                    )
+                ) AS outstanding_total
+            ');
 
-    if ($search !== '') {
-        $term = '%' . $search . '%';
+        /*
+        |--------------------------------------------------------------------------
+        | 9. Search Collectors
+        |--------------------------------------------------------------------------
+        */
 
-        $base->where(function ($query) use ($term) {
-            $query
-                ->where('users.name', 'like', $term)
-                ->orWhere('users.email', 'like', $term);
-        });
+        if ($search !== '') {
+            $term = '%' . $search . '%';
+
+            $base->where(function ($query) use ($term): void {
+                $query
+                    ->where('users.name', 'like', $term)
+                    ->orWhere('users.email', 'like', $term);
+            });
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 10. Calculate Totals Across Matching Collectors
+        |--------------------------------------------------------------------------
+        */
+
+        $totals = (clone $base)
+            ->reorder()
+            ->select([])
+            ->selectRaw('
+                COUNT(*) AS collectors_count,
+
+                COALESCE(
+                    SUM(
+                        COALESCE(payment_totals.expected_total, 0)
+                    ),
+                    0
+                ) AS expected_total,
+
+                COALESCE(
+                    SUM(
+                        COALESCE(reconciliation_totals.reconciled_total, 0)
+                    ),
+                    0
+                ) AS reconciled_total,
+
+                COALESCE(
+                    SUM(
+                        COALESCE(payment_totals.expected_total, 0)
+                        -
+                        COALESCE(reconciliation_totals.reconciled_total, 0)
+                    ),
+                    0
+                ) AS outstanding_total,
+
+                COALESCE(
+                    SUM(
+                        COALESCE(payment_totals.payments_count, 0)
+                    ),
+                    0
+                ) AS payments_count,
+
+                COALESCE(
+                    SUM(
+                        COALESCE(reconciliation_totals.reconciliations_count, 0)
+                    ),
+                    0
+                ) AS reconciliations_count
+            ')
+            ->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 11. Paginate Collectors
+        |--------------------------------------------------------------------------
+        */
+
+        $paginator = (clone $base)
+            ->orderBy($sortColumn, $sortDirection)
+            ->orderBy('users.name')
+            ->paginate($perPage)
+            ->withQueryString();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 12. Format Collector Results
+        |--------------------------------------------------------------------------
+        */
+
+        $rows = $paginator->getCollection()
+            ->map(function ($row): array {
+                return [
+                    'collector_id' => $row->id,
+
+                    'collector' => [
+                        'id' => $row->id,
+                        'name' => $row->name,
+                        'email' => $row->email,
+                    ],
+
+                    'payments_count' => (int) $row->payments_count,
+
+                    'expected_total' => (string) $row->expected_total,
+
+                    'reconciliations_count' => (int) $row->reconciliations_count,
+
+                    'reconciled_total' => (string) $row->reconciled_total,
+
+                    'outstanding_total' => (string) $row->outstanding_total,
+                ];
+            })
+            ->values();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 13. Return Response
+        |--------------------------------------------------------------------------
+        */
+
+        return [
+            'data' => $rows,
+
+            'totals' => [
+                'collectors' => (int) ($totals->collectors_count ?? 0),
+
+                'payments_count' => (int) ($totals->payments_count ?? 0),
+
+                'expected_total' => (string) ($totals->expected_total ?? 0),
+
+                'reconciliations_count' => (int) ($totals->reconciliations_count ?? 0),
+
+                'reconciled_total' => (string) ($totals->reconciled_total ?? 0),
+
+                'outstanding_total' => (string) ($totals->outstanding_total ?? 0),
+            ],
+
+            'meta' => [
+                'current_page' => $paginator->currentPage(),
+
+                'last_page' => $paginator->lastPage(),
+
+                'per_page' => $paginator->perPage(),
+
+                'total' => $paginator->total(),
+            ],
+        ];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | 10. Calculate Totals Across All Matching Collectors
-    |--------------------------------------------------------------------------
-    |
-    | select([]) clears the original SELECT columns before aggregation.
-    |
-    | This prevents PostgreSQL grouping errors involving users.id,
-    | users.name, and users.email.
-    |
-    | Outstanding cash is calculated directly from the aggregate
-    | subquery columns instead of referencing a SELECT alias.
-    |
-    */
-
-    $totals = (clone $base)
-        ->reorder()
-        ->select([])
-        ->selectRaw('
-            COUNT(*) AS collectors_count,
-
-            COALESCE(
-                SUM(
-                    COALESCE(payment_totals.expected_total, 0)
-                ),
-                0
-            ) AS expected_total,
-
-            COALESCE(
-                SUM(
-                    COALESCE(reconciliation_totals.reconciled_total, 0)
-                ),
-                0
-            ) AS reconciled_total,
-
-            COALESCE(
-                SUM(
-                    COALESCE(payment_totals.expected_total, 0)
-                    -
-                    COALESCE(reconciliation_totals.reconciled_total, 0)
-                ),
-                0
-            ) AS outstanding_total,
-
-            COALESCE(
-                SUM(
-                    COALESCE(payment_totals.payments_count, 0)
-                ),
-                0
-            ) AS payments_count,
-
-            COALESCE(
-                SUM(
-                    COALESCE(reconciliation_totals.reconciliations_count, 0)
-                ),
-                0
-            ) AS reconciliations_count
-        ')
-        ->first();
-
-    /*
-    |--------------------------------------------------------------------------
-    | 11. Paginate Collectors
+    | Collector Outstanding Cash For Notification
     |--------------------------------------------------------------------------
     */
 
-    $paginator = (clone $base)
-        ->orderBy($sortColumn, $sortDirection)
-        ->orderBy('users.name')
-        ->paginate($perPage)
-        ->withQueryString();
+    /**
+     * Retrieve a collector's outstanding cash.
+     *
+     * Authorization to send notifications is handled by the controller's
+     * policy. This method independently enforces administrative scope
+     * when resolving the target collector.
+     *
+     * Every successful request may create a new notification.
+     *
+     * @return array<string, mixed>
+     */
+    public function getCollectorOutstandingCash(
+        User $user,
+        string $collectorId,
+        array $filters = []
+    ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. Normalize Filters
+        |--------------------------------------------------------------------------
+        */
 
-    /*
-    |--------------------------------------------------------------------------
-    | 12. Format Collector Results
-    |--------------------------------------------------------------------------
-    */
+        $dateFrom = $filters['date_from'] ?? null;
+        $dateTo = $filters['date_to'] ?? null;
 
-    $rows = $paginator->getCollection()
-        ->map(function ($row) {
-            return [
-                'collector_id' => $row->id,
+        /*
+        |--------------------------------------------------------------------------
+        | 2. Resolve Collector Within Administrative Scope
+        |--------------------------------------------------------------------------
+        |
+        | The collector must:
+        | - Exist.
+        | - Have processed at least one CASH payment.
+        | - Belong to the administrator's authorized administrative scope.
+        |
+        | The controller policy is responsible for permission to perform
+        | the notification action.
+        |
+        */
 
-                'collector' => [
-                    'id' => $row->id,
-                    'name' => $row->name,
-                    'email' => $row->email,
-                ],
+        $collectorIds = Payment::query()
+            ->select('processed_by')
+            ->where(
+                'payment_method',
+                PaymentMethod::CASH->value
+            )
+            ->whereNotNull('processed_by')
+            ->distinct();
 
-                'payments_count' => (int) $row->payments_count,
+        $collector = $this->administrativelyScopedCollectorQuery($user)
+            ->whereKey($collectorId)
+            ->whereIn('users.id', $collectorIds)
+            ->firstOrFail();
 
-                'expected_total' => (string) $row->expected_total,
+        /*
+        |--------------------------------------------------------------------------
+        | 3. Calculate Expected Cash
+        |--------------------------------------------------------------------------
+        |
+        | Use the same calculation rules as expectedByCollector().
+        |
+        */
 
-                'reconciliations_count' => (int) $row->reconciliations_count,
+        $paymentQuery = Payment::query()
+            ->where(
+                'processed_by',
+                $collector->getKey()
+            )
+            ->where(
+                'payment_method',
+                PaymentMethod::CASH->value
+            )
+            ->where(
+                'status',
+                PaymentStatus::COMPLETED->value
+            )
+            ->when($dateFrom, function ($query) use ($dateFrom): void {
+                $query->whereDate(
+                    'created_at',
+                    '>=',
+                    $dateFrom
+                );
+            })
+            ->when($dateTo, function ($query) use ($dateTo): void {
+                $query->whereDate(
+                    'created_at',
+                    '<=',
+                    $dateTo
+                );
+            });
 
-                'reconciled_total' => (string) $row->reconciled_total,
+        $paymentsCount = (clone $paymentQuery)->count();
 
-                'outstanding_total' => (string) $row->outstanding_total,
-            ];
-        })
-        ->values();
+        $expectedTotal = (clone $paymentQuery)
+            ->sum('amount');
 
-    /*
-    |--------------------------------------------------------------------------
-    | 13. Return Response
-    |--------------------------------------------------------------------------
-    */
+        /*
+        |--------------------------------------------------------------------------
+        | 4. Calculate Reconciled Cash
+        |--------------------------------------------------------------------------
+        |
+        | Only STATUS_RECONCILED contributes to reconciled cash.
+        |
+        | Period containment matches expectedByCollector().
+        |
+        */
 
-    return [
-        'data' => $rows,
+        $reconciliationQuery = CashReconciliation::query()
+            ->where(
+                'collector_id',
+                $collector->getKey()
+            )
+            ->where(
+                'status',
+                CashReconciliation::STATUS_RECONCILED
+            )
+            ->when($dateFrom, function ($query) use ($dateFrom): void {
+                $query->whereDate(
+                    'period_start',
+                    '>=',
+                    $dateFrom
+                );
+            })
+            ->when($dateTo, function ($query) use ($dateTo): void {
+                $query->whereDate(
+                    'period_end',
+                    '<=',
+                    $dateTo
+                );
+            });
 
-        'totals' => [
-            'collectors' => (int) ($totals->collectors_count ?? 0),
+        $reconciliationsCount = (clone $reconciliationQuery)
+            ->count();
 
-            'payments_count' => (int) ($totals->payments_count ?? 0),
+        $reconciledTotal = (clone $reconciliationQuery)
+            ->sum('actual_amount');
 
-            'expected_total' => (string) ($totals->expected_total ?? 0),
+        /*
+        |--------------------------------------------------------------------------
+        | 5. Calculate Outstanding Cash
+        |--------------------------------------------------------------------------
+        */
 
-            'reconciliations_count' => (int) ($totals->reconciliations_count ?? 0),
+        $expectedCents = $this->moneyToCents(
+            (string) $expectedTotal
+        );
 
-            'reconciled_total' => (string) ($totals->reconciled_total ?? 0),
+        $reconciledCents = $this->moneyToCents(
+            (string) $reconciledTotal
+        );
 
-            'outstanding_total' => (string) ($totals->outstanding_total ?? 0),
-        ],
+        $outstandingCents = $expectedCents - $reconciledCents;
 
-        'meta' => [
-            'current_page' => $paginator->currentPage(),
+        /*
+        |--------------------------------------------------------------------------
+        | 6. Prevent Notifications Without Outstanding Cash
+        |--------------------------------------------------------------------------
+        */
 
-            'last_page' => $paginator->lastPage(),
+        if ($outstandingCents <= 0) {
+            throw ValidationException::withMessages([
+                'collector_id' =>
+                    'The selected collector has no outstanding cash for the selected reporting period.',
+            ]);
+        }
 
-            'per_page' => $paginator->perPage(),
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Return Verified Financial Details
+        |--------------------------------------------------------------------------
+        */
 
-            'total' => $paginator->total(),
-        ],
-    ];
-}
+        return [
+            'collector' => $collector,
 
+            'collector_id' => (string) $collector->getKey(),
 
+            'collector_name' => $collector->name,
 
+            'date_from' => $dateFrom,
 
+            'date_to' => $dateTo,
 
+            'payments_count' => $paymentsCount,
 
+            'expected_total' => $this->formatMoney($expectedCents),
+
+            'reconciliations_count' => $reconciliationsCount,
+
+            'reconciled_total' => $this->formatMoney($reconciledCents),
+
+            'outstanding_total' => $this->formatMoney($outstandingCents),
+        ];
+    }
 }
