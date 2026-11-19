@@ -8,6 +8,7 @@ use App\Models\Payment;
 use App\Services\SmsService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use Throwable;
 
 class PaymentNotificationService
 {
@@ -29,6 +30,12 @@ class PaymentNotificationService
 
     public const BANK_TRANSFER_REJECTED = 'bank_transfer_rejected';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Constructor
+    |--------------------------------------------------------------------------
+    */
+
     public function __construct(
         private readonly SmsService $smsService,
     ) {
@@ -43,9 +50,8 @@ class PaymentNotificationService
     /**
      * Notify taxpayer that a payment has been received.
      */
-    public function notifyPaymentReceived(
-        Payment $payment
-    ): void {
+    public function notifyPaymentReceived(Payment $payment): void
+    {
         $this->sendSms(
             payment: $payment,
             message: $this->paymentReceivedMessage($payment),
@@ -57,9 +63,8 @@ class PaymentNotificationService
      * Notify taxpayer that a payment was completed
      * but the invoice still has an outstanding balance.
      */
-    public function notifyPaymentPartiallyPaid(
-        Payment $payment
-    ): void {
+    public function notifyPaymentPartiallyPaid(Payment $payment): void
+    {
         $this->sendSms(
             payment: $payment,
             message: $this->paymentPartiallyPaidMessage($payment),
@@ -71,9 +76,8 @@ class PaymentNotificationService
      * Notify taxpayer that a payment was completed
      * and the invoice is fully paid.
      */
-    public function notifyPaymentFullyPaid(
-        Payment $payment
-    ): void {
+    public function notifyPaymentFullyPaid(Payment $payment): void
+    {
         $this->sendSms(
             payment: $payment,
             message: $this->paymentFullyPaidMessage($payment),
@@ -84,9 +88,8 @@ class PaymentNotificationService
     /**
      * Notify taxpayer that a payment failed.
      */
-    public function notifyPaymentFailed(
-        Payment $payment
-    ): void {
+    public function notifyPaymentFailed(Payment $payment): void
+    {
         $this->sendSms(
             payment: $payment,
             message: $this->paymentFailedMessage($payment),
@@ -98,9 +101,8 @@ class PaymentNotificationService
      * Notify taxpayer that a bank transfer has been submitted
      * and is waiting for verification.
      */
-    public function notifyBankTransferSubmitted(
-        Payment $payment
-    ): void {
+    public function notifyBankTransferSubmitted(Payment $payment): void
+    {
         $this->sendSms(
             payment: $payment,
             message: $this->bankTransferSubmittedMessage($payment),
@@ -111,9 +113,8 @@ class PaymentNotificationService
     /**
      * Notify taxpayer that a bank transfer has been rejected.
      */
-    public function notifyBankTransferRejected(
-        Payment $payment
-    ): void {
+    public function notifyBankTransferRejected(Payment $payment): void
+    {
         $this->sendSms(
             payment: $payment,
             message: $this->bankTransferRejectedMessage($payment),
@@ -158,7 +159,7 @@ class PaymentNotificationService
             default => throw new RuntimeException(
                 sprintf(
                     'Unsupported payment notification type [%s].',
-                    $notificationType
+                    $notificationType,
                 )
             ),
         };
@@ -173,9 +174,11 @@ class PaymentNotificationService
     /**
      * Send a payment notification through the municipal SMS service.
      *
-     * SmsService::sendByPhone() returns a result array.
-     * If the gateway reports failure, we throw so the queue job
-     * can retry the notification.
+     * Missing phone numbers are skipped because retrying cannot
+     * resolve missing taxpayer contact information.
+     *
+     * Gateway failures throw exceptions so Laravel can retry
+     * the queued notification job.
      */
     protected function sendSms(
         Payment $payment,
@@ -186,12 +189,13 @@ class PaymentNotificationService
 
         if ($phone === null) {
             Log::warning(
-                'Payment notification skipped because taxpayer phone number is unavailable.',
+                'Payment notification skipped: taxpayer phone number unavailable.',
                 [
-                    'payment_id' => $payment->id,
+                    'payment_id' => $payment->getKey(),
                     'payment_number' => $payment->payment_number,
                     'notification_type' => $notificationType,
                     'citizen_id' => $payment->citizen_id,
+                    'skip_reason' => 'MISSING_PHONE_NUMBER',
                 ]
             );
 
@@ -199,9 +203,9 @@ class PaymentNotificationService
         }
 
         Log::info(
-            'Payment notification SMS sending started.',
+            'Payment notification SMS submission started.',
             [
-                'payment_id' => $payment->id,
+                'payment_id' => $payment->getKey(),
                 'payment_number' => $payment->payment_number,
                 'notification_type' => $notificationType,
                 'phone' => $this->maskPhoneNumber($phone),
@@ -209,72 +213,101 @@ class PaymentNotificationService
             ]
         );
 
-        $result = $this->smsService->sendByPhone(
-            phone: $phone,
-            message: $message,
-        );
+        try {
+            $result = $this->smsService->sendByPhone(
+                phone: $phone,
+                message: $message,
+            );
+        } catch (Throwable $exception) {
+            Log::error(
+                'Payment notification SMS submission threw an exception.',
+                [
+                    'payment_id' => $payment->getKey(),
+                    'payment_number' => $payment->payment_number,
+                    'notification_type' => $notificationType,
+                    'phone' => $this->maskPhoneNumber($phone),
+                    'exception' => $exception::class,
+                ]
+            );
+
+            throw new RuntimeException(
+                sprintf(
+                    'Payment notification SMS submission failed for payment [%s].',
+                    $payment->payment_number,
+                ),
+                previous: $exception,
+            );
+        }
 
         /*
          * SmsService returns:
          *
          * [
          *     'status' => 'success'|'failed',
-         *     ...
+         *     'http_status' => 200,
+         *     'request_id' => '...',
+         *     'duration_ms' => 100,
          * ]
+         *
+         * A successful gateway response confirms submission,
+         * not necessarily final delivery to the taxpayer.
          */
         if (
-            !isset($result['status'])
+            ! is_array($result)
+            || ! isset($result['status'])
             || $result['status'] !== 'success'
         ) {
             Log::error(
-                'Payment notification SMS delivery failed.',
+                'Payment notification SMS submission failed.',
                 [
-                    'payment_id' => $payment->id,
+                    'payment_id' => $payment->getKey(),
                     'payment_number' => $payment->payment_number,
                     'notification_type' => $notificationType,
                     'phone' => $this->maskPhoneNumber($phone),
-                    'sms_result' => $this->sanitizeSmsResult($result),
+                    'sms_result' => is_array($result)
+                        ? $this->sanitizeSmsResult($result)
+                        : ['status' => 'invalid_response'],
                 ]
             );
 
             throw new RuntimeException(
                 sprintf(
-                    'Payment notification SMS delivery failed for payment [%s].',
-                    $payment->payment_number
+                    'Payment notification SMS submission failed for payment [%s].',
+                    $payment->payment_number,
                 )
             );
         }
 
         Log::info(
-            'Payment notification SMS sent successfully.',
+            'Payment notification SMS accepted by gateway.',
             [
-                'payment_id' => $payment->id,
+                'payment_id' => $payment->getKey(),
                 'payment_number' => $payment->payment_number,
                 'notification_type' => $notificationType,
                 'phone' => $this->maskPhoneNumber($phone),
                 'sms_request_id' => $result['request_id'] ?? null,
                 'http_status' => $result['http_status'] ?? null,
                 'duration_ms' => $result['duration_ms'] ?? null,
+                'submission_status' => 'ACCEPTED',
             ]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | SMS Messages
+    | SMS Messages — Afan Oromo
     |--------------------------------------------------------------------------
     */
 
     /**
      * Payment received message.
      */
-    protected function paymentReceivedMessage(
-        Payment $payment
-    ): string {
+    protected function paymentReceivedMessage(Payment $payment): string
+    {
         return sprintf(
-            'Adama City Municipality: Payment %s of ETB %s has been received successfully for invoice %s. Thank you.',
-            $payment->payment_number,
+            "Bulchiinsi Magaalaa Adaamaa kaffaltii keessan ETB %s, lakkoofsa kaffaltii %s, invooyisii %s irratti milkaa'inaan fudhateera. Galatoomaa!",
             $this->formatAmount($payment->amount),
+            $payment->payment_number,
             $this->invoiceNumber($payment),
         );
     }
@@ -282,12 +315,10 @@ class PaymentNotificationService
     /**
      * Partially paid message.
      */
-    protected function paymentPartiallyPaidMessage(
-        Payment $payment
-    ): string {
+    protected function paymentPartiallyPaidMessage(Payment $payment): string
+    {
         return sprintf(
-            'Adama City Municipality: Payment %s of ETB %s was received for invoice %s. Outstanding balance: ETB %s.',
-            $payment->payment_number,
+            "Bulchiinsi Magaalaa Adaamaa kaffaltii ETB %s invooyisii %s irratti fudhateera. Hafe: ETB %s. Kaffaltii keessaniif galatoomaa!",
             $this->formatAmount($payment->amount),
             $this->invoiceNumber($payment),
             $this->formatAmount(
@@ -298,14 +329,14 @@ class PaymentNotificationService
 
     /**
      * Fully paid message.
+     *
+     * Appreciative confirmation that the taxpayer has
+     * completely settled the invoice.
      */
-    protected function paymentFullyPaidMessage(
-        Payment $payment
-    ): string {
+    protected function paymentFullyPaidMessage(Payment $payment): string
+    {
         return sprintf(
-            'Adama City Municipality: Payment %s of ETB %s was received successfully. Invoice %s is now fully paid. Receipt: %s.',
-            $payment->payment_number,
-            $this->formatAmount($payment->amount),
+            "Baga gammaddan! Bulchiinsi Magaalaa Adaamaa kaffaltii keessan guutumaan guutuutti fudhateera. Invooyisiin %s guutumaan kaffalameera. Kaffaltii keessaniif galatoomaa! Lakkoofsa ragaa: %s.",
             $this->invoiceNumber($payment),
             $payment->receipt?->receipt_number ?? 'N/A',
         );
@@ -313,36 +344,26 @@ class PaymentNotificationService
 
     /**
      * Payment failed message.
+     *
+     * Do not expose internal exception messages or raw gateway
+     * responses to taxpayers.
      */
-    protected function paymentFailedMessage(
-        Payment $payment
-    ): string {
-        $reason = trim(
-            (string) ($payment->failure_reason ?? '')
-        );
-
-        if ($reason === '') {
-            $reason = 'The payment could not be completed.';
-        }
-
+    protected function paymentFailedMessage(Payment $payment): string
+    {
         return sprintf(
-            'Adama City Municipality: Payment %s of ETB %s for invoice %s failed. %s',
-            $payment->payment_number,
+            "Bulchiinsi Magaalaa Adaamaa kaffaltiin ETB %s invooyisii %s irratti hin milkoofne. Maaloo, gargaarsaaf waajjira Bulchiinsa Magaalaa Adaamaa qunnamaa.",
             $this->formatAmount($payment->amount),
             $this->invoiceNumber($payment),
-            $reason,
         );
     }
 
     /**
      * Bank transfer submitted message.
      */
-    protected function bankTransferSubmittedMessage(
-        Payment $payment
-    ): string {
+    protected function bankTransferSubmittedMessage(Payment $payment): string
+    {
         return sprintf(
-            'Adama City Municipality: Bank transfer payment %s of ETB %s for invoice %s has been submitted and is awaiting verification.',
-            $payment->payment_number,
+            "Kaffaltiin baankii ETB %s invooyisii %s irratti ergameera. Mirkaneessa eeggachaa jira. Galatoomaa!",
             $this->formatAmount($payment->amount),
             $this->invoiceNumber($payment),
         );
@@ -350,24 +371,16 @@ class PaymentNotificationService
 
     /**
      * Bank transfer rejected message.
+     *
+     * Use a controlled message instead of exposing raw internal
+     * verification or gateway failure details.
      */
-    protected function bankTransferRejectedMessage(
-        Payment $payment
-    ): string {
-        $reason = trim(
-            (string) ($payment->failure_reason ?? '')
-        );
-
-        if ($reason === '') {
-            $reason = 'Please contact the municipality for more information.';
-        }
-
+    protected function bankTransferRejectedMessage(Payment $payment): string
+    {
         return sprintf(
-            'Adama City Municipality: Bank transfer payment %s of ETB %s for invoice %s was rejected. %s',
-            $payment->payment_number,
+            "Kaffaltiin baankii ETB %s invooyisii %s irratti hin fudhatamne. Odeeffannoo dabalataaf Bulchiinsa Magaalaa Adaamaa qunnamaa.",
             $this->formatAmount($payment->amount),
             $this->invoiceNumber($payment),
-            $reason,
         );
     }
 
@@ -384,16 +397,9 @@ class PaymentNotificationService
      *
      * 1. Payment-specific payer_phone.
      * 2. Registered citizen phone.
-     *
-     * The payment-specific phone takes priority because it represents
-     * the phone captured at the time the payment was initiated.
      */
-    protected function resolvePhoneNumber(
-        Payment $payment
-    ): ?string {
-        /*
-         * First, use the phone stored directly on the payment.
-         */
+    protected function resolvePhoneNumber(Payment $payment): ?string
+    {
         $paymentPhone = trim(
             (string) ($payment->payer_phone ?? '')
         );
@@ -402,10 +408,6 @@ class PaymentNotificationService
             return $paymentPhone;
         }
 
-        /*
-         * If the payment does not contain a phone number,
-         * fall back to the registered taxpayer/citizen phone.
-         */
         $citizenPhone = trim(
             (string) ($payment->citizen?->phone ?? '')
         );
@@ -420,67 +422,113 @@ class PaymentNotificationService
     /**
      * Resolve invoice number.
      */
-    protected function invoiceNumber(
-        Payment $payment
-    ): string {
-        return $payment->invoice?->invoice_number
-            ?? $payment->invoice_id;
+    protected function invoiceNumber(Payment $payment): string
+    {
+        $invoiceNumber = $payment->invoice?->invoice_number;
+
+        if ($invoiceNumber !== null && $invoiceNumber !== '') {
+            return (string) $invoiceNumber;
+        }
+
+        if ($payment->invoice_id !== null) {
+            return (string) $payment->invoice_id;
+        }
+
+        throw new RuntimeException(
+            sprintf(
+                'Invoice reference is unavailable for payment [%s].',
+                $payment->payment_number,
+            )
+        );
     }
 
     /**
-     * Resolve the invoice outstanding balance.
-     *
-     * The invoice model should expose the authoritative balance
-     * calculated by the payment/settlement process.
+     * Resolve the authoritative invoice outstanding balance.
      */
-    protected function resolveInvoiceBalance(
-        Payment $payment
-    ): string {
+    protected function resolveInvoiceBalance(Payment $payment): string
+    {
         $invoice = $payment->invoice;
 
-        if (! $invoice) {
-            return '0.00';
+        if ($invoice === null) {
+            throw new RuntimeException(
+                sprintf(
+                    'Invoice is unavailable for payment [%s].',
+                    $payment->payment_number,
+                )
+            );
         }
 
-        /*
-         * Use the authoritative invoice balance field first.
-         */
-        $balance = $invoice->balance_due ?? null;
+        $balance = $invoice->balance_due;
 
-        if ($balance !== null) {
-            return (string) $balance;
+        if ($balance === null || $balance === '') {
+            throw new RuntimeException(
+                sprintf(
+                    'Invoice balance is unavailable for payment [%s].',
+                    $payment->payment_number,
+                )
+            );
         }
 
-        /*
-         * Fallbacks kept for compatibility.
-         */
-        $balance = $invoice->balance_amount
-            ?? $invoice->outstanding_amount
-            ?? null;
-
-        if ($balance !== null) {
-            return (string) $balance;
-        }
-
-        return '0.00';
+        return (string) $balance;
     }
 
     /**
-     * Format monetary value for SMS display.
+     * Format a monetary value for SMS display without converting
+     * the amount to a floating-point number.
+     *
+     * Monetary amounts are rounded to two decimal places.
      */
-    protected function formatAmount(
-        mixed $amount
-    ): string {
-        if ($amount === null || $amount === '') {
-            return '0.00';
+    protected function formatAmount(mixed $amount): string
+    {
+        if (
+            $amount === null
+            || $amount === ''
+            || is_array($amount)
+            || is_object($amount)
+            || is_bool($amount)
+        ) {
+            throw new RuntimeException(
+                'Invalid monetary value supplied for SMS formatting.'
+            );
         }
 
-        return number_format(
-            (float) $amount,
+        $value = trim((string) $amount);
+
+        if (! preg_match('/^\d+(?:\.\d+)?$/', $value)) {
+            throw new RuntimeException(
+                'Invalid monetary value supplied for SMS formatting.'
+            );
+        }
+
+        if (! function_exists('bcadd')) {
+            throw new RuntimeException(
+                'BCMath extension is required for monetary formatting.'
+            );
+        }
+
+        /*
+         * Four-decimal precision is supported by the payment system.
+         * Add 0.005 before truncating to two decimal places.
+         */
+        $rounded = bcadd(
+            $value,
+            '0.0050',
             2,
-            '.',
-            ','
         );
+
+        $parts = explode('.', $rounded);
+
+        $integer = $parts[0];
+
+        $formattedInteger = preg_replace(
+            '/\B(?=(\d{3})+(?!\d))/',
+            ',',
+            $integer,
+        );
+
+        return ($formattedInteger ?: '0')
+            . '.'
+            . ($parts[1] ?? '00');
     }
 
     /*
@@ -492,9 +540,8 @@ class PaymentNotificationService
     /**
      * Mask phone number before writing it to logs.
      */
-    protected function maskPhoneNumber(
-        string $phone
-    ): string {
+    protected function maskPhoneNumber(string $phone): string
+    {
         $length = strlen($phone);
 
         if ($length <= 4) {
@@ -503,23 +550,25 @@ class PaymentNotificationService
 
         return str_repeat(
             '*',
-            max(0, $length - 4)
+            $length - 4,
         ) . substr($phone, -4);
     }
 
     /**
-     * Prevent unnecessary sensitive SMS response data
-     * from being written to logs.
+     * Restrict SMS gateway response data written to application logs.
+     *
+     * Never log raw gateway response bodies or complete SMS messages.
      */
-    protected function sanitizeSmsResult(
-        array $result
-    ): array {
+    protected function sanitizeSmsResult(array $result): array
+    {
         return [
             'status' => $result['status'] ?? null,
             'http_status' => $result['http_status'] ?? null,
             'request_id' => $result['request_id'] ?? null,
             'duration_ms' => $result['duration_ms'] ?? null,
-            'error' => $result['error'] ?? null,
+            'error' => isset($result['error'])
+                ? mb_substr((string) $result['error'], 0, 250)
+                : null,
         ];
     }
 }

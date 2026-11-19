@@ -1,9 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\System\MobileAppRelease\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Models\MobileAppRelease;
+use App\Models\MobileAppReleaseUpload;
 use App\Modules\System\MobileAppRelease\Requests\StoreMobileAppReleaseRequest;
 use App\Modules\System\MobileAppRelease\Requests\UpdateMobileAppReleaseRequest;
 use App\Modules\System\MobileAppRelease\Resources\MobileAppReleaseResource;
@@ -11,11 +14,15 @@ use App\Modules\System\MobileAppRelease\Services\MobileAppReleaseService;
 use App\Services\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
-use Illuminate\Validation\Rule;
 
 class MobileAppReleaseController extends Controller
 {
@@ -41,7 +48,7 @@ class MobileAppReleaseController extends Controller
             'status' => [
                 'sometimes',
                 'nullable',
-                'in:draft,published,withdrawn',
+                Rule::in(['draft', 'published', 'withdrawn']),
             ],
             'per_page' => [
                 'sometimes',
@@ -52,15 +59,17 @@ class MobileAppReleaseController extends Controller
         ]);
 
         $perPage = (int) ($validated['per_page'] ?? 15);
+
         $search = isset($validated['search'])
             ? trim($validated['search'])
             : null;
+
         $status = $validated['status'] ?? null;
 
         Log::info(
             'Mobile app release controller: listing releases.',
             [
-                'user_id' => auth()->id(),
+                'user_id' => $request->user()?->getKey(),
                 'search_applied' => $search !== null && $search !== '',
                 'status_filter' => $status,
                 'per_page' => $perPage,
@@ -70,28 +79,18 @@ class MobileAppReleaseController extends Controller
         );
 
         try {
-            /*
-            |--------------------------------------------------------------------------
-            | Releases Query
-            |--------------------------------------------------------------------------
-            */
-
             $query = MobileAppRelease::query()
                 ->with(['creator', 'apkFile'])
                 ->orderByDesc('created_at');
 
-            if (! empty($status)) {
+            if ($status !== null && $status !== '') {
                 $query->where('status', $status);
             }
 
             if ($search !== null && $search !== '') {
                 $query->where(function ($builder) use ($search) {
                     $builder
-                        ->where(
-                            'version_name',
-                            'ILIKE',
-                            "%{$search}%"
-                        )
+                        ->where('version_name', 'ILIKE', "%{$search}%")
                         ->orWhereRaw(
                             'CAST(version_code AS TEXT) ILIKE ?',
                             ["%{$search}%"]
@@ -99,24 +98,12 @@ class MobileAppReleaseController extends Controller
                 });
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Pagination
-            |--------------------------------------------------------------------------
-            */
-
             $releases = $query->paginate($perPage);
 
             /*
-            |--------------------------------------------------------------------------
-            | Global Summary Statistics
-            |--------------------------------------------------------------------------
-            |
-            | These statistics are independent of the current filters
-            | and pagination page.
-            |
-            */
-
+             * These statistics are global and are intentionally not
+             * restricted by the current list filters.
+             */
             $summaryQuery = MobileAppRelease::query();
 
             $summary = [
@@ -152,14 +139,11 @@ class MobileAppReleaseController extends Controller
             Log::info(
                 'Mobile app release controller: releases retrieved successfully.',
                 [
-                    'user_id' => auth()->id(),
+                    'user_id' => $request->user()?->getKey(),
                     'returned_count' => $releases->count(),
                     'matching_count' => $releases->total(),
                     'summary' => $summary,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -170,24 +154,19 @@ class MobileAppReleaseController extends Controller
             );
         } catch (Throwable $exception) {
             $this->logFailure('index', $exception, [
-                'user_id' => auth()->id(),
+                'user_id' => $request->user()?->getKey(),
                 'status_filter' => $status,
                 'per_page' => $perPage,
-                'duration_ms' => round(
-                    (microtime(true) - $startedAt) * 1000,
-                    2
-                ),
+                'duration_ms' => $this->durationMs($startedAt),
             ]);
 
             throw $exception;
         }
     }
 
- 
     /**
-     * Return the latest published release for a specific mobile application.
+     * Return the latest published release for a specific application.
      *
-     * Example:
      * GET /api/v1/mobile-app-releases/latest?app_type=field_collector
      */
     public function latest(Request $request): JsonResponse
@@ -195,12 +174,6 @@ class MobileAppReleaseController extends Controller
         $startedAt = microtime(true);
 
         try {
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Application Type
-            |--------------------------------------------------------------------------
-            */
-
             $validated = $request->validate([
                 'app_type' => [
                     'required',
@@ -212,17 +185,8 @@ class MobileAppReleaseController extends Controller
 
             $appType = $validated['app_type'];
 
-            /*
-            |--------------------------------------------------------------------------
-            | Retrieve Latest Published Release For This Application
-            |--------------------------------------------------------------------------
-            */
-
             $release = MobileAppRelease::query()
-                ->with([
-                    'creator',
-                    'apkFile',
-                ])
+                ->with(['creator', 'apkFile'])
                 ->where('app_type', $appType)
                 ->where('status', 'published')
                 ->where('is_latest', true)
@@ -241,12 +205,6 @@ class MobileAppReleaseController extends Controller
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Log Successful Retrieval
-            |--------------------------------------------------------------------------
-            */
-
             Log::info(
                 'Mobile app release controller: latest release retrieved.',
                 [
@@ -256,10 +214,7 @@ class MobileAppReleaseController extends Controller
                     'version_code' => $release->version_code,
                     'is_latest' => $release->is_latest,
                     'is_downloadable' => $release->isDownloadable(),
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -270,21 +225,17 @@ class MobileAppReleaseController extends Controller
         } catch (Throwable $exception) {
             $this->logFailure('latest', $exception, [
                 'app_type' => $request->input('app_type'),
-                'duration_ms' => round(
-                    (microtime(true) - $startedAt) * 1000,
-                    2
-                ),
+                'duration_ms' => $this->durationMs($startedAt),
             ]);
 
             throw $exception;
         }
     }
 
-
     /**
      * Display a single release.
      *
-     * Implicit route model binding uses the model's UUID primary key.
+     * Route model binding uses the release model's configured route key.
      */
     public function show(
         MobileAppRelease $mobile_app_release
@@ -306,10 +257,7 @@ class MobileAppReleaseController extends Controller
                 'show',
                 $exception,
                 $this->releaseContext($mobile_app_release, [
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -318,7 +266,9 @@ class MobileAppReleaseController extends Controller
     }
 
     /**
-     * Create a draft release and store its APK.
+     * Create a draft release using a completed chunked APK upload.
+     *
+     * The request must contain upload_uuid instead of an APK file.
      */
     public function store(
         StoreMobileAppReleaseRequest $request
@@ -326,9 +276,9 @@ class MobileAppReleaseController extends Controller
         $startedAt = microtime(true);
         $validated = $request->validated();
 
-        $apk = $validated['apk'];
+        $uploadUuid = $validated['upload_uuid'];
 
-        unset($validated['apk']);
+        unset($validated['upload_uuid']);
 
         $userId = $request->user()
             ? (string) $request->user()->getKey()
@@ -341,19 +291,27 @@ class MobileAppReleaseController extends Controller
                 'version_name' => $validated['version_name'] ?? null,
                 'version_code' => $validated['version_code'] ?? null,
                 'is_mandatory' => $validated['is_mandatory'] ?? null,
-                'apk_original_name' => $apk->getClientOriginalName(),
-                'apk_size_bytes' => $apk->getSize(),
-                'apk_extension' => $apk->getClientOriginalExtension(),
+                'upload_uuid' => $uploadUuid,
                 'ip_address' => $request->ip(),
                 'request_id' => $request->header('X-Request-ID'),
             ]
         );
 
         try {
-            $release = $this->service->create(
-                $validated,
-                $apk,
-                $userId
+            $release = $this->consumeCompletedUpload(
+                uploadUuid: $uploadUuid,
+                request: $request,
+                expectedAppType: $validated['app_type'],
+                callback: function (UploadedFile $apk) use (
+                    $validated,
+                    $userId
+                ): MobileAppRelease {
+                    return $this->service->create(
+                        $validated,
+                        $apk,
+                        $userId
+                    );
+                }
             );
 
             $release->load(['creator', 'apkFile']);
@@ -367,10 +325,8 @@ class MobileAppReleaseController extends Controller
                     'version_code' => $release->version_code,
                     'status' => $release->status,
                     'apk_file_id' => $release->apkFile?->getKey(),
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'upload_uuid' => $uploadUuid,
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -383,12 +339,8 @@ class MobileAppReleaseController extends Controller
                 'user_id' => $userId,
                 'version_name' => $validated['version_name'] ?? null,
                 'version_code' => $validated['version_code'] ?? null,
-                'apk_original_name' => $apk->getClientOriginalName(),
-                'apk_size_bytes' => $apk->getSize(),
-                'duration_ms' => round(
-                    (microtime(true) - $startedAt) * 1000,
-                    2
-                ),
+                'upload_uuid' => $uploadUuid,
+                'duration_ms' => $this->durationMs($startedAt),
             ]);
 
             throw $exception;
@@ -397,6 +349,8 @@ class MobileAppReleaseController extends Controller
 
     /**
      * Update a release and optionally replace its APK.
+     *
+     * If upload_uuid is omitted, only release metadata is updated.
      */
     public function update(
         UpdateMobileAppReleaseRequest $request,
@@ -405,21 +359,41 @@ class MobileAppReleaseController extends Controller
         $startedAt = microtime(true);
         $validated = $request->validated();
 
-        $apk = $validated['apk'] ?? null;
+        $uploadUuid = $validated['upload_uuid'] ?? null;
 
-        unset($validated['apk']);
+        unset($validated['upload_uuid']);
 
         $userId = $request->user()
             ? (string) $request->user()->getKey()
             : null;
 
         try {
-            $release = $this->service->update(
-                $mobile_app_release,
-                $validated,
-                $apk,
-                $userId
-            );
+            if ($uploadUuid !== null) {
+                $release = $this->consumeCompletedUpload(
+                    uploadUuid: $uploadUuid,
+                    request: $request,
+                    expectedAppType: $mobile_app_release->app_type,
+                    callback: function (UploadedFile $apk) use (
+                        $mobile_app_release,
+                        $validated,
+                        $userId
+                    ): MobileAppRelease {
+                        return $this->service->update(
+                            $mobile_app_release,
+                            $validated,
+                            $apk,
+                            $userId
+                        );
+                    }
+                );
+            } else {
+                $release = $this->service->update(
+                    $mobile_app_release,
+                    $validated,
+                    null,
+                    $userId
+                );
+            }
 
             $release->load(['creator', 'apkFile']);
 
@@ -431,11 +405,9 @@ class MobileAppReleaseController extends Controller
                     'version_name' => $release->version_name,
                     'version_code' => $release->version_code,
                     'status' => $release->status,
-                    'apk_replaced' => $apk !== null,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'apk_replaced' => $uploadUuid !== null,
+                    'upload_uuid' => $uploadUuid,
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -450,11 +422,9 @@ class MobileAppReleaseController extends Controller
                 $this->releaseContext($mobile_app_release, [
                     'user_id' => $userId,
                     'updated_field_names' => array_keys($validated),
-                    'apk_replacement_requested' => $apk !== null,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'apk_replacement_requested' => $uploadUuid !== null,
+                    'upload_uuid' => $uploadUuid,
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -486,10 +456,7 @@ class MobileAppReleaseController extends Controller
                     'status' => $release->status,
                     'is_latest' => $release->is_latest,
                     'published_at' => $release->published_at?->toIso8601String(),
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -503,10 +470,7 @@ class MobileAppReleaseController extends Controller
                 $exception,
                 $this->releaseContext($mobile_app_release, [
                     'user_id' => $userId,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -537,10 +501,7 @@ class MobileAppReleaseController extends Controller
                     'version_code' => $release->version_code,
                     'status' => $release->status,
                     'is_latest' => $release->is_latest,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -554,10 +515,7 @@ class MobileAppReleaseController extends Controller
                 $exception,
                 $this->releaseContext($mobile_app_release, [
                     'user_id' => $userId,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -567,8 +525,6 @@ class MobileAppReleaseController extends Controller
 
     /**
      * Download a published APK.
-     *
-     * The model centralizes the downloadability checks.
      */
     public function download(
         MobileAppRelease $mobile_app_release
@@ -598,17 +554,15 @@ class MobileAppReleaseController extends Controller
 
             $file = $release->apkFile;
 
-            /*
-             * isDownloadable() has already verified the release and file.
-             * Check storage again immediately before streaming to reduce
-             * the chance of a stale file-existence result.
-             */
-            if (! Storage::disk($file->disk)->exists($file->path)) {
+            if (
+                $file === null
+                || ! Storage::disk($file->disk)->exists($file->path)
+            ) {
                 Log::warning(
                     'Mobile app release controller: APK disappeared before download.',
                     [
                         'release_id' => $release->getKey(),
-                        'apk_file_id' => $file->getKey(),
+                        'apk_file_id' => $file?->getKey(),
                         'ip_address' => request()->ip(),
                     ]
                 );
@@ -627,10 +581,7 @@ class MobileAppReleaseController extends Controller
                     'version_code' => $release->version_code,
                     'apk_file_id' => $file->getKey(),
                     'ip_address' => request()->ip(),
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ]
             );
 
@@ -650,16 +601,278 @@ class MobileAppReleaseController extends Controller
                 $this->releaseContext($mobile_app_release, [
                     'user_id' => $userId,
                     'ip_address' => request()->ip(),
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
             throw $exception;
         }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Chunked Upload Integration
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Consume a completed upload and create/update a release from its APK.
+     *
+     * The upload row is locked for the duration of the transaction.
+     * The release operation and CONSUMED status update commit together.
+     *
+     * The uploaded APK is deleted only after the database transaction
+     * successfully commits.
+     *
+     * @param callable(UploadedFile): MobileAppRelease $callback
+     */
+    private function consumeCompletedUpload(
+        string $uploadUuid,
+        Request $request,
+        string $expectedAppType,
+        callable $callback
+    ): MobileAppRelease {
+        $user = $request->user();
+
+        if ($user === null) {
+            throw ValidationException::withMessages([
+                'upload_uuid' => 'Authentication is required to use this upload.',
+            ]);
+        }
+
+        /*
+         * The authenticated user's primary key is a UUID.
+         * Do not cast it to an integer.
+         */
+        $userId = (string) $user->getKey();
+
+        $consumedUpload = DB::transaction(function () use (
+            $uploadUuid,
+            $userId,
+            $expectedAppType,
+            $callback
+        ): array {
+            $upload = MobileAppReleaseUpload::query()
+                ->where('uuid', $uploadUuid)
+                ->where('user_id', $userId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($upload === null) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'The APK upload session was not found.',
+                ]);
+            }
+
+            if ($upload->status !== MobileAppReleaseUpload::STATUS_COMPLETED) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'This APK upload has already been used or is not completed.',
+                ]);
+            }
+
+            if ($upload->isExpired()) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'This APK upload session has expired.',
+                ]);
+            }
+
+            if ($upload->app_type !== $expectedAppType) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'The uploaded APK belongs to a different application type.',
+                ]);
+            }
+
+            if (empty($upload->assembled_path)) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'The assembled APK path is missing.',
+                ]);
+            }
+
+            $disk = Storage::disk($upload->disk);
+
+            if (! $disk->exists($upload->assembled_path)) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'The assembled APK file is no longer available.',
+                ]);
+            }
+
+            /*
+             * This upload implementation uses local storage.
+             * The configured disk must expose an absolute filesystem path.
+             */
+            if (! method_exists($disk, 'path')) {
+                throw new RuntimeException(
+                    'The configured APK disk does not support local file paths.'
+                );
+            }
+
+            $absolutePath = $disk->path($upload->assembled_path);
+
+            if (
+                ! is_file($absolutePath)
+                || ! is_readable($absolutePath)
+            ) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'The assembled APK cannot be accessed.',
+                ]);
+            }
+
+            clearstatcache(true, $absolutePath);
+
+            $actualSize = filesize($absolutePath);
+
+            if (
+                $actualSize === false
+                || $actualSize !== (int) $upload->total_size
+            ) {
+                throw ValidationException::withMessages([
+                    'upload_uuid' => 'The assembled APK size does not match the upload session.',
+                ]);
+            }
+
+            /*
+             * Verify the assembled file against the checksum recorded
+             * during upload completion, when a checksum is available.
+             */
+            if (! empty($upload->checksum)) {
+                $actualChecksum = hash_file('sha256', $absolutePath);
+
+                if (
+                    $actualChecksum === false
+                    || ! hash_equals(
+                        strtolower($upload->checksum),
+                        strtolower($actualChecksum)
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'upload_uuid' => 'The assembled APK checksum verification failed.',
+                    ]);
+                }
+            }
+
+            $apk = new UploadedFile(
+                $absolutePath,
+                $upload->original_name,
+                'application/vnd.android.package-archive',
+                null,
+                true
+            );
+
+            /*
+             * The existing release service remains responsible for:
+             * - release validation and lifecycle rules;
+             * - permanent APK storage;
+             * - File model creation/update;
+             * - release database operations.
+             *
+             * Its transaction, if any, is nested within this transaction.
+             */
+            $release = $callback($apk);
+
+            if (! $release instanceof MobileAppRelease) {
+                throw new RuntimeException(
+                    'The mobile app release operation did not return a valid release.'
+                );
+            }
+
+            /*
+             * Mark the upload consumed in the same transaction as the
+             * release operation. The row lock prevents concurrent reuse.
+             *
+             * Keep assembled_path until filesystem cleanup succeeds.
+             */
+            $upload->status = MobileAppReleaseUpload::STATUS_CONSUMED;
+            $upload->save();
+
+            return [
+                'release' => $release,
+                'upload_id' => $upload->getKey(),
+                'upload_uuid' => $upload->uuid,
+                'disk' => $upload->disk,
+                'assembled_path' => $upload->assembled_path,
+            ];
+        });
+
+        /*
+         * The transaction has committed successfully at this point.
+         * Filesystem cleanup must not roll back the committed release.
+         */
+        $this->cleanupConsumedUpload($consumedUpload);
+
+        return $consumedUpload['release'];
+    }
+
+    /**
+     * Delete the temporary assembled APK after successful consumption.
+     *
+     * If deletion fails, assembled_path remains in the database so a
+     * scheduled cleanup process can retry it.
+     */
+    private function cleanupConsumedUpload(array $temporaryFile): void
+    {
+        $diskName = $temporaryFile['disk'];
+        $path = $temporaryFile['assembled_path'];
+
+        if (empty($path)) {
+            return;
+        }
+
+        try {
+            $disk = Storage::disk($diskName);
+
+            if ($disk->exists($path) && ! $disk->delete($path)) {
+                Log::warning(
+                    'Mobile app release controller: consumed upload temporary file could not be deleted.',
+                    [
+                        'upload_uuid' => $temporaryFile['upload_uuid'],
+                        'upload_id' => $temporaryFile['upload_id'],
+                        'disk' => $diskName,
+                        'path' => $path,
+                    ]
+                );
+
+                return;
+            }
+
+            /*
+             * Clear the path only after the file is confirmed deleted
+             * or is already absent.
+             */
+            MobileAppReleaseUpload::query()
+                ->whereKey($temporaryFile['upload_id'])
+                ->where(
+                    'status',
+                    MobileAppReleaseUpload::STATUS_CONSUMED
+                )
+                ->where('assembled_path', $path)
+                ->update([
+                    'assembled_path' => null,
+                    'updated_at' => now(),
+                ]);
+        } catch (Throwable $exception) {
+            /*
+             * Do not fail the API response after the release has already
+             * been committed. A cleanup job can retry this operation.
+             */
+            Log::warning(
+                'Mobile app release controller: temporary upload cleanup failed.',
+                [
+                    'upload_uuid' => $temporaryFile['upload_uuid'],
+                    'upload_id' => $temporaryFile['upload_id'],
+                    'disk' => $diskName,
+                    'path' => $path,
+                    'exception_class' => get_class($exception),
+                    'exception_message' => $exception->getMessage(),
+                ]
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging Helpers
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Build consistent release logging context.
@@ -712,5 +925,13 @@ class MobileAppReleaseController extends Controller
                 'exception_code' => $exception->getCode(),
             ])
         );
+    }
+
+    /**
+     * Calculate request duration in milliseconds.
+     */
+    private function durationMs(float $startedAt): float
+    {
+        return round((microtime(true) - $startedAt) * 1000, 2);
     }
 }

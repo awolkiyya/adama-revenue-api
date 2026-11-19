@@ -166,5 +166,17 @@ class CashReconciliationPolicy
         return (string) $cashReconciliation->collector_id
             === (string) $user->getKey();
     }
+
+
+    /**
+     * Determine whether the user can view expected cash
+     * across all revenue collectors in the system.
+     */
+    public function viewAllExpectedCash(User $user): bool
+    {
+        return $user->hasPermission(
+            'cash_reconciliations.view_all_expected_cash'
+        );
+    }
 }
 

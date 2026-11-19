@@ -13,8 +13,8 @@ use App\Modules\CashReconciliation\Controllers\CashReconciliationController;
 | - Authorized finance officers review submitted closings.
 | - Users with view_all permission can view all reconciliations.
 |
-| Ensure this route group is registered inside the authenticated
-| API route group, or retain the auth:sanctum middleware below.
+| These routes should be registered inside the authenticated API
+| route group, or protected with auth:sanctum.
 |
 */
 
@@ -22,50 +22,102 @@ Route::prefix('cash-reconciliations')
     ->name('cash-reconciliations.')
     ->group(function () {
 
-        // List reconciliations
+        /*
+        |--------------------------------------------------------------------------
+        | List and Create
+        |--------------------------------------------------------------------------
+        */
+
         Route::get('/', [
             CashReconciliationController::class,
             'index',
         ])->name('index');
 
-        // Create a draft
         Route::post('/', [
             CashReconciliationController::class,
             'store',
         ])->name('store');
 
-        // View a reconciliation
+        /*
+        |--------------------------------------------------------------------------
+        | Summaries
+        |--------------------------------------------------------------------------
+        |
+        | Expected, counted and difference totals grouped by collector.
+        | Collectors without view_all only receive their own figures.
+        |
+        | Keep this above the '/{cashReconciliation}' routes so that
+        | static paths are always matched first.
+        |
+        */
+
+        Route::get('/expected-by-collector', [
+            CashReconciliationController::class,
+            'expectedByCollector',
+        ])->name('expected-by-collector');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Retrieve, Update and Delete
+        |--------------------------------------------------------------------------
+        */
+
         Route::get('/{cashReconciliation}', [
             CashReconciliationController::class,
             'show',
-        ])->whereNumber('cashReconciliation')
+        ])->whereUuid('cashReconciliation')
             ->name('show');
 
-        // Update a draft or returned reconciliation
         Route::match(['put', 'patch'], '/{cashReconciliation}', [
             CashReconciliationController::class,
             'update',
-        ])->whereNumber('cashReconciliation')
+        ])->whereUuid('cashReconciliation')
             ->name('update');
 
-        // Submit a cash closing for review
+        /*
+         * Delete is restricted to DRAFT reconciliations.
+         * Ownership and status must also be checked by the policy
+         * and CashReconciliationService.
+         */
+        Route::delete('/{cashReconciliation}', [
+            CashReconciliationController::class,
+            'destroy',
+        ])->whereUuid('cashReconciliation')
+            ->name('destroy');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Submission
+        |--------------------------------------------------------------------------
+        */
+
         Route::post('/{cashReconciliation}/submit', [
             CashReconciliationController::class,
             'submit',
-        ])->whereNumber('cashReconciliation')
+        ])->whereUuid('cashReconciliation')
             ->name('submit');
 
-        // Review a submitted cash closing
+        /*
+        |--------------------------------------------------------------------------
+        | Review
+        |--------------------------------------------------------------------------
+        */
+
         Route::post('/{cashReconciliation}/review', [
             CashReconciliationController::class,
             'review',
-        ])->whereNumber('cashReconciliation')
+        ])->whereUuid('cashReconciliation')
             ->name('review');
 
-        // Cancel a draft or returned reconciliation
+        /*
+        |--------------------------------------------------------------------------
+        | Cancellation
+        |--------------------------------------------------------------------------
+        */
+
         Route::post('/{cashReconciliation}/cancel', [
             CashReconciliationController::class,
             'cancel',
-        ])->whereNumber('cashReconciliation')
+        ])->whereUuid('cashReconciliation')
             ->name('cancel');
-});
+    });

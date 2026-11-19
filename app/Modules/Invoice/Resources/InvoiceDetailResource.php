@@ -40,8 +40,8 @@ class InvoiceDetailResource extends JsonResource
 
                     return [
                         'id' => $this->citizen->id,
-                        'name' => $this->citizen->name,
-                        'citizen_number' => $this->citizen->citizen_number,
+                        'name' => $this->citizen->full_name,
+                        'citizen_number' => $this->citizen->citizen_uid,
                         'phone' => $this->citizen->phone,
                         'email' => $this->citizen->email,
                     ];

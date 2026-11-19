@@ -1,6 +1,7 @@
 <?php
 
 use App\Modules\DirectCollection\Controllers\DirectCollectionController;
+use App\Modules\DirectCollection\Controllers\DirectCollectionDashboardController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -36,6 +37,30 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('direct-collections')
     ->name('direct-collections.')
     ->group(function () {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Dashboard
+        |--------------------------------------------------------------------------
+        |
+        | Returns the authenticated cash collector's dashboard:
+        |
+        | - Today's invoice summary
+        | - Today's cash payment summary
+        | - Today's cash collected
+        | - Expected cash
+        | - Reconciled cash
+        | - Outstanding cash
+        | - Accessible revenue services
+        |
+        | GET /api/v1/direct-collections/dashboard
+        |
+        */
+
+        Route::get(
+            '/dashboard',
+            [DirectCollectionDashboardController::class, 'index']
+        )->name('dashboard');
 
         /*
         |--------------------------------------------------------------------------
@@ -75,7 +100,7 @@ Route::prefix('direct-collections')
         | List
         |--------------------------------------------------------------------------
         |
-        | Returns direct collection invoices.
+        | Returns paginated direct collection invoices.
         |
         | GET /api/v1/direct-collections
         |

@@ -1906,6 +1906,25 @@ class PermissionSeeder extends Seeder
                 'is_system' => false,
             ],
 
+            [
+                'name' => 'cash_reconciliations.delete',
+                'label' => 'Delete Cash Reconciliation Draft',
+                'module' => 'cash_reconciliations',
+                'description' => 'Allows permanently deleting unsubmitted cash reconciliation drafts. Submitted, reviewed, cancelled, or discrepancy records cannot be deleted.',
+                'is_system' => false,
+            ],
+            
+            [
+                'name' => 'cash_reconciliations.view_all_expected_cash',
+                'label' => 'View All Collectors Expected Cash',
+                'module' => 'cash_reconciliations',
+                'description' => 'Allows viewing all revenue collectors in the system and their backend-calculated expected cash amounts derived from recorded collection transactions for cash reconciliation and monitoring.',
+                'is_system' => false,
+            ],
+
+
+            
+
 
         ];
 

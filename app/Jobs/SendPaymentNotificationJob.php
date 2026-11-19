@@ -22,23 +22,20 @@ class SendPaymentNotificationJob implements ShouldQueue
     use SerializesModels;
 
     /**
-     * Number of attempts before the job is marked as failed.
+     * Maximum number of attempts.
      */
     public int $tries = 3;
 
     /**
-     * Maximum number of seconds the job may run.
+     * Maximum execution time in seconds.
      */
     public int $timeout = 120;
 
     /**
-     * Number of seconds Laravel waits before retrying a failed attempt.
+     * Delay between failed attempts in seconds.
      */
     public int $backoff = 30;
 
-    /**
-     * Create a new job instance.
-     */
     public function __construct(
         public readonly string $paymentId,
         public readonly string $notificationType,
@@ -47,25 +44,11 @@ class SendPaymentNotificationJob implements ShouldQueue
     }
 
     /**
-     * Execute the notification job.
-     *
-     * The payment is reloaded from the database rather than serialized
-     * as a full Eloquent model so the worker always works with current
-     * payment information.
+     * Execute the payment notification.
      */
     public function handle(
         PaymentNotificationService $notificationService,
     ): void {
-        /*
-         * Load all relationships required by the notification service.
-         *
-         * citizen is important because the notification service uses:
-         *
-         * 1. payment->payer_phone
-         * 2. payment->citizen->phone
-         *
-         * when resolving the taxpayer's phone number.
-         */
         $payment = Payment::query()
             ->with([
                 'invoice',
@@ -76,13 +59,9 @@ class SendPaymentNotificationJob implements ShouldQueue
             ])
             ->find($this->paymentId);
 
-        /*
-         * The payment may have been deleted after the notification
-         * was queued. In that case there is nothing to notify.
-         */
-        if (! $payment) {
+        if ($payment === null) {
             Log::warning(
-                'Payment notification job skipped because payment was not found.',
+                'Payment notification skipped: payment not found.',
                 [
                     'payment_id' => $this->paymentId,
                     'notification_type' => $this->notificationType,
@@ -92,50 +71,28 @@ class SendPaymentNotificationJob implements ShouldQueue
             return;
         }
 
-        Log::info(
-            'Payment notification job started.',
-            [
-                'payment_id' => $payment->id,
-                'payment_number' => $payment->payment_number,
-                'notification_type' => $this->notificationType,
-                'payment_status' =>
-                    $payment->status?->value
-                    ?? $payment->status,
-                'citizen_id' => $payment->citizen_id,
-            ]
-        );
+        Log::info('Payment notification job started.', [
+            'payment_id' => $payment->getKey(),
+            'payment_number' => $payment->payment_number,
+            'notification_type' => $this->notificationType,
+            'payment_status' =>
+                $payment->status?->value ?? $payment->status,
+        ]);
 
-        /*
-         * The notification service is responsible for:
-         *
-         * - selecting the correct notification message
-         * - resolving the taxpayer phone number
-         * - sending the SMS through SmsService
-         * - throwing an exception when SMS delivery fails
-         *
-         * If an exception is thrown, Laravel will retry this job
-         * according to $tries and $backoff.
-         */
         $notificationService->send(
             payment: $payment,
             notificationType: $this->notificationType,
         );
 
-        Log::info(
-            'Payment notification job completed.',
-            [
-                'payment_id' => $payment->id,
-                'payment_number' => $payment->payment_number,
-                'notification_type' => $this->notificationType,
-            ]
-        );
+        Log::info('Payment notification job completed.', [
+            'payment_id' => $payment->getKey(),
+            'payment_number' => $payment->payment_number,
+            'notification_type' => $this->notificationType,
+        ]);
     }
 
     /**
-     * Handle a permanently failed job.
-     *
-     * This method is called after Laravel exhausts all configured
-     * retry attempts.
+     * Handle permanent job failure.
      */
     public function failed(Throwable $exception): void
     {

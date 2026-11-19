@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\System\MobileAppRelease\Requests;
 
 use Illuminate\Contracts\Validation\Validator;
@@ -9,24 +11,6 @@ use Illuminate\Validation\Rule;
 
 class StoreMobileAppReleaseRequest extends FormRequest
 {
-    /**
-     * Log Form Request initialization.
-     */
-    public function __construct()
-    {
-        parent::__construct();
-
-        Log::info(
-            'Mobile app release: Form Request instantiated.',
-            [
-                'method' => $this->method(),
-                'content_type' => $this->header('Content-Type'),
-                'content_length' => $this->server('CONTENT_LENGTH'),
-                'request_id' => $this->header('X-Request-ID'),
-            ]
-        );
-    }
-
     /*
     |--------------------------------------------------------------------------
     | Authorization
@@ -60,7 +44,12 @@ class StoreMobileAppReleaseRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
-        if ($this->has('is_mandatory')) {
+        $merge = [];
+
+        /*
+         * Normalize mandatory release flag.
+         */
+        if ($this->exists('is_mandatory')) {
             $value = filter_var(
                 $this->input('is_mandatory'),
                 FILTER_VALIDATE_BOOLEAN,
@@ -68,10 +57,30 @@ class StoreMobileAppReleaseRequest extends FormRequest
             );
 
             if ($value !== null) {
-                $this->merge([
-                    'is_mandatory' => $value,
-                ]);
+                $merge['is_mandatory'] = $value;
             }
+        }
+
+        /*
+         * Normalize application type.
+         */
+        if (is_string($this->input('app_type'))) {
+            $merge['app_type'] = trim(
+                $this->input('app_type')
+            );
+        }
+
+        /*
+         * Normalize version name.
+         */
+        if (is_string($this->input('version_name'))) {
+            $merge['version_name'] = trim(
+                $this->input('version_name')
+            );
+        }
+
+        if ($merge !== []) {
+            $this->merge($merge);
         }
     }
 
@@ -85,11 +94,6 @@ class StoreMobileAppReleaseRequest extends FormRequest
     {
         $appType = $this->input('app_type');
 
-        $maxSize = (int) config(
-            'mobile_apps.apk.max_size',
-            307200
-        );
-
         return [
             /*
             |--------------------------------------------------------------------------
@@ -98,6 +102,7 @@ class StoreMobileAppReleaseRequest extends FormRequest
             */
 
             'app_type' => [
+                'bail',
                 'required',
                 'string',
                 'max:50',
@@ -113,20 +118,37 @@ class StoreMobileAppReleaseRequest extends FormRequest
             */
 
             'version_name' => [
+                'bail',
                 'required',
                 'string',
                 'max:50',
             ],
 
             'version_code' => [
+                'bail',
                 'required',
                 'integer',
                 'min:1',
 
-                // Version codes are unique within each application type.
-                // Different applications may share the same version code.
-                Rule::unique('mobile_app_releases', 'version_code')
-                    ->where('app_type', $appType),
+                /*
+                 * Version codes are unique per application type,
+                 * not globally across all mobile applications.
+                 *
+                 * Example:
+                 * field_collector: version_code = 2
+                 * taxpayer:        version_code = 2
+                 *
+                 * Both are allowed.
+                 */
+                Rule::unique(
+                    'mobile_app_releases',
+                    'version_code'
+                )->where(
+                    fn ($query) => $query->where(
+                        'app_type',
+                        $appType
+                    )
+                ),
             ],
 
             /*
@@ -153,16 +175,19 @@ class StoreMobileAppReleaseRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | APK Upload
+            | Completed Chunked APK Upload
             |--------------------------------------------------------------------------
+            |
+            | The APK must already have been uploaded and assembled
+            | through the resumable upload endpoints.
+            |
             */
 
-            'apk' => [
+            'upload_uuid' => [
+                'bail',
                 'required',
-                'file',
-                'extensions:apk',
-                'mimetypes:application/vnd.android.package-archive,application/zip',
-                'max:' . $maxSize,
+                'uuid',
+                'exists:mobile_app_release_uploads,uuid',
             ],
         ];
     }
@@ -175,13 +200,6 @@ class StoreMobileAppReleaseRequest extends FormRequest
 
     public function messages(): array
     {
-        $maxSize = (int) config(
-            'mobile_apps.apk.max_size',
-            307200
-        );
-
-        $maxSizeMb = (int) ceil($maxSize / 1024);
-
         return [
             /*
             |--------------------------------------------------------------------------
@@ -248,24 +266,18 @@ class StoreMobileAppReleaseRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | APK Upload
+            | Chunked APK Upload
             |--------------------------------------------------------------------------
             */
 
-            'apk.required' =>
-                'Please upload an APK file.',
+            'upload_uuid.required' =>
+                'Please complete the APK upload before creating the release.',
 
-            'apk.file' =>
-                'The uploaded APK could not be read. Please select the file again.',
+            'upload_uuid.uuid' =>
+                'The APK upload reference is invalid.',
 
-            'apk.extensions' =>
-                'The uploaded file must have the .apk extension.',
-
-            'apk.mimetypes' =>
-                'The uploaded file must have a valid Android APK file type.',
-
-            'apk.max' =>
-                "The APK must not exceed {$maxSizeMb} MB.",
+            'upload_uuid.exists' =>
+                'The specified APK upload session does not exist.',
         ];
     }
 
@@ -278,8 +290,6 @@ class StoreMobileAppReleaseRequest extends FormRequest
     protected function failedValidation(
         Validator $validator
     ): void {
-        $apk = $this->file('apk');
-
         Log::warning(
             'Mobile app release: request validation failed.',
             [
@@ -299,44 +309,11 @@ class StoreMobileAppReleaseRequest extends FormRequest
 
                 /*
                 |--------------------------------------------------------------------------
-                | APK Diagnostics
+                | Upload Session Diagnostics
                 |--------------------------------------------------------------------------
                 */
 
-                'has_apk' => $this->hasFile('apk'),
-
-                'apk_original_name' =>
-                    $apk?->getClientOriginalName(),
-
-                'apk_size_bytes' =>
-                    $apk?->getSize(),
-
-                'apk_mime_type' =>
-                    $apk?->getMimeType(),
-
-                'apk_client_mime_type' =>
-                    $apk?->getClientMimeType(),
-
-                'apk_valid' =>
-                    $apk?->isValid(),
-
-                'apk_error' =>
-                    $apk?->getError(),
-
-                /*
-                |--------------------------------------------------------------------------
-                | PHP Upload Configuration
-                |--------------------------------------------------------------------------
-                */
-
-                'content_length' =>
-                    $this->server('CONTENT_LENGTH'),
-
-                'post_max_size' =>
-                    ini_get('post_max_size'),
-
-                'upload_max_filesize' =>
-                    ini_get('upload_max_filesize'),
+                'upload_uuid' => $this->input('upload_uuid'),
 
                 /*
                 |--------------------------------------------------------------------------
@@ -344,11 +321,11 @@ class StoreMobileAppReleaseRequest extends FormRequest
                 |--------------------------------------------------------------------------
                 */
 
-                'request_id' =>
-                    $this->header('X-Request-ID'),
+                'content_length' => $this->server('CONTENT_LENGTH'),
 
-                'ip_address' =>
-                    $this->ip(),
+                'request_id' => $this->header('X-Request-ID'),
+
+                'ip_address' => $this->ip(),
             ]
         );
 

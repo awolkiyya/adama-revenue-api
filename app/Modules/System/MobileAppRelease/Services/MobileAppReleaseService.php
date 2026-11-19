@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\System\MobileAppRelease\Services;
 
 use App\Models\File;
@@ -21,16 +23,46 @@ class MobileAppReleaseService
     |--------------------------------------------------------------------------
     */
 
+    private const STORAGE_DIRECTORY = 'mobile-app-releases';
+
+    private const FILE_COLLECTION = 'mobile_app_release';
+
+    private const APK_MIME_TYPE = 'application/vnd.android.package-archive';
+
+    private const DEFAULT_MAX_APK_SIZE = 536870912;
+
     /**
-     * APK storage must use a private Laravel disk.
+     * Return the configured private storage disk.
      */
     private function disk(): string
     {
-        return config('filesystems.mobile_app_disk', 'local');
+        $disk = config('filesystems.mobile_app_disk', 'local');
+
+        if (! is_string($disk) || trim($disk) === '') {
+            throw new RuntimeException(
+                'The mobile application storage disk is not configured.'
+            );
+        }
+
+        $diskConfig = config("filesystems.disks.{$disk}");
+
+        if (! is_array($diskConfig)) {
+            throw new RuntimeException(
+                'The configured mobile application storage disk does not exist.'
+            );
+        }
+
+        if (($diskConfig['visibility'] ?? 'private') === 'public') {
+            throw new RuntimeException(
+                'Mobile application APK storage must not use a public disk.'
+            );
+        }
+
+        return $disk;
     }
 
     /**
-     * Build consistent log context for release operations.
+     * Build consistent log context.
      */
     private function releaseContext(
         ?MobileAppRelease $release = null,
@@ -52,9 +84,6 @@ class MobileAppReleaseService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Log an operation failure without exposing secrets.
-     */
     private function logFailure(
         string $operation,
         Throwable $exception,
@@ -72,6 +101,258 @@ class MobileAppReleaseService
         );
     }
 
+    private function durationMs(float $startedAt): float
+    {
+        return round((microtime(true) - $startedAt) * 1000, 2);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | APK Validation
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Validate an uploaded or assembled APK before permanent storage.
+     *
+     * This checks file integrity at the filesystem level, extension,
+     * and configured size limit. It does not perform Android package
+     * signature or package metadata verification.
+     */
+    private function validateUploadedApk(UploadedFile $apk): void
+    {
+        $realPath = $apk->getRealPath();
+
+        if (
+            ! is_string($realPath)
+            || ! is_file($realPath)
+            || ! is_readable($realPath)
+        ) {
+            throw ValidationException::withMessages([
+                'apk' => 'The APK file is missing or unreadable.',
+            ]);
+        }
+
+        if (! $apk->isValid()) {
+            throw ValidationException::withMessages([
+                'apk' => 'The APK upload is invalid.',
+            ]);
+        }
+
+        if (
+            strtolower($apk->getClientOriginalExtension()) !== 'apk'
+        ) {
+            throw ValidationException::withMessages([
+                'apk' => 'Only APK files are supported.',
+            ]);
+        }
+
+        clearstatcache(true, $realPath);
+
+        $actualSize = filesize($realPath);
+
+        if ($actualSize === false || $actualSize <= 0) {
+            throw ValidationException::withMessages([
+                'apk' => 'The APK file is empty or invalid.',
+            ]);
+        }
+
+        $reportedSize = $apk->getSize();
+
+        if (
+            $reportedSize === false
+            || $reportedSize <= 0
+            || $reportedSize !== $actualSize
+        ) {
+            throw ValidationException::withMessages([
+                'apk' => 'The APK file size could not be verified.',
+            ]);
+        }
+
+        $maximumSize = (int) config(
+            'mobile_apps.max_apk_size_bytes',
+            self::DEFAULT_MAX_APK_SIZE
+        );
+
+        if ($maximumSize > 0 && $actualSize > $maximumSize) {
+            throw ValidationException::withMessages([
+                'apk' => 'The APK file exceeds the maximum permitted size.',
+            ]);
+        }
+    }
+
+    /**
+     * Calculate the SHA-256 checksum of an uploaded APK.
+     */
+    private function calculateChecksum(UploadedFile $apk): string
+    {
+        $realPath = $apk->getRealPath();
+
+        if (
+            ! is_string($realPath)
+            || ! is_file($realPath)
+            || ! is_readable($realPath)
+        ) {
+            throw new RuntimeException(
+                'Unable to access the APK file for checksum calculation.'
+            );
+        }
+
+        $checksum = hash_file('sha256', $realPath);
+
+        if (! is_string($checksum)) {
+            throw new RuntimeException(
+                'Unable to calculate the APK checksum.'
+            );
+        }
+
+        return strtolower($checksum);
+    }
+
+    /**
+     * Verify the permanently stored APK.
+     */
+    private function verifyStoredApk(
+        string $disk,
+        string $path,
+        int $expectedSize
+    ): void {
+        try {
+            $storage = Storage::disk($disk);
+
+            if (! $storage->exists($path)) {
+                throw new RuntimeException(
+                    'The stored APK file could not be found.'
+                );
+            }
+
+            $storedSize = $storage->size($path);
+
+            if ($storedSize !== $expectedSize) {
+                throw new RuntimeException(
+                    'The stored APK size does not match the original APK size.'
+                );
+            }
+        } catch (Throwable $exception) {
+            Log::error(
+                'Mobile app release: permanent APK verification failed.',
+                [
+                    'disk' => $disk,
+                    'path' => $path,
+                    'expected_size_bytes' => $expectedSize,
+                    'exception_class' => get_class($exception),
+                    'exception_message' => $exception->getMessage(),
+                ]
+            );
+
+            throw new RuntimeException(
+                'Unable to verify the permanently stored APK.',
+                previous: $exception
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Storage
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Store an APK under a generated filename.
+     */
+    private function storeApk(
+        UploadedFile $apk,
+        string $disk
+    ): string {
+        $filename = Str::uuid() . '.apk';
+
+        $path = $apk->storeAs(
+            self::STORAGE_DIRECTORY,
+            $filename,
+            $disk
+        );
+
+        if (! is_string($path) || $path === '') {
+            throw new RuntimeException(
+                'Unable to store the APK file.'
+            );
+        }
+
+        try {
+            $this->verifyStoredApk(
+                $disk,
+                $path,
+                (int) $apk->getSize()
+            );
+        } catch (Throwable $exception) {
+            $this->deleteStoredApk(
+                $disk,
+                $path,
+                'failed_storage_verification'
+            );
+
+            throw $exception;
+        }
+
+        return $path;
+    }
+
+    /**
+     * Delete a stored APK safely.
+     *
+     * Returns true when the file is confirmed absent.
+     */
+    private function deleteStoredApk(
+        string $disk,
+        string $path,
+        string $operation,
+        array $context = []
+    ): bool {
+        try {
+            $storage = Storage::disk($disk);
+
+            if (! $storage->exists($path)) {
+                return true;
+            }
+
+            if (! $storage->delete($path)) {
+                Log::warning(
+                    'Mobile app release: physical APK cleanup returned false.',
+                    array_merge($context, [
+                        'operation' => $operation,
+                        'disk' => $disk,
+                        'path' => $path,
+                    ])
+                );
+
+                return false;
+            }
+
+            Log::info(
+                'Mobile app release: physical APK cleanup completed.',
+                array_merge($context, [
+                    'operation' => $operation,
+                    'disk' => $disk,
+                    'path' => $path,
+                ])
+            );
+
+            return ! $storage->exists($path);
+        } catch (Throwable $exception) {
+            $this->logFailure(
+                $operation,
+                $exception,
+                array_merge($context, [
+                    'disk' => $disk,
+                    'path' => $path,
+                ])
+            );
+
+            return false;
+        }
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Application Locking
@@ -79,21 +360,123 @@ class MobileAppReleaseService
     */
 
     /**
-     * Lock all existing releases belonging to one application.
+     * Lock the application releases in a consistent order.
      *
-     * This serializes concurrent publish/withdraw operations
-     * for the same application without locking other applications.
-     *
-     * Call this before locking individual release rows.
+     * This helps serialize operations when records already exist.
+     * For an application with no releases, this query does not lock
+     * a stable parent row. See the note following this implementation.
      */
-    private function lockApplicationReleases(
-        string $appType
-    ) {
+    private function lockApplicationReleases(string $appType)
+    {
         return MobileAppRelease::query()
             ->where('app_type', $appType)
             ->orderBy('id')
             ->lockForUpdate()
             ->get();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | File Record
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Create the centralized File record for a release APK.
+     */
+    private function createFileRecord(
+        MobileAppRelease $release,
+        UploadedFile $apk,
+        string $disk,
+        string $path,
+        ?string $userId,
+        string $checksum
+    ): File {
+        $context = $this->releaseContext($release, [
+            'operation' => 'create_file_record',
+            'disk' => $disk,
+            'stored_path' => $path,
+            'original_filename' => $apk->getClientOriginalName(),
+            'file_size_bytes' => $apk->getSize(),
+            'uploaded_by' => $userId,
+        ]);
+
+        $originalName = mb_substr(
+            $apk->getClientOriginalName(),
+            0,
+            255
+        );
+
+        $file = new File([
+            'uuid' => (string) Str::uuid(),
+            'collection' => self::FILE_COLLECTION,
+            'original_name' => $originalName,
+            'stored_name' => basename($path),
+            'path' => $path,
+            'disk' => $disk,
+            'mime_type' => self::APK_MIME_TYPE,
+            'extension' => 'apk',
+            'size_bytes' => (int) $apk->getSize(),
+            'checksum' => $checksum,
+            'uploaded_by' => $userId,
+            'source' => $userId !== null ? 'OFFICER' : 'SYSTEM',
+            'visibility' => 'PRIVATE',
+            'status' => 'READY',
+            'uploaded_at' => now(),
+        ]);
+
+        Log::info(
+            'Mobile app release: APK file metadata prepared.',
+            array_merge($context, [
+                'file_uuid' => $file->uuid,
+                'stored_filename' => $file->stored_name,
+                'mime_type' => $file->mime_type,
+                'checksum_sha256' => $checksum,
+            ])
+        );
+
+        return $file;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Draft Validation
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ensure that only draft releases can be edited.
+     */
+    private function ensureDraft(MobileAppRelease $release): void
+    {
+        if ($release->status !== 'draft') {
+            throw ValidationException::withMessages([
+                'status' => 'Only draft releases can be edited.',
+            ]);
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application Type Validation
+    |--------------------------------------------------------------------------
+    */
+
+    private function validateAppType(mixed $appType): string
+    {
+        if (
+            ! is_string($appType)
+            || ! array_key_exists(
+                $appType,
+                config('mobile_apps.types', [])
+            )
+        ) {
+            throw ValidationException::withMessages([
+                'app_type' => 'The selected mobile application is not supported.',
+            ]);
+        }
+
+        return $appType;
     }
 
     /*
@@ -112,29 +495,13 @@ class MobileAppReleaseService
     ): MobileAppRelease {
         $startedAt = microtime(true);
 
+        $appType = $this->validateAppType(
+            $data['app_type'] ?? null
+        );
+
+        $this->validateUploadedApk($apk);
+
         $disk = $this->disk();
-
-        $path = null;
-
-        $appType = $data['app_type'] ?? null;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Application Type
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            ! is_string($appType)
-            || ! array_key_exists(
-                $appType,
-                config('mobile_apps.types', [])
-            )
-        ) {
-            throw ValidationException::withMessages([
-                'app_type' => 'The selected mobile application is not supported.',
-            ]);
-        }
 
         $context = [
             'operation' => 'create',
@@ -154,42 +521,16 @@ class MobileAppReleaseService
             $context
         );
 
+        $path = null;
+
         try {
-            /*
-            |--------------------------------------------------------------------------
-            | Store APK
-            |--------------------------------------------------------------------------
-            */
-
-            Log::info(
-                'Mobile app release: storing APK file.',
-                $context
-            );
-
-            $path = $apk->storeAs(
-                'mobile-app-releases',
-                Str::uuid() . '.apk',
-                $disk
-            );
-
-            if (! is_string($path)) {
-                throw new RuntimeException(
-                    'Unable to store the APK file.'
-                );
-            }
-
-            Log::info(
-                'Mobile app release: APK stored successfully.',
-                array_merge($context, [
-                    'stored_path' => $path,
-                ])
-            );
+            $checksum = $this->calculateChecksum($apk);
 
             /*
-            |--------------------------------------------------------------------------
-            | Create Release And File Record
-            |--------------------------------------------------------------------------
-            */
+             * Store the physical file before the database transaction.
+             * If the database operation fails, cleanup is attempted below.
+             */
+            $path = $this->storeApk($apk, $disk);
 
             $release = DB::transaction(function () use (
                 $data,
@@ -197,13 +538,9 @@ class MobileAppReleaseService
                 $userId,
                 $disk,
                 $path,
+                $checksum,
                 $context
-            ) {
-                Log::info(
-                    'Mobile app release: database transaction started.',
-                    $context
-                );
-
+            ): MobileAppRelease {
                 $release = MobileAppRelease::create([
                     'app_type' => $data['app_type'],
                     'version_name' => $data['version_name'],
@@ -216,27 +553,23 @@ class MobileAppReleaseService
                     'created_by' => $userId,
                 ]);
 
-                Log::info(
-                    'Mobile app release: release record created.',
-                    $this->releaseContext($release, $context)
-                );
-
                 $file = $this->createFileRecord(
                     $release,
                     $apk,
                     $disk,
                     $path,
-                    $userId
+                    $userId,
+                    $checksum
                 );
 
                 $release->apkFile()->save($file);
 
                 Log::info(
-                    'Mobile app release: APK attached to release.',
+                    'Mobile app release: release and APK records created.',
                     $this->releaseContext($release, [
                         'file_id' => $file->getKey(),
                         'file_uuid' => $file->uuid,
-                        'file_status' => $file->status,
+                        'stored_path' => $path,
                     ])
                 );
 
@@ -252,10 +585,8 @@ class MobileAppReleaseService
                     'file_id' => $release->apkFile?->getKey(),
                     'disk' => $disk,
                     'stored_path' => $path,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'checksum_sha256' => $checksum,
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -269,43 +600,14 @@ class MobileAppReleaseService
                 ])
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Clean Up APK If Creation Failed
-            |--------------------------------------------------------------------------
-            */
-
             if (is_string($path)) {
-                try {
-                    $deleted = Storage::disk($disk)->delete($path);
-
-                    Log::info(
-                        'Mobile app release: creation cleanup completed.',
-                        array_merge($context, [
-                            'stored_path' => $path,
-                            'file_deleted' => $deleted,
-                        ])
-                    );
-                } catch (Throwable $cleanupException) {
-                    $this->logFailure(
-                        'create_cleanup',
-                        $cleanupException,
-                        array_merge($context, [
-                            'stored_path' => $path,
-                        ])
-                    );
-                }
+                $this->deleteStoredApk(
+                    $disk,
+                    $path,
+                    'create_cleanup',
+                    $context
+                );
             }
-
-            Log::warning(
-                'Mobile app release: creation terminated with an error.',
-                array_merge($context, [
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
-                ])
-            );
 
             throw $exception;
         }
@@ -320,7 +622,8 @@ class MobileAppReleaseService
     /**
      * Update a draft release.
      *
-     * A new APK replaces the previous attachment.
+     * If an APK is supplied, it replaces the existing attachment.
+     * If null, only metadata is updated.
      */
     public function update(
         MobileAppRelease $release,
@@ -330,14 +633,19 @@ class MobileAppReleaseService
     ): MobileAppRelease {
         $startedAt = microtime(true);
 
+        $this->ensureDraft($release);
+
+        if ($apk !== null) {
+            $this->validateUploadedApk($apk);
+        }
+
+        $disk = $this->disk();
+
         $context = $this->releaseContext($release, [
             'operation' => 'update',
             'updated_by' => $userId,
             'apk_replacement_requested' => $apk !== null,
-            'submitted_fields' => array_values(array_diff(
-                array_keys($data),
-                ['release_notes']
-            )),
+            'submitted_fields' => array_keys($data),
         ]);
 
         Log::info(
@@ -345,63 +653,16 @@ class MobileAppReleaseService
             $context
         );
 
-        $disk = $this->disk();
-
         $newPath = null;
-
         $oldFile = null;
 
         try {
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Current Release
-            |--------------------------------------------------------------------------
-            */
-
-            $this->ensureDraft($release);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Store Replacement APK
-            |--------------------------------------------------------------------------
-            */
+            $checksum = null;
 
             if ($apk !== null) {
-                Log::info(
-                    'Mobile app release: storing replacement APK.',
-                    array_merge($context, [
-                        'disk' => $disk,
-                        'original_filename' => $apk->getClientOriginalName(),
-                        'file_size_bytes' => $apk->getSize(),
-                    ])
-                );
-
-                $newPath = $apk->storeAs(
-                    'mobile-app-releases',
-                    Str::uuid() . '.apk',
-                    $disk
-                );
-
-                if (! is_string($newPath)) {
-                    throw new RuntimeException(
-                        'Unable to store the APK file.'
-                    );
-                }
-
-                Log::info(
-                    'Mobile app release: replacement APK stored.',
-                    array_merge($context, [
-                        'disk' => $disk,
-                        'new_path' => $newPath,
-                    ])
-                );
+                $checksum = $this->calculateChecksum($apk);
+                $newPath = $this->storeApk($apk, $disk);
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Update Database Records
-            |--------------------------------------------------------------------------
-            */
 
             $updatedRelease = DB::transaction(function () use (
                 $release,
@@ -410,27 +671,15 @@ class MobileAppReleaseService
                 $userId,
                 $disk,
                 $newPath,
-                &$oldFile,
-                $context
-            ) {
-                Log::info(
-                    'Mobile app release: update transaction started.',
-                    $context
-                );
-
+                $checksum,
+                &$oldFile
+            ): MobileAppRelease {
                 $lockedRelease = MobileAppRelease::query()
                     ->whereKey($release->getKey())
                     ->lockForUpdate()
                     ->firstOrFail();
 
                 $this->ensureDraft($lockedRelease);
-
-                $previousValues = [
-                    'version_name' => $lockedRelease->version_name,
-                    'version_code' => $lockedRelease->version_code,
-                    'release_notes' => $lockedRelease->release_notes,
-                    'is_mandatory' => $lockedRelease->is_mandatory,
-                ];
 
                 $lockedRelease->fill([
                     'version_name' => $data['version_name']
@@ -452,80 +701,31 @@ class MobileAppReleaseService
 
                 $lockedRelease->save();
 
-                Log::info(
-                    'Mobile app release: release metadata updated.',
-                    $this->releaseContext($lockedRelease, [
-                        'previous_values' => $previousValues,
-                        'updated_values' => [
-                            'version_name' => $lockedRelease->version_name,
-                            'version_code' => $lockedRelease->version_code,
-                            'release_notes' => $lockedRelease->release_notes,
-                            'is_mandatory' => $lockedRelease->is_mandatory,
-                        ],
-                    ])
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Replace APK Attachment If Requested
-                |--------------------------------------------------------------------------
-                */
-
-                if ($apk !== null && $newPath !== null) {
+                if ($apk !== null && $newPath !== null && $checksum !== null) {
                     $oldFile = $lockedRelease->apkFile()->first();
 
                     if ($oldFile !== null) {
-                        Log::info(
-                            'Mobile app release: detaching previous APK.',
-                            $this->releaseContext($lockedRelease, [
-                                'old_file_id' => $oldFile->getKey(),
-                                'old_file_uuid' => $oldFile->uuid,
-                                'old_disk' => $oldFile->disk,
-                                'old_path' => $oldFile->path,
-                            ])
-                        );
-
-                        // Detach and soft-delete the old file record.
+                        /*
+                         * Detach the old file record before soft deletion.
+                         * The old physical file is deleted only after commit.
+                         */
                         $oldFile->fileable_id = null;
                         $oldFile->fileable_type = null;
                         $oldFile->save();
 
                         $oldFile->delete();
-
-                        Log::info(
-                            'Mobile app release: previous APK record soft-deleted.',
-                            $this->releaseContext($lockedRelease, [
-                                'old_file_id' => $oldFile->getKey(),
-                                'old_file_uuid' => $oldFile->uuid,
-                            ])
-                        );
-                    } else {
-                        Log::warning(
-                            'Mobile app release: no previous APK attachment found.',
-                            $this->releaseContext($lockedRelease)
-                        );
                     }
 
-                    $file = $this->createFileRecord(
+                    $newFile = $this->createFileRecord(
                         $lockedRelease,
                         $apk,
                         $disk,
                         $newPath,
-                        $userId
+                        $userId,
+                        $checksum
                     );
 
-                    $lockedRelease->apkFile()->save($file);
-
-                    Log::info(
-                        'Mobile app release: replacement APK attached.',
-                        $this->releaseContext($lockedRelease, [
-                            'new_file_id' => $file->getKey(),
-                            'new_file_uuid' => $file->uuid,
-                            'new_path' => $newPath,
-                            'file_size_bytes' => $file->size_bytes,
-                            'checksum_sha256' => $file->checksum,
-                        ])
-                    );
+                    $lockedRelease->apkFile()->save($newFile);
                 }
 
                 return $lockedRelease->load([
@@ -535,50 +735,27 @@ class MobileAppReleaseService
             });
 
             /*
-            |--------------------------------------------------------------------------
-            | Delete Replaced Physical File After Commit
-            |--------------------------------------------------------------------------
-            */
-
+             * Database transaction has committed. It is now safe to
+             * remove the old physical APK.
+             */
             if ($oldFile !== null) {
-                try {
-                    $oldDisk = $oldFile->disk;
-                    $oldPath = $oldFile->path;
+                $oldDisk = $oldFile->disk;
+                $oldPath = $oldFile->path;
 
-                    if (! empty($oldDisk) && ! empty($oldPath)) {
-                        $deleted = Storage::disk($oldDisk)
-                            ->delete($oldPath);
-
-                        if ($deleted) {
-                            Log::info(
-                                'Mobile app release: previous APK physically deleted.',
-                                $this->releaseContext($updatedRelease, [
-                                    'old_file_id' => $oldFile->getKey(),
-                                    'old_file_uuid' => $oldFile->uuid,
-                                    'old_disk' => $oldDisk,
-                                    'old_path' => $oldPath,
-                                ])
-                            );
-                        } else {
-                            Log::warning(
-                                'Mobile app release: previous APK deletion returned false.',
-                                $this->releaseContext($updatedRelease, [
-                                    'old_file_id' => $oldFile->getKey(),
-                                    'old_disk' => $oldDisk,
-                                    'old_path' => $oldPath,
-                                ])
-                            );
-                        }
-                    }
-                } catch (Throwable $cleanupException) {
-                    $this->logFailure(
+                if (
+                    is_string($oldDisk)
+                    && $oldDisk !== ''
+                    && is_string($oldPath)
+                    && $oldPath !== ''
+                ) {
+                    $this->deleteStoredApk(
+                        $oldDisk,
+                        $oldPath,
                         'update_old_apk_cleanup',
-                        $cleanupException,
-                        $this->releaseContext($updatedRelease, [
+                        [
+                            'release_id' => $updatedRelease->getKey(),
                             'old_file_id' => $oldFile->getKey(),
-                            'old_disk' => $oldFile->disk,
-                            'old_path' => $oldFile->path,
-                        ])
+                        ]
                     );
                 }
             }
@@ -587,10 +764,7 @@ class MobileAppReleaseService
                 'Mobile app release: update completed successfully.',
                 $this->releaseContext($updatedRelease, [
                     'apk_replaced' => $apk !== null,
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -603,42 +777,17 @@ class MobileAppReleaseService
             );
 
             /*
-            |--------------------------------------------------------------------------
-            | Clean Up New APK If Update Failed
-            |--------------------------------------------------------------------------
-            */
-
-            if ($newPath !== null) {
-                try {
-                    $deleted = Storage::disk($disk)->delete($newPath);
-
-                    Log::info(
-                        'Mobile app release: replacement APK cleanup completed.',
-                        array_merge($context, [
-                            'new_path' => $newPath,
-                            'file_deleted' => $deleted,
-                        ])
-                    );
-                } catch (Throwable $cleanupException) {
-                    $this->logFailure(
-                        'update_new_apk_cleanup',
-                        $cleanupException,
-                        array_merge($context, [
-                            'new_path' => $newPath,
-                        ])
-                    );
-                }
+             * If the database transaction failed, the new APK may be
+             * orphaned. Attempt cleanup without masking the original error.
+             */
+            if (is_string($newPath)) {
+                $this->deleteStoredApk(
+                    $disk,
+                    $newPath,
+                    'update_new_apk_cleanup',
+                    $context
+                );
             }
-
-            Log::warning(
-                'Mobile app release: update terminated with an error.',
-                array_merge($context, [
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
-                ])
-            );
 
             throw $exception;
         }
@@ -651,8 +800,7 @@ class MobileAppReleaseService
     */
 
     /**
-     * Publish a draft release and make it the latest release
-     * for its application only.
+     * Publish a draft release and mark it latest for its application.
      */
     public function publish(
         MobileAppRelease $release
@@ -673,24 +821,8 @@ class MobileAppReleaseService
         try {
             $publishedRelease = DB::transaction(function () use (
                 $release,
-                $appType,
-                $context
-            ) {
-                Log::info(
-                    'Mobile app release: publish transaction started.',
-                    $context
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Lock Application Releases
-                |--------------------------------------------------------------------------
-                |
-                | All releases for this application are locked in a
-                | consistent order to serialize concurrent publishing.
-                |
-                */
-
+                $appType
+            ): MobileAppRelease {
                 $applicationReleases = $this->lockApplicationReleases(
                     $appType
                 );
@@ -706,79 +838,29 @@ class MobileAppReleaseService
                     ]);
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Validate Release Status
-                |--------------------------------------------------------------------------
-                */
-
                 if ($lockedRelease->status !== 'draft') {
-                    Log::warning(
-                        'Mobile app release: publishing rejected because release is not a draft.',
-                        $this->releaseContext($lockedRelease)
-                    );
-
                     throw ValidationException::withMessages([
                         'status' => 'Only draft releases can be published.',
                     ]);
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Validate APK Attachment
-                |--------------------------------------------------------------------------
-                */
-
                 $file = $lockedRelease->apkFile()->first();
 
                 if (! $this->isValidApk($file)) {
-                    Log::warning(
-                        'Mobile app release: publishing rejected because APK is missing or invalid.',
-                        $this->releaseContext($lockedRelease, [
-                            'file_attached' => $file !== null,
-                            'file_status' => $file?->status,
-                            'file_extension' => $file?->extension,
-                            'file_path_present' => ! empty($file?->path),
-                            'disk' => $file?->disk,
-                        ])
-                    );
-
                     throw ValidationException::withMessages([
                         'apk' => 'A valid, ready APK file is required before publishing.',
                     ]);
                 }
 
                 /*
-                |--------------------------------------------------------------------------
-                | Clear Previous Latest Release For This Application
-                |--------------------------------------------------------------------------
-                */
-
-                $previousLatestIds = $applicationReleases
-                    ->where('is_latest', true)
-                    ->pluck('id')
-                    ->values()
-                    ->all();
-
+                 * Clear previous latest flags only for this application.
+                 */
                 MobileAppRelease::query()
                     ->where('app_type', $appType)
                     ->where('is_latest', true)
                     ->update([
                         'is_latest' => false,
                     ]);
-
-                Log::info(
-                    'Mobile app release: previous latest flags cleared.',
-                    $this->releaseContext($lockedRelease, [
-                        'previous_latest_ids' => $previousLatestIds,
-                    ])
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Publish Release
-                |--------------------------------------------------------------------------
-                */
 
                 $lockedRelease->status = 'published';
                 $lockedRelease->is_latest = true;
@@ -787,12 +869,10 @@ class MobileAppReleaseService
                 $lockedRelease->save();
 
                 Log::info(
-                    'Mobile app release: release marked as published.',
+                    'Mobile app release: release published.',
                     $this->releaseContext($lockedRelease, [
-                        'published_at' => $lockedRelease->published_at?->toIso8601String(),
-                        'is_latest' => $lockedRelease->is_latest,
                         'file_id' => $file->getKey(),
-                        'file_uuid' => $file->uuid,
+                        'published_at' => $lockedRelease->published_at?->toIso8601String(),
                     ])
                 );
 
@@ -805,10 +885,7 @@ class MobileAppReleaseService
             Log::info(
                 'Mobile app release: publishing completed successfully.',
                 $this->releaseContext($publishedRelease, [
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -833,8 +910,8 @@ class MobileAppReleaseService
     /**
      * Withdraw a release.
      *
-     * If the withdrawn release was latest, select the highest
-     * valid published release belonging to the same application.
+     * If it was latest, select the highest-version published release
+     * with a valid APK for the same application.
      */
     public function withdraw(
         MobileAppRelease $release
@@ -855,20 +932,8 @@ class MobileAppReleaseService
         try {
             $withdrawnRelease = DB::transaction(function () use (
                 $release,
-                $appType,
-                $context
-            ) {
-                Log::info(
-                    'Mobile app release: withdrawal transaction started.',
-                    $context
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Lock Application Releases
-                |--------------------------------------------------------------------------
-                */
-
+                $appType
+            ): MobileAppRelease {
                 $applicationReleases = $this->lockApplicationReleases(
                     $appType
                 );
@@ -884,18 +949,7 @@ class MobileAppReleaseService
                     ]);
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Check Existing Status
-                |--------------------------------------------------------------------------
-                */
-
                 if ($lockedRelease->status === 'withdrawn') {
-                    Log::info(
-                        'Mobile app release: release is already withdrawn.',
-                        $this->releaseContext($lockedRelease)
-                    );
-
                     return $lockedRelease->load([
                         'creator',
                         'apkFile',
@@ -904,44 +958,25 @@ class MobileAppReleaseService
 
                 $wasLatest = (bool) $lockedRelease->is_latest;
 
-                Log::info(
-                    'Mobile app release: marking release as withdrawn.',
-                    $this->releaseContext($lockedRelease, [
-                        'was_latest' => $wasLatest,
-                    ])
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Withdraw Release
-                |--------------------------------------------------------------------------
-                */
-
                 $lockedRelease->status = 'withdrawn';
                 $lockedRelease->is_latest = false;
 
                 $lockedRelease->save();
 
-                /*
-                |--------------------------------------------------------------------------
-                | Select Replacement Latest Release
-                |--------------------------------------------------------------------------
-                */
-
                 if ($wasLatest) {
                     $replacement = null;
 
                     $candidates = MobileAppRelease::query()
+                        ->with('apkFile')
                         ->where('app_type', $appType)
                         ->where('status', 'published')
                         ->where('is_latest', false)
                         ->orderByDesc('version_code')
+                        ->orderByDesc('created_at')
                         ->get();
 
                     foreach ($candidates as $candidate) {
-                        $candidateFile = $candidate->apkFile()->first();
-
-                        if ($this->isValidApk($candidateFile)) {
+                        if ($this->isValidApk($candidate->apkFile)) {
                             $replacement = $candidate;
 
                             break;
@@ -950,22 +985,18 @@ class MobileAppReleaseService
 
                     if ($replacement !== null) {
                         $replacement->is_latest = true;
-
                         $replacement->save();
 
                         Log::info(
                             'Mobile app release: replacement latest release selected.',
                             $this->releaseContext($replacement, [
                                 'previous_latest_release_id' => $lockedRelease->getKey(),
-                                'replacement_latest_release_id' => $replacement->getKey(),
                             ])
                         );
                     } else {
                         Log::warning(
                             'Mobile app release: no valid published replacement was available.',
-                            $this->releaseContext($lockedRelease, [
-                                'app_type' => $appType,
-                            ])
+                            $this->releaseContext($lockedRelease)
                         );
                     }
                 }
@@ -979,10 +1010,7 @@ class MobileAppReleaseService
             Log::info(
                 'Mobile app release: withdrawal completed successfully.',
                 $this->releaseContext($withdrawnRelease, [
-                    'duration_ms' => round(
-                        (microtime(true) - $startedAt) * 1000,
-                        2
-                    ),
+                    'duration_ms' => $this->durationMs($startedAt),
                 ])
             );
 
@@ -1000,12 +1028,12 @@ class MobileAppReleaseService
 
     /*
     |--------------------------------------------------------------------------
-    | APK Validation
+    | APK Record Validation
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Determine whether an APK file record is valid and downloadable.
+     * Determine whether a File record is a valid, physically available APK.
      */
     private function isValidApk(?File $file): bool
     {
@@ -1018,12 +1046,22 @@ class MobileAppReleaseService
             || strtolower((string) $file->extension) !== 'apk'
             || empty($file->path)
             || empty($file->disk)
+            || (int) $file->size_bytes <= 0
         ) {
             return false;
         }
 
         try {
-            return Storage::disk($file->disk)->exists($file->path);
+            $storage = Storage::disk($file->disk);
+
+            if (! $storage->exists($file->path)) {
+                return false;
+            }
+
+            $storedSize = $storage->size($file->path);
+
+            return $storedSize > 0
+                && (int) $storedSize === (int) $file->size_bytes;
         } catch (Throwable $exception) {
             Log::warning(
                 'Mobile app release: APK storage verification failed.',
@@ -1032,160 +1070,12 @@ class MobileAppReleaseService
                     'file_uuid' => $file->uuid,
                     'disk' => $file->disk,
                     'path' => $file->path,
+                    'exception_class' => get_class($exception),
                     'exception_message' => $exception->getMessage(),
                 ]
             );
 
             return false;
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | File Record
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Build the centralized File model record.
-     */
-    private function createFileRecord(
-        MobileAppRelease $release,
-        UploadedFile $apk,
-        string $disk,
-        string $path,
-        ?string $userId
-    ): File {
-        $context = $this->releaseContext($release, [
-            'operation' => 'create_file_record',
-            'disk' => $disk,
-            'stored_path' => $path,
-            'original_filename' => $apk->getClientOriginalName(),
-            'file_size_bytes' => $apk->getSize(),
-            'uploaded_by' => $userId,
-        ]);
-
-        Log::info(
-            'Mobile app release: preparing APK file metadata.',
-            $context
-        );
-
-        $realPath = $apk->getRealPath();
-
-        if (! is_string($realPath) || ! is_file($realPath)) {
-            Log::error(
-                'Mobile app release: uploaded APK temporary file is inaccessible.',
-                $context
-            );
-
-            throw new RuntimeException(
-                'The uploaded APK is not accessible.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate SHA-256 Checksum
-        |--------------------------------------------------------------------------
-        */
-
-        $checksum = hash_file('sha256', $realPath);
-
-        if (! is_string($checksum)) {
-            Log::error(
-                'Mobile app release: APK checksum calculation failed.',
-                $context
-            );
-
-            throw new RuntimeException(
-                'Unable to calculate the APK checksum.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Create File Record
-        |--------------------------------------------------------------------------
-        */
-
-        $file = new File([
-            'uuid' => (string) Str::uuid(),
-
-            'collection' => 'mobile_app_release',
-
-            'original_name' => mb_substr(
-                $apk->getClientOriginalName(),
-                0,
-                255
-            ),
-
-            'stored_name' => basename($path),
-
-            'path' => $path,
-
-            'disk' => $disk,
-
-            'mime_type' => $apk->getMimeType(),
-
-            'extension' => 'apk',
-
-            'size_bytes' => $apk->getSize() ?: 0,
-
-            'checksum' => $checksum,
-
-            'uploaded_by' => $userId,
-
-            'source' => $userId !== null
-                ? 'OFFICER'
-                : 'SYSTEM',
-
-            'visibility' => 'PRIVATE',
-
-            'status' => 'READY',
-
-            'uploaded_at' => now(),
-        ]);
-
-        Log::info(
-            'Mobile app release: APK file metadata prepared successfully.',
-            array_merge($context, [
-                'file_uuid' => $file->uuid,
-                'stored_filename' => $file->stored_name,
-                'mime_type' => $file->mime_type,
-                'extension' => $file->extension,
-                'checksum_sha256' => $checksum,
-                'visibility' => $file->visibility,
-                'file_status' => $file->status,
-            ])
-        );
-
-        return $file;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Draft Validation
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Prevent modification of published or withdrawn releases.
-     */
-    private function ensureDraft(
-        MobileAppRelease $release
-    ): void {
-        if ($release->status !== 'draft') {
-            Log::warning(
-                'Mobile app release: draft-only operation rejected.',
-                $this->releaseContext($release, [
-                    'operation' => 'ensure_draft',
-                    'reason' => 'Release status is not draft.',
-                ])
-            );
-
-            throw ValidationException::withMessages([
-                'status' => 'Only draft releases can be edited.',
-            ]);
         }
     }
 }

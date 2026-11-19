@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\System\MobileAppRelease\Requests;
 
 use App\Models\MobileAppRelease;
@@ -8,6 +10,12 @@ use Illuminate\Validation\Rule;
 
 class UpdateMobileAppReleaseRequest extends FormRequest
 {
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization
+    |--------------------------------------------------------------------------
+    */
+
     public function authorize(): bool
     {
         return $this->user() !== null;
@@ -21,6 +29,11 @@ class UpdateMobileAppReleaseRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
+        $merge = [];
+
+        /*
+         * Normalize mandatory release flag.
+         */
         if ($this->exists('is_mandatory')) {
             $value = filter_var(
                 $this->input('is_mandatory'),
@@ -29,11 +42,47 @@ class UpdateMobileAppReleaseRequest extends FormRequest
             );
 
             if ($value !== null) {
-                $this->merge([
-                    'is_mandatory' => $value,
-                ]);
+                $merge['is_mandatory'] = $value;
             }
         }
+
+        /*
+         * Normalize version name.
+         */
+        if (is_string($this->input('version_name'))) {
+            $merge['version_name'] = trim(
+                $this->input('version_name')
+            );
+        }
+
+        if ($merge !== []) {
+            $this->merge($merge);
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve Route Release
+    |--------------------------------------------------------------------------
+    */
+
+    private function resolveRelease(): MobileAppRelease
+    {
+        $routeRelease = $this->route('mobile_app_release')
+            ?? $this->route('mobileAppRelease')
+            ?? $this->route('id');
+
+        if ($routeRelease instanceof MobileAppRelease) {
+            return $routeRelease;
+        }
+
+        if (! is_string($routeRelease) || $routeRelease === '') {
+            abort(404, 'Mobile app release not found.');
+        }
+
+        return MobileAppRelease::query()
+            ->whereKey($routeRelease)
+            ->firstOrFail();
     }
 
     /*
@@ -44,13 +93,7 @@ class UpdateMobileAppReleaseRequest extends FormRequest
 
     public function rules(): array
     {
-        $routeRelease = $this->route('mobile_app_release')
-            ?? $this->route('mobileAppRelease')
-            ?? $this->route('id');
-
-        $release = $routeRelease instanceof MobileAppRelease
-            ? $routeRelease
-            : MobileAppRelease::findOrFail($routeRelease);
+        $release = $this->resolveRelease();
 
         return [
             /*
@@ -81,8 +124,23 @@ class UpdateMobileAppReleaseRequest extends FormRequest
                 'required',
                 'integer',
                 'min:1',
-                Rule::unique('mobile_app_releases', 'version_code')
-                    ->where('app_type', $release->app_type)
+
+                /*
+                 * Version codes are unique per application type.
+                 *
+                 * The current release is excluded from the uniqueness
+                 * check so an unchanged version code remains valid.
+                 */
+                Rule::unique(
+                    'mobile_app_releases',
+                    'version_code'
+                )
+                    ->where(
+                        fn ($query) => $query->where(
+                            'app_type',
+                            $release->app_type
+                        )
+                    )
                     ->ignore($release->getKey()),
             ],
 
@@ -111,16 +169,19 @@ class UpdateMobileAppReleaseRequest extends FormRequest
 
             /*
             |--------------------------------------------------------------------------
-            | APK Upload
+            | Optional Chunked APK Upload
             |--------------------------------------------------------------------------
+            |
+            | If supplied, the completed upload replaces the existing APK.
+            | If omitted, the existing APK remains unchanged.
+            |
             */
 
-            'apk' => [
+            'upload_uuid' => [
                 'sometimes',
-                'nullable',
-                'file',
-                'extensions:apk',
-                'max:' . config('mobile_apps.apk.max_size', 204800),
+                'required',
+                'uuid',
+                'exists:mobile_app_release_uploads,uuid',
             ],
         ];
     }
@@ -134,11 +195,26 @@ class UpdateMobileAppReleaseRequest extends FormRequest
     public function messages(): array
     {
         return [
+            /*
+            |--------------------------------------------------------------------------
+            | Application
+            |--------------------------------------------------------------------------
+            */
+
             'app_type.prohibited' =>
                 'The application type cannot be changed after release creation.',
 
+            /*
+            |--------------------------------------------------------------------------
+            | Release Version
+            |--------------------------------------------------------------------------
+            */
+
             'version_name.required' =>
                 'The release version name is required.',
+
+            'version_name.string' =>
+                'The release version name must be valid text.',
 
             'version_name.max' =>
                 'The release version name cannot exceed 50 characters.',
@@ -155,20 +231,38 @@ class UpdateMobileAppReleaseRequest extends FormRequest
             'version_code.unique' =>
                 'This version code already exists for this application.',
 
+            /*
+            |--------------------------------------------------------------------------
+            | Release Information
+            |--------------------------------------------------------------------------
+            */
+
             'release_notes.string' =>
                 'Release notes must be valid text.',
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update Policy
+            |--------------------------------------------------------------------------
+            */
 
             'is_mandatory.boolean' =>
                 'The mandatory release field must be true or false.',
 
-            'apk.file' =>
-                'The uploaded APK could not be read. Please select the file again.',
+            /*
+            |--------------------------------------------------------------------------
+            | Chunked APK Upload
+            |--------------------------------------------------------------------------
+            */
 
-            'apk.extensions' =>
-                'The uploaded file must have the .apk extension.',
+            'upload_uuid.required' =>
+                'Please provide a completed APK upload reference.',
 
-            'apk.max' =>
-                'The APK must not exceed 200 MB.',
+            'upload_uuid.uuid' =>
+                'The APK upload reference is invalid.',
+
+            'upload_uuid.exists' =>
+                'The specified APK upload session does not exist.',
         ];
     }
 }

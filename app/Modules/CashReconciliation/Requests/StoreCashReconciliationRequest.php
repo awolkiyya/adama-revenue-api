@@ -36,6 +36,19 @@ class StoreCashReconciliationRequest extends FormRequest
                 'string',
                 'max:5000',
             ],
+
+            // Newly uploaded evidence files.
+            'evidence' => [
+                'sometimes',
+                'array',
+                'max:10',
+            ],
+
+            'evidence.*' => [
+                'file',
+                'max:10240',
+                'mimes:pdf,jpg,jpeg,png',
+            ],
         ];
     }
 
@@ -65,6 +78,21 @@ class StoreCashReconciliationRequest extends FormRequest
 
             'collector_notes.max' =>
                 'Collector notes cannot exceed 5,000 characters.',
+
+            'evidence.array' =>
+                'The evidence files must be submitted as a valid list.',
+
+            'evidence.max' =>
+                'You cannot upload more than 10 evidence files at once.',
+
+            'evidence.*.file' =>
+                'Each evidence attachment must be a valid file.',
+
+            'evidence.*.max' =>
+                'Each evidence file cannot exceed 10 MB.',
+
+            'evidence.*.mimes' =>
+                'Evidence files must be PDF, JPG, JPEG, PNG, WEBP, DOC, DOCX, XLS, or XLSX.',
         ];
     }
 

@@ -2,13 +2,16 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class CashReconciliation extends Model
 {
     use HasFactory;
+    use HasUuids;
 
     /*
     |--------------------------------------------------------------------------
@@ -30,16 +33,16 @@ class CashReconciliation extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | File Collection
+    |--------------------------------------------------------------------------
+    */
+
+    public const FILE_COLLECTION_EVIDENCE = 'RECONCILIATION_EVIDENCE';
+
+    /*
+    |--------------------------------------------------------------------------
     | Mass Assignment Protection
     |--------------------------------------------------------------------------
-    |
-    | Financial totals, reviewer information, timestamps, and status changes
-    | should be controlled by the backend service.
-    |
-    | These fields remain fillable for compatibility with trusted service
-    | operations. Never pass unvalidated request data directly into create()
-    | or update() without explicitly controlling the permitted fields.
-    |
     */
 
     protected $fillable = [
@@ -89,7 +92,10 @@ class CashReconciliation extends Model
      */
     public function collector(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'collector_id');
+        return $this->belongsTo(
+            User::class,
+            'collector_id'
+        );
     }
 
     /**
@@ -97,7 +103,39 @@ class CashReconciliation extends Model
      */
     public function reviewer(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'reviewed_by');
+        return $this->belongsTo(
+            User::class,
+            'reviewed_by'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | File Relationships
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * All files attached to this reconciliation.
+     */
+    public function files(): MorphMany
+    {
+        return $this->morphMany(
+            File::class,
+            'fileable'
+        );
+    }
+
+    /**
+     * Evidence documents attached to this reconciliation.
+     */
+    public function evidence(): MorphMany
+    {
+        return $this->files()
+            ->where(
+                'collection',
+                self::FILE_COLLECTION_EVIDENCE
+            );
     }
 
     /*
@@ -116,13 +154,6 @@ class CashReconciliation extends Model
 
     /**
      * Determine whether the reconciliation has a cash discrepancy.
-     *
-     * A positive difference means an overage.
-     * A negative difference means a shortage.
-     * A zero difference means the amounts balance.
-     *
-     * A discrepancy cannot be determined until an actual amount and
-     * calculated difference have both been recorded.
      */
     public function hasDiscrepancy(): bool
     {
@@ -198,8 +229,7 @@ class CashReconciliation extends Model
     }
 
     /**
-     * Determine whether the reconciliation has a recorded discrepancy
-     * requiring resolution.
+     * Determine whether the reconciliation has a recorded discrepancy.
      */
     public function isDiscrepancy(): bool
     {

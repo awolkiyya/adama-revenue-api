@@ -8,6 +8,7 @@ use App\Models\Citizen;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\RevenueService;
+use App\Models\User;
 use App\Modules\Invoice\Services\InvoiceIssuanceService;
 use App\Services\DocumentSequenceService;
 use Illuminate\Support\Facades\Auth;
@@ -30,6 +31,9 @@ class DirectCollectionInvoiceService
     /**
      * Create and issue one invoice containing multiple collection items.
      *
+     * The invoice's administrative unit is always taken from the
+     * authenticated collector, never from the request payload.
+     *
      * @param array<string,mixed> $data
      * @param array<string,mixed> $context
      * @param array<string,mixed> $calculation
@@ -41,7 +45,7 @@ class DirectCollectionInvoiceService
     ): Invoice {
         $user = Auth::user();
 
-        if (! $user) {
+        if (! $user instanceof User) {
             throw ValidationException::withMessages([
                 'user' => [
                     'An authenticated user is required.',
@@ -114,6 +118,39 @@ class DirectCollectionInvoiceService
             ): Invoice {
                 /*
                 |--------------------------------------------------------------------------
+                | Lock and Resolve Authenticated Collector
+                |--------------------------------------------------------------------------
+                |
+                | Always use the collector's administrative unit from
+                | the users table. Do not trust a frontend-supplied ID.
+                |
+                */
+
+                $collector = User::query()
+                    ->lockForUpdate()
+                    ->find($user->getKey());
+
+                if (! $collector) {
+                    throw ValidationException::withMessages([
+                        'user' => [
+                            'The authenticated collector could not be found.',
+                        ],
+                    ]);
+                }
+
+                $administrativeUnitId =
+                    $collector->administrative_unit_id;
+
+                if (! $administrativeUnitId) {
+                    throw ValidationException::withMessages([
+                        'administrative_unit_id' => [
+                            'The collector must be assigned to an administrative unit before creating a direct collection invoice.',
+                        ],
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
                 | Lock Taxpayer
                 |--------------------------------------------------------------------------
                 */
@@ -178,6 +215,10 @@ class DirectCollectionInvoiceService
                 |
                 | Direct collection invoices do not have due dates.
                 |
+                | IMPORTANT:
+                | administrative_unit_id is assigned from the authenticated
+                | collector, not from the request data.
+                |
                 */
 
                 $invoice = Invoice::query()->create([
@@ -189,8 +230,7 @@ class DirectCollectionInvoiceService
 
                     'citizen_id' => $lockedTaxpayer->id,
 
-                    'administrative_unit_id' =>
-                        $data['administrative_unit_id'] ?? null,
+                    'administrative_unit_id' => $administrativeUnitId,
 
                     'status' => 'DRAFT',
 
@@ -266,7 +306,7 @@ class DirectCollectionInvoiceService
 
                     'notes' => $data['notes'] ?? null,
 
-                    'created_by' => $user->id,
+                    'created_by' => $collector->id,
 
                     'issued_by' => null,
 
@@ -285,7 +325,10 @@ class DirectCollectionInvoiceService
 
                         'taxpayer_id' => (string) $lockedTaxpayer->id,
 
-                        'created_by' => (string) $user->id,
+                        'created_by' => (string) $collector->id,
+
+                        'administrative_unit_id' =>
+                            (string) $administrativeUnitId,
 
                         'created_at' => now()->toISOString(),
 
@@ -410,13 +453,15 @@ class DirectCollectionInvoiceService
 
                         'revenue_service_id' => $service->id,
 
+                        'administrative_unit_id' => $administrativeUnitId,
+
                         'entry_count' => count($entries),
 
                         'amount' => $financials['amount'],
 
                         'currency' => $financials['currency'],
 
-                        'created_by' => $user->id,
+                        'created_by' => $collector->id,
 
                         'issued_by' => $issuedInvoice->issued_by,
                     ]
@@ -581,7 +626,7 @@ class DirectCollectionInvoiceService
             ) {
                 throw ValidationException::withMessages([
                     "entries.{$position}.currency" => [
-                        'The entry currency is invalid.',
+                        'The entry calculation currency is invalid.',
                     ],
                 ]);
             }

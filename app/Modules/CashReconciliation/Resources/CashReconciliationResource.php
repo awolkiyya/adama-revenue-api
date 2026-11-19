@@ -2,9 +2,9 @@
 
 namespace App\Modules\CashReconciliation\Resources;
 
+use App\Models\CashReconciliation;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use App\Models\CashReconciliation;
 
 class CashReconciliationResource extends JsonResource
 {
@@ -17,7 +17,7 @@ class CashReconciliationResource extends JsonResource
         $reconciliation = $this->resource;
 
         return [
-            'id' => $reconciliation->getKey(),
+            'id' => (string) $reconciliation->getKey(),
 
             /*
             |--------------------------------------------------------------------------
@@ -95,6 +95,31 @@ class CashReconciliationResource extends JsonResource
             'collector_notes' => $reconciliation->collector_notes,
 
             'review_notes' => $reconciliation->review_notes,
+
+            /*
+            |--------------------------------------------------------------------------
+            | Evidence Files
+            |--------------------------------------------------------------------------
+            */
+
+            'evidence' => $this->whenLoaded(
+                'evidence',
+                function () use ($reconciliation): array {
+                    return $reconciliation->evidence
+                        ->map(function ($file): array {
+                            return [
+                                'id' => (string) $file->getKey(),
+                                'uuid' => (string) $file->uuid,
+                                'original_name' => $file->original_name,
+                                'mime_type' => $file->mime_type,
+                                'size' => $file->size,
+                                'created_at' => $file->created_at?->toISOString(),
+                            ];
+                        })
+                        ->values()
+                        ->all();
+                }
+            ),
 
             /*
             |--------------------------------------------------------------------------
