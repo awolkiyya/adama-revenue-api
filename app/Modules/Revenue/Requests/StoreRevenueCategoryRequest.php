@@ -45,11 +45,9 @@ class StoreRevenueCategoryRequest extends FormRequest
                 'required',
                 'string',
                 'max:255',
-                Rule::unique('revenue_categories')
-                    ->where(fn ($query) => $query->where(
-                        'revenue_domain',
-                        $this->input('revenue_domain')
-                    )),
+                Rule::unique('revenue_categories', 'name')
+                    ->where('revenue_domain', $this->input('revenue_domain'))
+                    ->whereNull('deleted_at'),
             ],
 
             'start_code' => [
@@ -74,11 +72,9 @@ class StoreRevenueCategoryRequest extends FormRequest
                 'nullable',
                 'integer',
                 'min:0',
-                Rule::unique('revenue_categories')
-                    ->where(fn ($query) => $query->where(
-                        'revenue_domain',
-                        $this->input('revenue_domain')
-                    )),
+                Rule::unique('revenue_categories', 'sort_order')
+                    ->where('revenue_domain', $this->input('revenue_domain'))
+                    ->whereNull('deleted_at'),
             ],
 
             'is_active' => [
@@ -102,7 +98,8 @@ class StoreRevenueCategoryRequest extends FormRequest
                 'string',
                 'max:20',
                 'distinct',
-                Rule::unique('revenue_codes', 'code'),
+                Rule::unique('revenue_codes', 'code')
+                    ->whereNull('deleted_at'),
             ],
 
             'codes.*.name' => [
@@ -132,19 +129,22 @@ class StoreRevenueCategoryRequest extends FormRequest
     {
         $validator->after(function (Validator $validator) {
 
-            /**
-             * --------------------------------------------------------------
-             * Prevent overlapping category ranges
-             * --------------------------------------------------------------
-             */
-            if ($this->filled('start_code') && $this->filled('end_code')) {
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent overlapping category ranges
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                $this->filled('start_code') &&
+                $this->filled('end_code')
+            ) {
 
                 $overlap = RevenueCategory::query()
                     ->where('revenue_domain', $this->revenue_domain)
                     ->where(function ($query) {
 
                         $query
-
                             ->whereBetween('start_code', [
                                 $this->start_code,
                                 $this->end_code,
@@ -175,11 +175,12 @@ class StoreRevenueCategoryRequest extends FormRequest
                 }
             }
 
-            /**
-             * --------------------------------------------------------------
-             * Ensure every revenue code is inside the category range
-             * --------------------------------------------------------------
-             */
+            /*
+            |--------------------------------------------------------------------------
+            | Ensure every revenue code is inside the category range
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $this->filled('start_code') &&
                 $this->filled('end_code') &&

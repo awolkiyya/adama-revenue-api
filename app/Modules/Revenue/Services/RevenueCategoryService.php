@@ -3,321 +3,214 @@
 namespace App\Modules\Revenue\Services;
 
 use App\Models\RevenueCategory;
+use App\Models\RevenueCode;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
-use Throwable;
-
 
 class RevenueCategoryService
 {
-
-
     /**
-     * Get all revenue categories
+     * Get all revenue categories.
      */
     public function all(
         array $filters = [],
         int $perPage = 15
     ): LengthAwarePaginator {
 
-
         return RevenueCategory::query()
-
-            /**
-             * Count revenue codes
-             */
             ->withCount('codes')
 
-
-            /**
-             * Filter revenue domain
-             */
             ->when(
                 array_key_exists('revenue_domain', $filters),
-                function ($query) use ($filters) {
-
-                    $query->where(
-                        'revenue_domain',
-                        $filters['revenue_domain']
-                    );
-
-                }
+                fn ($query) => $query->where(
+                    'revenue_domain',
+                    $filters['revenue_domain']
+                )
             )
 
-
-            /**
-             * Filter status
-             */
             ->when(
                 array_key_exists('is_active', $filters),
-                function ($query) use ($filters) {
-
-                    $query->where(
-                        'is_active',
-                        $filters['is_active']
-                    );
-
-                }
+                fn ($query) => $query->where(
+                    'is_active',
+                    $filters['is_active']
+                )
             )
 
-
-            /**
-             * Sorting
-             */
             ->orderBy('sort_order')
-
             ->orderBy('name')
-
-
             ->paginate($perPage);
-
     }
 
     /**
- * Revenue category summary
- *
- * Used for dashboard cards
- */
-public function summary(
-    array $filters = []
-): array {
-
-
-    $query = RevenueCategory::query();
-
-
-
-    /**
-     * Apply same filters
+     * Revenue category summary.
+     *
+     * Used for dashboard cards.
      */
-    $query->when(
-        array_key_exists('revenue_domain', $filters),
-        function ($query) use ($filters) {
+    public function summary(array $filters = []): array
+    {
+        $query = RevenueCategory::query();
 
-            $query->where(
+        $query->when(
+            array_key_exists('revenue_domain', $filters),
+            fn ($query) => $query->where(
                 'revenue_domain',
                 $filters['revenue_domain']
-            );
+            )
+        );
 
-        }
-    );
+        $codesQuery = RevenueCode::query()
+            ->whereHas('category', function ($query) use ($filters) {
 
+                $query->when(
+                    array_key_exists('revenue_domain', $filters),
+                    fn ($query) => $query->where(
+                        'revenue_domain',
+                        $filters['revenue_domain']
+                    )
+                );
 
+            });
 
-    return [
+        return [
 
-        /**
-         * Total categories
-         */
-        'total' => (clone $query)->count(),
+            'total' => (clone $query)->count(),
 
+            'active' => (clone $query)
+                ->where('is_active', true)
+                ->count(),
 
+            'inactive' => (clone $query)
+                ->where('is_active', false)
+                ->count(),
 
-        /**
-         * Active categories
-         */
-        'active' => (clone $query)
-            ->where('is_active', true)
-            ->count(),
+            'totalCodes' => (clone $codesQuery)->count(),
 
-
-
-        /**
-         * Inactive categories
-         */
-        'inactive' => (clone $query)
-            ->where('is_active', false)
-            ->count(),
-
-
-
-        /**
-         * Total revenue codes
-         */
-        'totalCodes' => RevenueCategory::query()
-            ->withCount('codes')
-            ->get()
-            ->sum('codes_count'),
-
-    ];
-
-}
-
+        ];
+    }
 
     /**
-     * Find category
+     * Find category with revenue codes.
      */
     public function find(
         RevenueCategory $category
     ): RevenueCategory {
 
-
         return $category->load('codes');
-
     }
 
     /**
-     * Create category with codes
+     * Create category with revenue codes.
+     *
+     * Soft-deleted codes from another category are not
+     * automatically moved because they may have historical
+     * financial relationships.
      */
-    public function create(
-        array $data
-    ): RevenueCategory {
-
-
+    public function create(array $data): RevenueCategory
+    {
         return DB::transaction(function () use ($data) {
-
 
             $codes = $data['codes'] ?? [];
 
-
             unset($data['codes']);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Create Category
+            |--------------------------------------------------------------------------
+            */
 
+            $category = RevenueCategory::create($data);
 
-            /**
-             * Create category
-             */
-            $category = RevenueCategory::create(
-                $data
-            );
+            /*
+            |--------------------------------------------------------------------------
+            | Create Revenue Codes
+            |--------------------------------------------------------------------------
+            */
 
+            foreach ($codes as $code) {
 
+                $category->codes()->create([
 
-            /**
-             * Create codes
-             */
-            if (!empty($codes)) {
+                    'code' => $code['code'],
 
+                    'name' => $code['name'],
 
-                foreach ($codes as $code) {
+                    'description' => $code['description'] ?? null,
 
+                    'is_active' => $code['is_active'] ?? true,
 
-                    $category->codes()->create([
-
-                        'code' => $code['code'],
-
-                        'name' => $code['name'],
-
-                        'description' =>
-                            $code['description'] ?? null,
-
-                        'is_active' =>
-                            $code['is_active'] ?? true,
-
-                    ]);
-
-
-                }
+                ]);
 
             }
-
-
 
             return $category->load('codes');
 
-
         });
-
-
     }
 
+    /**
+     * Update category with revenue codes.
+     */
+    public function update(
+        RevenueCategory $category,
+        array $data
+    ): RevenueCategory {
 
+        return DB::transaction(function () use (
+            $category,
+            $data
+        ) {
 
+            $codes = $data['codes'] ?? null;
 
+            unset($data['codes']);
 
-/**
- * Update category with codes
- */
-public function update(
-    RevenueCategory $category,
-    array $data
-): RevenueCategory {
+            /*
+            |--------------------------------------------------------------------------
+            | Update Category
+            |--------------------------------------------------------------------------
+            */
 
+            $category->update($data);
 
-    return DB::transaction(function () use (
-        $category,
-        $data
-    ) {
+            /*
+            |--------------------------------------------------------------------------
+            | Sync Revenue Codes
+            |--------------------------------------------------------------------------
+            */
 
+            if ($codes !== null) {
 
-        $codes = $data['codes'] ?? null;
+                $keepIds = [];
 
+                foreach ($codes as $codeData) {
 
-        unset($data['codes']);
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Update Existing Revenue Code
+                    |--------------------------------------------------------------------------
+                    */
 
+                    if (!empty($codeData['id'])) {
 
+                        $existingCode = $category
+                            ->codes()
+                            ->withTrashed()
+                            ->findOrFail($codeData['id']);
 
-        /**
-         * --------------------------------------------------------------
-         * Update Category
-         * --------------------------------------------------------------
-         */
-        $category->update($data);
+                        /*
+                        | Restore if previously soft deleted.
+                        */
 
-
-
-
-        /**
-         * --------------------------------------------------------------
-         * Sync Revenue Codes
-         * --------------------------------------------------------------
-         */
-        if ($codes !== null) {
-
-
-            $keepIds = collect();
-
-
-
-            foreach ($codes as $codeData) {
-
-
-
-                /**
-                 * ------------------------------------------------------
-                 * Update Existing Code
-                 * ------------------------------------------------------
-                 */
-                if (!empty($codeData['id'])) {
-
-
-
-                    $existingCode = $category
-                        ->codes()
-                        ->withTrashed()
-                        ->where(
-                            'id',
-                            $codeData['id']
-                        )
-                        ->first();
-
-
-
-                    if ($existingCode) {
-
-
-
-                        /**
-                         * Restore if soft deleted
-                         */
                         if ($existingCode->trashed()) {
-
                             $existingCode->restore();
-
                         }
-
-
-
 
                         $existingCode->update([
 
-                            'code' =>
-                                $codeData['code'],
+                            'code' => $codeData['code'],
 
-                            'name' =>
-                                $codeData['name'],
+                            'name' => $codeData['name'],
 
                             'description' =>
                                 $codeData['description'] ?? null,
@@ -327,92 +220,36 @@ public function update(
 
                         ]);
 
-
-
-                        $keepIds->push(
-                            $existingCode->id
-                        );
-
-
+                        $keepIds[] = $existingCode->id;
 
                         continue;
-
                     }
 
-                }
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Find Existing Code Within Same Category
+                    |--------------------------------------------------------------------------
+                    |
+                    | Restore the original record if it was deleted.
+                    | This preserves historical relationships.
+                    |
+                    */
 
-
-
-
-                /**
-                 * ------------------------------------------------------
-                 * Create New Code OR Restore Deleted Code
-                 * ------------------------------------------------------
-                 */
-
-
-                $existingDeletedCode = $category
-                    ->codes()
-                    ->withTrashed()
-                    ->where(
-                        'code',
-                        $codeData['code']
-                    )
-                    ->first();
-
-
-
-
-                if ($existingDeletedCode) {
-
-
-
-                    /**
-                     * Restore soft deleted record
-                     */
-                    if ($existingDeletedCode->trashed()) {
-
-                        $existingDeletedCode->restore();
-
-                    }
-
-
-
-                    $existingDeletedCode->update([
-
-                        'name' =>
-                            $codeData['name'],
-
-                        'description' =>
-                            $codeData['description'] ?? null,
-
-                        'is_active' =>
-                            $codeData['is_active'] ?? true,
-
-                    ]);
-
-
-
-                    $newCode = $existingDeletedCode;
-
-
-
-                } else {
-
-
-
-                    /**
-                     * Completely new revenue code
-                     */
-                    $newCode = $category
+                    $existingDeletedCode = $category
                         ->codes()
-                        ->create([
+                        ->withTrashed()
+                        ->where('code', $codeData['code'])
+                        ->first();
 
-                            'code' =>
-                                $codeData['code'],
+                    if ($existingDeletedCode) {
 
-                            'name' =>
-                                $codeData['name'],
+                        if ($existingDeletedCode->trashed()) {
+                            $existingDeletedCode->restore();
+                        }
+
+                        $existingDeletedCode->update([
+
+                            'name' => $codeData['name'],
 
                             'description' =>
                                 $codeData['description'] ?? null,
@@ -422,163 +259,129 @@ public function update(
 
                         ]);
 
+                        $newCode = $existingDeletedCode;
+
+                    } else {
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Create New Revenue Code
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $newCode = $category
+                            ->codes()
+                            ->create([
+
+                                'code' => $codeData['code'],
+
+                                'name' => $codeData['name'],
+
+                                'description' =>
+                                    $codeData['description'] ?? null,
+
+                                'is_active' =>
+                                    $codeData['is_active'] ?? true,
+
+                            ]);
+
+                    }
+
+                    $keepIds[] = $newCode->id;
+
                 }
 
+                /*
+                |--------------------------------------------------------------------------
+                | Soft Delete Removed Codes
+                |--------------------------------------------------------------------------
+                |
+                | Codes removed from the submitted list are soft deleted.
+                | Historical records remain in the database.
+                |
+                */
 
-
-
-                $keepIds->push(
-                    $newCode->id
-                );
-
+                $category
+                    ->codes()
+                    ->whereNotIn('id', $keepIds)
+                    ->delete();
 
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Return Updated Category
+            |--------------------------------------------------------------------------
+            */
 
+            return $category
+                ->fresh()
+                ->load('codes');
 
-
-
-            /**
-             * ----------------------------------------------------------
-             * Soft Delete Removed Codes
-             * ----------------------------------------------------------
-             *
-             * Any code removed from the UI will be soft deleted.
-             *
-             */
-            $category
-                ->codes()
-                ->whereNotIn(
-                    'id',
-                    $keepIds->toArray()
-                )
-                ->delete();
-
-
-        }
-
-
-
-
-        /**
-         * --------------------------------------------------------------
-         * Return Updated Category
-         * --------------------------------------------------------------
-         */
-        return $category
-            ->fresh()
-            ->load([
-                'codes'
-            ]);
-
-
-    });
-
-}
-
-
-
-
-
-
+        });
+    }
 
     /**
-     * Delete category
+     * Delete category and its active revenue codes.
      */
     public function delete(
         RevenueCategory $category
     ): bool {
 
-
         return DB::transaction(function () use ($category) {
 
+            /*
+            | Soft delete active revenue codes first.
+            */
 
-            /**
-             * Remove related codes first
-             */
-            $category->codes()
-                ->delete();
+            $category->codes()->delete();
 
+            /*
+            | Soft delete category.
+            */
 
-
-            /**
-             * Soft delete category
-             */
-            return $category->delete();
-
+            return (bool) $category->delete();
 
         });
-
-
     }
 
-
-
-
-
-
     /**
-     * Activate category
+     * Activate category.
      */
     public function activate(
         RevenueCategory $category
     ): bool {
 
-
         return $category->update([
-
-            'is_active' => true
-
+            'is_active' => true,
         ]);
-
     }
 
-
-
-
-
-
-
     /**
-     * Deactivate category
+     * Deactivate category.
      */
     public function deactivate(
         RevenueCategory $category
     ): bool {
 
-
         return $category->update([
-
-            'is_active' => false
-
+            'is_active' => false,
         ]);
-
     }
 
-
-
-
-
-
     /**
-     * Check duplicate revenue code
+     * Check whether an active revenue code exists.
+     *
+     * Checks globally, not just within one category.
+     * Soft-deleted revenue codes are excluded.
      */
     public function codeExists(
         RevenueCategory $category,
         string $code
     ): bool {
 
-
-        return $category->codes()
-
-            ->where(
-                'code',
-                $code
-            )
-
+        return RevenueCode::query()
+            ->where('code', $code)
             ->exists();
-
     }
-
-
 }
