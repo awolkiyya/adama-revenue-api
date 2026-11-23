@@ -26,45 +26,48 @@ class OnlinePaymentController extends Controller
     ) {
     }
 
+   
+
     /*
     |--------------------------------------------------------------------------
     | Initialize Online Payment
     |--------------------------------------------------------------------------
     |
-    | Frontend sends only:
+    | Frontend sends:
     |
     | {
     |     "invoice_id": "...",
-    |     "amount": 29423.0475,
+    |     "amount": "29423.04",
     |     "payment_provider": "TELEBIRR"
     | }
     |
-    | The authenticated user may be:
+    | Supported providers:
+    | - CHAPA
+    | - TELEBIRR
     |
-    | - the taxpayer
-    | - an authorized employee/agent paying on behalf of the taxpayer
+    | The authenticated user may be:
+    | - The taxpayer
+    | - An authorized municipal employee/agent
     |
     | The invoice determines the taxpayer through:
-    |
     |     invoices.citizen_id
     |
-    | This endpoint only initializes the payment.
-    |
-    | Successful initialization does NOT mean the payment is completed.
+    | This endpoint initializes payment only.
+    | Initialization success does NOT mean payment completion.
     |
     */
 
     public function initialize(
         InitializePaymentRequest $request
     ): JsonResponse {
+
         /*
         |--------------------------------------------------------------------------
         | Request ID
         |--------------------------------------------------------------------------
         */
 
-        $requestId =
-            $request->header('X-Request-ID')
+        $requestId = $request->header('X-Request-ID')
             ?? (string) Str::uuid();
 
         /*
@@ -77,6 +80,14 @@ class OnlinePaymentController extends Controller
 
         /*
         |--------------------------------------------------------------------------
+        | Resolve Authenticated User
+        |--------------------------------------------------------------------------
+        */
+
+        $user = $request->user();
+
+        /*
+        |--------------------------------------------------------------------------
         | Request Started
         |--------------------------------------------------------------------------
         */
@@ -84,68 +95,17 @@ class OnlinePaymentController extends Controller
         Log::info(
             'Online payment initialization request started.',
             [
-                'request_id' =>
-                    $requestId,
-
-                /*
-                 * The authenticated employee/user is the person
-                 * initiating the payment.
-                 *
-                 * This may be the taxpayer or an authorized agent.
-                 */
-                'initiated_by_user_id' =>
-                    $request->user()?->id,
-
-                'authenticated' =>
-                    $request->user() !== null,
-
-                'route' =>
-                    $request->path(),
-
-                'http_method' =>
-                    $request->method(),
-
-                'ip' =>
-                    $request->ip(),
-
-                'user_agent' =>
-                    $request->userAgent(),
-
-                /*
-                 * Only safe validated request fields are logged.
-                 */
-                'request_data' =>
-                    $this->safeRequestData(
-                        $validated
-                    ),
+                'request_id' => $requestId,
+                'initiated_by_user_id' => $user?->id,
+                'authenticated' => $user !== null,
+                'route' => $request->path(),
+                'http_method' => $request->method(),
+                'ip' => $request->ip(),
+                'request_data' => $this->safeRequestData($validated),
             ]
         );
 
         try {
-            /*
-            |--------------------------------------------------------------------------
-            | Resolve Authenticated User
-            |--------------------------------------------------------------------------
-            */
-
-            $user = $request->user();
-
-            Log::info(
-                'Online payment authentication resolved.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'authenticated' =>
-                        $user !== null,
-
-                    'user_id' =>
-                        $user?->id,
-
-                    'user_type' =>
-                        $user?->user_type,
-                ]
-            );
 
             /*
             |--------------------------------------------------------------------------
@@ -155,13 +115,10 @@ class OnlinePaymentController extends Controller
 
             if (! $user) {
                 Log::warning(
-                    'Online payment initialization rejected because the user is unauthenticated.',
+                    'Online payment initialization rejected: unauthenticated user.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'ip' =>
-                            $request->ip(),
+                        'request_id' => $requestId,
+                        'ip' => $request->ip(),
                     ]
                 );
 
@@ -178,34 +135,19 @@ class OnlinePaymentController extends Controller
             |
             | The invoice is the source of truth for the taxpayer.
             |
-            | invoices.citizen_id -> taxpayers/citizens
-            |
             */
 
             $invoice = Invoice::query()
                 ->with('citizen')
-                ->find(
-                    $validated['invoice_id']
-                );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Invoice Not Found
-            |--------------------------------------------------------------------------
-            */
+                ->find($validated['invoice_id']);
 
             if (! $invoice) {
                 Log::warning(
-                    'Online payment initialization rejected because the invoice was not found.',
+                    'Online payment initialization rejected: invoice not found.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'invoice_id' =>
-                            $validated['invoice_id'],
+                        'request_id' => $requestId,
+                        'initiated_by_user_id' => $user->id,
+                        'invoice_id' => $validated['invoice_id'],
                     ]
                 );
 
@@ -221,60 +163,15 @@ class OnlinePaymentController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            $taxpayerId =
-                $invoice->citizen_id;
+            $taxpayerId = $invoice->citizen_id;
 
-            /*
-            |--------------------------------------------------------------------------
-            | Taxpayer Required
-            |--------------------------------------------------------------------------
-            */
-
-            if (! $taxpayerId) {
+            if (! $taxpayerId || ! $invoice->citizen) {
                 Log::error(
-                    'Online payment initialization rejected because the invoice has no taxpayer.',
+                    'Online payment initialization rejected: invoice taxpayer is missing.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'invoice_number' =>
-                            $invoice->invoice_number,
-                    ]
-                );
-
-                return ApiResponse::error(
-                    'The invoice is not associated with a taxpayer.',
-                    422
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Taxpayer Relationship Validation
-            |--------------------------------------------------------------------------
-            */
-
-            if (! $invoice->citizen) {
-                Log::error(
-                    'Online payment initialization rejected because the invoice taxpayer record was not found.',
-                    [
-                        'request_id' =>
-                            $requestId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'taxpayer_id' =>
-                            $taxpayerId,
+                        'request_id' => $requestId,
+                        'initiated_by_user_id' => $user->id,
+                        'invoice_id' => $invoice->id,
                     ]
                 );
 
@@ -289,64 +186,91 @@ class OnlinePaymentController extends Controller
             | Payment Authorization
             |--------------------------------------------------------------------------
             |
-            | Authentication alone does NOT establish that the user
-            | is allowed to initiate payment for this invoice.
+            | InvoicePolicy::pay() must verify that the authenticated
+            | user is allowed to pay this invoice.
             |
-            | Your existing Policy / Gate / permission / business
-            | authorization layer should determine whether this
-            | authenticated user can:
-            |
-            | 1. pay their own invoice, or
-            | 2. act as an authorized employee/agent for the taxpayer.
-            |
-            | Do NOT accept citizen_id/taxpayer_id from the frontend.
-            |
-            | The invoice determines the taxpayer.
+            | It should support:
+            | - Taxpayer self-payment.
+            | - Authorized municipal employee/agent payment.
             |
             */
+
+            // $this->authorize('pay', $invoice);
 
             /*
             |--------------------------------------------------------------------------
             | Resolve Payment Amount
             |--------------------------------------------------------------------------
+            |
+            | The frontend amount is a requested payment amount.
+            | It is NOT the authoritative invoice balance.
+            |
+            | OnlinePaymentService must independently verify the
+            | outstanding balance before creating the payment.
+            |
             */
 
-            $amount =
-                $validated['amount'];
+            $amount = $validated['amount'] ?? null;
 
             /*
             |--------------------------------------------------------------------------
-            | Defensive Amount Validation
+            | Validate Amount Type
             |--------------------------------------------------------------------------
+            |
+            | Prefer decimal strings to avoid floating-point precision
+            | problems.
+            |
             */
 
-            if (
-                ! is_numeric($amount)
-                ||
-                (float) $amount <= 0
-            ) {
+            if (! is_string($amount) && ! is_int($amount)) {
                 Log::warning(
-                    'Online payment initialization rejected because the payment amount is invalid.',
+                    'Online payment initialization rejected: invalid amount type.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'taxpayer_id' =>
-                            $taxpayerId,
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'amount' =>
-                            $amount,
+                        'request_id' => $requestId,
+                        'invoice_id' => $invoice->id,
+                        'initiated_by_user_id' => $user->id,
                     ]
                 );
 
                 return ApiResponse::error(
-                    'Payment amount must be greater than zero.',
+                    'Payment amount must be supplied as a decimal string.',
+                    422
+                );
+            }
+
+            $amount = trim((string) $amount);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Decimal Format
+            |--------------------------------------------------------------------------
+            |
+            | Accepts:
+            | 29423
+            | 29423.0
+            | 29423.04
+            |
+            | Rejects:
+            | - Negative values
+            | - More than two decimal places
+            | - Scientific notation
+            | - Empty values
+            | - Non-numeric values
+            |
+            */
+
+            if (! preg_match('/^\d+(?:\.\d{1,2})?$/', $amount)) {
+                Log::warning(
+                    'Online payment initialization rejected: invalid amount format.',
+                    [
+                        'request_id' => $requestId,
+                        'invoice_id' => $invoice->id,
+                        'initiated_by_user_id' => $user->id,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Payment amount must be a positive decimal amount with no more than two decimal places.',
                     422
                 );
             }
@@ -356,428 +280,281 @@ class OnlinePaymentController extends Controller
             | Normalize Amount
             |--------------------------------------------------------------------------
             |
-            | Provider boundary uses two decimal places.
-            |
-            | The PaymentService/domain layer must still verify that
-            | the requested amount does not exceed the invoice balance.
+            | Normalize using string operations rather than floating-point
+            | arithmetic or a dependency on the BCMath extension.
             |
             */
 
-            $amount =
-                $this->normalizePaymentAmount(
-                    $amount
+            [$integerPart, $fractionPart] = array_pad(
+                explode('.', $amount, 2),
+                2,
+                '0'
+            );
+
+            $integerPart = ltrim($integerPart, '0');
+
+            if ($integerPart === '') {
+                $integerPart = '0';
+            }
+
+            $fractionPart = str_pad(
+                $fractionPart,
+                2,
+                '0'
+            );
+
+            $amount = $integerPart . '.' . $fractionPart;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Reject Zero Amount
+            |--------------------------------------------------------------------------
+            */
+
+            if ($amount === '0.00') {
+                return ApiResponse::error(
+                    'Payment amount must be greater than zero.',
+                    422
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Server-Controlled Currency
+            |--------------------------------------------------------------------------
+            */
+
+            $currency = $invoice->currency ?: 'ETB';
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve Payment Provider
+            |--------------------------------------------------------------------------
+            */
+
+            $paymentProvider = $validated['payment_provider'];
+
+            $providerValue = $this->safeEnumValue(
+                $paymentProvider
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Supported Provider
+            |--------------------------------------------------------------------------
+            */
+
+            $providerKey = match (
+                strtoupper((string) $providerValue)
+            ) {
+                'CHAPA' => 'chapa',
+                'TELEBIRR' => 'telebirr',
+                default => null,
+            };
+
+            if ($providerKey === null) {
+                Log::warning(
+                    'Online payment initialization rejected: unsupported provider.',
+                    [
+                        'request_id' => $requestId,
+                        'invoice_id' => $invoice->id,
+                        'provider' => $providerValue,
+                    ]
                 );
 
+                return ApiResponse::error(
+                    'The selected payment provider is not supported.',
+                    422
+                );
+            }
+
             /*
             |--------------------------------------------------------------------------
-            | Server-Controlled Currency
+            | Resolve Payment Method
             |--------------------------------------------------------------------------
             */
 
-            $currency =
-                $invoice->currency ?? 'ETB';
+            $paymentMethod = PaymentMethod::ONLINE;
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Provider
+            | Resolve Provider-Specific Configuration
+            |--------------------------------------------------------------------------
+            |
+            | Chapa:
+            | services.chapa.callback_url
+            | services.chapa.return_url
+            |
+            | Telebirr:
+            | services.telebirr.callback_url
+            | services.telebirr.return_url
+            |
+            */
+
+            $callbackUrl = config(
+                "services.{$providerKey}.callback_url"
+            );
+
+            $returnUrl = config(
+                "services.{$providerKey}.return_url"
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Callback URL
             |--------------------------------------------------------------------------
             */
 
-            $paymentProvider =
-                $validated['payment_provider'];
+            if (
+                ! is_string($callbackUrl)
+                || ! filter_var($callbackUrl, FILTER_VALIDATE_URL)
+            ) {
+                Log::critical(
+                    'Online payment callback URL is missing or invalid.',
+                    [
+                        'request_id' => $requestId,
+                        'provider' => $providerKey,
+                        'invoice_id' => $invoice->id,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Online payment callback URL is not correctly configured.',
+                    500
+                );
+            }
 
             /*
             |--------------------------------------------------------------------------
-            | Payment Method
+            | Validate Return URL
             |--------------------------------------------------------------------------
             */
 
-            $paymentMethod =
-                PaymentMethod::ONLINE;
+            if (
+                ! is_string($returnUrl)
+                || ! filter_var($returnUrl, FILTER_VALIDATE_URL)
+            ) {
+                Log::critical(
+                    'Online payment return URL is missing or invalid.',
+                    [
+                        'request_id' => $requestId,
+                        'provider' => $providerKey,
+                        'invoice_id' => $invoice->id,
+                    ]
+                );
+
+                return ApiResponse::error(
+                    'Online payment return URL is not correctly configured.',
+                    500
+                );
+            }
 
             /*
             |--------------------------------------------------------------------------
-            | Log Financial Parameters
+            | Log Resolved Payment Parameters
             |--------------------------------------------------------------------------
             */
 
             Log::info(
-                'Online payment financial parameters resolved.',
+                'Online payment parameters resolved.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'initiated_by_user_id' =>
-                        $user->id,
-
-                    'taxpayer_id' =>
-                        $taxpayerId,
-
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'amount' =>
-                        $amount,
-
-                    'currency' =>
-                        $currency,
-
-                    'payment_method' =>
-                        $this->safeEnumValue(
-                            $paymentMethod
-                        ),
-
-                    'payment_provider' =>
-                        $this->safeEnumValue(
-                            $paymentProvider
-                        ),
+                    'request_id' => $requestId,
+                    'initiated_by_user_id' => $user->id,
+                    'invoice_id' => $invoice->id,
+                    'taxpayer_id' => $taxpayerId,
+                    'amount' => $amount,
+                    'currency' => $currency,
+                    'payment_method' => $this->safeEnumValue(
+                        $paymentMethod
+                    ),
+                    'payment_provider' => $providerKey,
                 ]
             );
 
             /*
             |--------------------------------------------------------------------------
-            | Resolve Chapa Callback / Return URLs
+            | Generate Internal Payment Reference
             |--------------------------------------------------------------------------
             */
 
-            $callbackUrl =
-                config('services.chapa.callback_url');
-
-            $returnUrl =
-                config('services.chapa.return_url');
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Callback URL Configuration
-            |--------------------------------------------------------------------------
-            */
-
-            if (! filled($callbackUrl)) {
-                Log::critical(
-                    'CHAPA_CALLBACK_URL is not configured.',
-                    [
-                        'request_id' =>
-                            $requestId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'provider' =>
-                            $this->safeEnumValue(
-                                $paymentProvider
-                            ),
-                    ]
-                );
-
-                return ApiResponse::error(
-                    'Online payment callback URL is not configured.',
-                    500
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Return URL Configuration
-            |--------------------------------------------------------------------------
-            */
-
-            if (! filled($returnUrl)) {
-                Log::critical(
-                    'CHAPA_RETURN_URL is not configured.',
-                    [
-                        'request_id' =>
-                            $requestId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'invoice_id' =>
-                            $invoice->id,
-
-                        'provider' =>
-                            $this->safeEnumValue(
-                                $paymentProvider
-                            ),
-                    ]
-                );
-
-                return ApiResponse::error(
-                    'Online payment return URL is not configured.',
-                    500
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validate URL Format
-            |--------------------------------------------------------------------------
-            */
-
-            if (! filter_var($callbackUrl, FILTER_VALIDATE_URL)) {
-                Log::critical(
-                    'Configured Chapa callback URL is invalid.',
-                    [
-                        'request_id' =>
-                            $requestId,
-
-                        'callback_url' =>
-                            $callbackUrl,
-                    ]
-                );
-
-                return ApiResponse::error(
-                    'Online payment callback URL is invalid.',
-                    500
-                );
-            }
-
-            if (! filter_var($returnUrl, FILTER_VALIDATE_URL)) {
-                Log::critical(
-                    'Configured Chapa return URL is invalid.',
-                    [
-                        'request_id' =>
-                            $requestId,
-
-                        'return_url' =>
-                            $returnUrl,
-                    ]
-                );
-
-                return ApiResponse::error(
-                    'Online payment return URL is invalid.',
-                    500
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Log Provider URLs
-            |--------------------------------------------------------------------------
-            */
-
-            Log::info(
-                'Online payment provider URLs resolved from backend configuration.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'provider' =>
-                        $this->safeEnumValue(
-                            $paymentProvider
-                        ),
-
-                    'callback_url' =>
-                        $callbackUrl,
-
-                    'return_url' =>
-                        $returnUrl,
-                ]
+            $paymentReference = 'PAY-' . strtoupper(
+                (string) Str::ulid()
             );
 
             /*
             |--------------------------------------------------------------------------
-            | Generate Internal Transaction Reference
-            |--------------------------------------------------------------------------
-            */
-
-            $paymentReference =
-                'PAY-' .
-                strtoupper(
-                    Str::ulid()->toBase32()
-                );
-
-            Log::info(
-                'Internal online payment transaction reference generated.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_reference' =>
-                        $paymentReference,
-
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'taxpayer_id' =>
-                        $taxpayerId,
-
-                    'initiated_by_user_id' =>
-                        $user->id,
-                ]
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Prepare DTO Data
+            | Prepare Payment DTO
             |--------------------------------------------------------------------------
             */
 
             $dtoData = [
-                'invoice_id' =>
-                    $invoice->id,
+                'invoice_id' => $invoice->id,
 
-                'citizen_id' =>
-                    $taxpayerId,
+                'citizen_id' => $taxpayerId,
 
-                'payment_reference' =>
-                    $paymentReference,
+                'payment_reference' => $paymentReference,
 
-                'method' =>
-                    $paymentMethod,
+                'method' => $paymentMethod,
 
-                'provider' =>
-                    $paymentProvider,
+                'provider' => $paymentProvider,
 
-                'amount' =>
-                    $amount,
+                'amount' => $amount,
 
-                'currency' =>
-                    $currency,
+                'currency' => $currency,
 
-                'initiated_by_user_id' =>
-                    $user->id,
+                'initiated_by_user_id' => $user->id,
 
-                'customer_name' =>
-                    null,
+                'customer_name' => null,
 
-                'customer_email' =>
-                    null,
+                'customer_email' => null,
 
-                'customer_phone' =>
-                    null,
+                'customer_phone' => $user->phone,
 
-                'return_url' =>
-                    $returnUrl,
+                'return_url' => $returnUrl,
 
-                'callback_url' =>
-                    $callbackUrl,
+                'callback_url' => $callbackUrl,
 
-                'description' =>
-                    'Payment for invoice ' .
-                    $invoice->invoice_number,
+                'description' => 'Payment for invoice '
+                    . $invoice->invoice_number,
 
                 'metadata' => [
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'taxpayer_id' =>
-                        $taxpayerId,
-
-                    'initiated_by_user_id' =>
-                        $user->id,
-
-                    'request_id' =>
-                        $requestId,
+                    'invoice_id' => $invoice->id,
+                    'taxpayer_id' => $taxpayerId,
+                    'initiated_by_user_id' => $user->id,
+                    'request_id' => $requestId,
                 ],
             ];
 
             /*
             |--------------------------------------------------------------------------
-            | Log DTO Preparation
+            | Create Payment DTO
             |--------------------------------------------------------------------------
             */
 
-            Log::info(
-                'Preparing online payment DTO.',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'invoice_id' =>
-                        $invoice->id,
-
-                    'taxpayer_id' =>
-                        $taxpayerId,
-
-                    'initiated_by_user_id' =>
-                        $user->id,
-
-                    'payment_reference' =>
-                        $paymentReference,
-
-                    'amount' =>
-                        $amount,
-
-                    'currency' =>
-                        $currency,
-
-                    'provider' =>
-                        $this->safeEnumValue(
-                            $paymentProvider
-                        ),
-
-                    'method' =>
-                        $this->safeEnumValue(
-                            $paymentMethod
-                        ),
-
-                    'callback_url' =>
-                        $callbackUrl,
-
-                    'return_url' =>
-                        $returnUrl,
-                ]
+            $data = InitializePaymentData::fromArray(
+                $dtoData
             );
 
             /*
             |--------------------------------------------------------------------------
-            | Create DTO
-            |--------------------------------------------------------------------------
-            */
-
-            $data =
-                InitializePaymentData::fromArray(
-                    $dtoData
-                );
-
-            /*
-            |--------------------------------------------------------------------------
-            | DTO Created
+            | Log Payment Initialization
             |--------------------------------------------------------------------------
             */
 
             Log::info(
-                'Online payment DTO created.',
+                'Initializing online payment through payment service.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_reference' =>
-                        $data->paymentReference,
-
-                    'invoice_id' =>
-                        $data->invoiceId,
-
-                    'taxpayer_id' =>
-                        $data->citizenId,
-
-                    'provider' =>
-                        $this->safeEnumValue(
-                            $data->provider
-                        ),
-
-                    'method' =>
-                        $this->safeEnumValue(
-                            $data->method
-                        ),
-
-                    'amount' =>
-                        $data->amount,
-
-                    'currency' =>
-                        $data->currency,
-
-                    'callback_url' =>
-                        $data->callbackUrl,
-
-                    'return_url' =>
-                        $data->returnUrl,
-
-                    'metadata' =>
-                        $data->metadata,
+                    'request_id' => $requestId,
+                    'payment_reference' => $data->paymentReference,
+                    'invoice_id' => $data->invoiceId,
+                    'taxpayer_id' => $data->citizenId,
+                    'initiated_by_user_id' => $user->id,
+                    'amount' => $data->amount,
+                    'currency' => $data->currency,
+                    'provider' => $providerKey,
+                    'method' => $this->safeEnumValue(
+                        $data->method
+                    ),
                 ]
             );
 
@@ -785,89 +562,38 @@ class OnlinePaymentController extends Controller
             |--------------------------------------------------------------------------
             | Initialize Payment
             |--------------------------------------------------------------------------
+            |
+            | OnlinePaymentService is responsible for:
+            |
+            | 1. Validating the authoritative outstanding invoice balance.
+            | 2. Preventing duplicate active payment initialization.
+            | 3. Creating the internal payment record.
+            | 4. Resolving the correct provider implementation.
+            | 5. Calling the provider initialization API.
+            | 6. Persisting provider references and checkout details.
+            |
             */
 
-            Log::info(
-                'Calling PaymentService::initialize().',
-                [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_reference' =>
-                        $data->paymentReference,
-
-                    'invoice_id' =>
-                        $data->invoiceId,
-
-                    'taxpayer_id' =>
-                        $data->citizenId,
-
-                    'initiated_by_user_id' =>
-                        $user->id,
-
-                    'amount' =>
-                        $data->amount,
-
-                    'currency' =>
-                        $data->currency,
-
-                    'provider' =>
-                        $this->safeEnumValue(
-                            $data->provider
-                        ),
-
-                    'method' =>
-                        $this->safeEnumValue(
-                            $data->method
-                        ),
-                ]
+            $result = $this->onlinePaymentService->initialize(
+                $data
             );
-
-            $result =
-                $this->onlinePaymentService->initialize(
-                    $data
-                );
 
             /*
             |--------------------------------------------------------------------------
-            | Provider Result
+            | Log Initialization Result
             |--------------------------------------------------------------------------
             */
 
             Log::info(
-                'PaymentService::initialize() completed.',
+                'Online payment initialization service completed.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_reference' =>
-                        $data->paymentReference,
-
-                    'success' =>
-                        $result->isSuccessful(),
-
-                    'message' =>
-                        $result->message,
-
-                    'provider' =>
-                        $this->safeEnumValue(
-                            $result->provider
-                        ),
-
-                    'provider_reference' =>
-                        $result->providerReference,
-
-                    'provider_transaction_id' =>
-                        $result->providerTransactionId,
-
-                    'amount' =>
-                        $result->amount,
-
-                    'currency' =>
-                        $result->currency,
-
-                    'checkout_url' =>
-                        $result->checkoutUrl,
+                    'request_id' => $requestId,
+                    'payment_reference' => $data->paymentReference,
+                    'success' => $result->isSuccessful(),
+                    'provider' => $providerKey,
+                    'checkout_url_generated' => filled(
+                        $result->checkoutUrl
+                    ),
                 ]
             );
 
@@ -881,34 +607,17 @@ class OnlinePaymentController extends Controller
                 Log::warning(
                     'Online payment provider initialization failed.',
                     [
-                        'request_id' =>
-                            $requestId,
-
-                        'payment_reference' =>
-                            $data->paymentReference,
-
-                        'invoice_id' =>
-                            $data->invoiceId,
-
-                        'taxpayer_id' =>
-                            $data->citizenId,
-
-                        'initiated_by_user_id' =>
-                            $user->id,
-
-                        'provider' =>
-                            $this->safeEnumValue(
-                                $data->provider
-                            ),
-
-                        'message' =>
-                            $result->message,
+                        'request_id' => $requestId,
+                        'payment_reference' => $data->paymentReference,
+                        'invoice_id' => $data->invoiceId,
+                        'initiated_by_user_id' => $user->id,
+                        'provider' => $providerKey,
                     ]
                 );
 
-                return ApiResponse::success(
-                    $result,
-                    $result->message
+                return ApiResponse::error(
+                    'Unable to initialize payment with the selected provider.',
+                    502
                 );
             }
 
@@ -917,46 +626,25 @@ class OnlinePaymentController extends Controller
             | Initialization Successful
             |--------------------------------------------------------------------------
             |
-            | Initialization success does NOT mean the payment
-            | is completed.
+            | The provider accepted the initialization request.
             |
-            | The payment remains PENDING/PROCESSING until the
-            | provider is verified.
+            | This does NOT mean that the taxpayer has paid.
+            |
+            | Payment verification must happen separately.
             |
             */
 
             Log::info(
                 'Online payment initialized successfully.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'payment_reference' =>
-                        $data->paymentReference,
-
-                    'invoice_id' =>
-                        $data->invoiceId,
-
-                    'taxpayer_id' =>
-                        $data->citizenId,
-
-                    'initiated_by_user_id' =>
-                        $user->id,
-
-                    'provider_reference' =>
-                        $result->providerReference,
-
-                    'provider_transaction_id' =>
-                        $result->providerTransactionId,
-
-                    'amount' =>
-                        $data->amount,
-
-                    'currency' =>
-                        $data->currency,
-
-                    'message' =>
-                        $result->message,
+                    'request_id' => $requestId,
+                    'payment_reference' => $data->paymentReference,
+                    'invoice_id' => $data->invoiceId,
+                    'taxpayer_id' => $data->citizenId,
+                    'initiated_by_user_id' => $user->id,
+                    'provider' => $providerKey,
+                    'amount' => $data->amount,
+                    'currency' => $data->currency,
                 ]
             );
 
@@ -969,7 +657,21 @@ class OnlinePaymentController extends Controller
             return ApiResponse::success(
                 $result,
                 $result->message
+                    ?? 'Online payment initialized successfully.'
             );
+
+        } catch (AuthorizationException $exception) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Preserve Laravel Authorization Response
+            |--------------------------------------------------------------------------
+            |
+            | Do not convert authorization failures into HTTP 500.
+            |
+            */
+
+            throw $exception;
 
         } catch (Throwable $exception) {
 
@@ -982,35 +684,12 @@ class OnlinePaymentController extends Controller
             Log::error(
                 'Online payment initialization failed unexpectedly.',
                 [
-                    'request_id' =>
-                        $requestId,
-
-                    'user_id' =>
-                        $request->user()?->id,
-
-                    'invoice_id' =>
-                        $validated['invoice_id']
-                        ?? null,
-
-                    'request_data' =>
-                        $this->safeRequestData(
-                            $validated
-                        ),
-
-                    'exception' =>
-                        $exception::class,
-
-                    'message' =>
-                        $exception->getMessage(),
-
-                    'file' =>
-                        $exception->getFile(),
-
-                    'line' =>
-                        $exception->getLine(),
-
-                    'trace' =>
-                        $exception->getTraceAsString(),
+                    'request_id' => $requestId,
+                    'user_id' => $user?->id,
+                    'invoice_id' => $validated['invoice_id'] ?? null,
+                    'exception' => $exception::class,
+                    'file' => $exception->getFile(),
+                    'line' => $exception->getLine(),
                 ]
             );
 
@@ -1020,6 +699,8 @@ class OnlinePaymentController extends Controller
             );
         }
     }
+
+
 
     /*
     |--------------------------------------------------------------------------

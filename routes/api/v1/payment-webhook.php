@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Support\Facades\Route;
@@ -6,90 +7,65 @@ use App\Modules\Payment\Controllers\OnlinePaymentController;
 
 /*
 |--------------------------------------------------------------------------
-| Payment Provider Routes
+| External Payment Provider Routes
 |--------------------------------------------------------------------------
 |
-| These routes are called by external payment providers or the
-| customer's browser after completing the payment.
-|
-| IMPORTANT:
-| Webhook and browser callback routes must NOT be placed inside
-| auth:sanctum because Chapa must be able to reach them.
+| These endpoints are public because payment providers must be able
+| to communicate with our application without Sanctum authentication.
 |
 */
 
-Route::prefix('payments')->group(function () {
+Route::prefix('payments')->name('payments.')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | CHAPA SERVER-TO-SERVER WEBHOOK
+    | Chapa
     |--------------------------------------------------------------------------
-    |
-    | Chapa sends payment notifications to this endpoint.
-    |
-    | Method:
-    | POST
-    |
-    | URL:
-    | /api/v1/payments/webhooks/chapa
-    |
     */
 
-    Route::post('/webhooks/chapa', [
-        PaymentWebhookController::class,
-        'chapa',
-    ]);
+    Route::prefix('webhooks')->name('webhooks.')->group(function () {
+
+        Route::post('/chapa', [
+            PaymentWebhookController::class,
+            'chapa',
+        ])->name('chapa');
+
+        Route::post('/telebirr', [
+            PaymentWebhookController::class,
+            'telebirr',
+        ])->name('telebirr');
+
+    });
+
+    Route::prefix('callback')->name('callback.')->group(function () {
+
+        Route::get('/chapa', [
+            PaymentWebhookController::class,
+            'chapaCallback',
+        ])->name('chapa');
+
+        Route::get('/telebirr', [
+            PaymentWebhookController::class,
+            'telebirrCallback',
+        ])->name('telebirr');
+
+    });
 
     /*
     |--------------------------------------------------------------------------
-    | CHAPA BROWSER CALLBACK
+    | Payment Result
     |--------------------------------------------------------------------------
     |
-    | The customer's browser is redirected here after checkout.
-    |
-    | Method:
-    | GET
-    |
-    | URL:
-    | /api/v1/payments/callback/chapa
-    |
-    */
-
-    Route::get('/callback/chapa', [
-        PaymentWebhookController::class,
-        'chapaCallback',
-    ]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Online Payment Result
-    |--------------------------------------------------------------------------
-    |
-    | This endpoint is used by the frontend payment-result page to retrieve
-    | the authoritative payment status from our database.
-    |
-    | IMPORTANT:
-    | The frontend must NOT decide whether the payment succeeded.
-    |
-    | Laravel gets the status from the Payment record, which is finalized
-    | by PaymentVerificationService after provider verification.
-    |
-    | Method:
-    | GET
-    |
-    | URL:
-    | /api/v1/online-payments/{payment}/result
-    |
-    | This route is intentionally outside auth:sanctum if the public
-    | payment-result page must work after returning from Chapa.
+    | Shared by Chapa and Telebirr.
+    | Returns the payment status stored in our database.
     |
     */
 
     Route::get('/{payment}/result', [
         OnlinePaymentController::class,
         'result',
-    ]);
+    ])
+        ->whereNumber('payment')
+        ->name('result');
 
 });
-

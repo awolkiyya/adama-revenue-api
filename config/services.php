@@ -193,6 +193,63 @@ return [
             'CHAPA_CONNECT_TIMEOUT',
             10
         ),
+        
+    ],
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Telebirr Payment Gateway
+    |--------------------------------------------------------------------------
+    */
+
+    'telebirr' => [
+
+        // Application credentials
+        'appid' => env('TELEBIRR_APP_ID'),
+
+        'appsecret' => env('TELEBIRR_APP_SECRET'),
+
+        // Merchant credentials
+        'merchant_app_id' => env('MERCHANT_APP_ID'),
+
+        'shortcode' => env('TELEBIRR_SHORT_CODE'),
+
+        // API endpoint
+        'endpoint' => env(
+            'TELEBIRR_ENDPOINT',
+            'https://developerportal.ethiotelebirr.et:38443/apiaccess/payment/gateway'
+        ),
+        'checkout_url' => env('TELEBIRR_CHECKOUT_URL'),
+
+
+        // Callback and return URLs
+        'callback_url' => env('TELEBIRR_CALLBACK_URL'),
+
+        'return_url' => env('TELEBIRR_RETURN_URL'),
+
+        // H5 checkout URL, if required by your integration
+        'h5_url' => env('TELEBIRR_H5_URL'),
+
+        // Signing configuration
+        'private_key' => env('TELEBIRR_PRIVATE_KEY'),
+
+        'private_key_path' => env('TELEBIRR_PRIVATE_KEY_PATH'),
+
+        // HTTP configuration
+        'timeout' => (int) env(
+            'TELEBIRR_TIMEOUT',
+            30
+        ),
+
+        'connect_timeout' => (int) env(
+            'TELEBIRR_CONNECT_TIMEOUT',
+            10
+        ),
+
+        'ca_bundle' => env('TELEBIRR_CA_BUNDLE'),
+
+
     ],
 
 ];
