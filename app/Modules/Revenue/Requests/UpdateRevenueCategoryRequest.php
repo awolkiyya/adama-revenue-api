@@ -116,6 +116,10 @@ class UpdateRevenueCategoryRequest extends FormRequest
                 'array',
             ],
 
+            'codes.*' => [
+                'array',
+            ],
+
             /*
              * Existing code:
              * {
@@ -176,10 +180,6 @@ class UpdateRevenueCategoryRequest extends FormRequest
             |--------------------------------------------------------------------------
             | Resolve Effective Category Range
             |--------------------------------------------------------------------------
-            |
-            | For partial updates, use the existing category values
-            | when start_code or end_code is not provided.
-            |
             */
 
             $startCode = $this->exists('start_code')
@@ -201,7 +201,7 @@ class UpdateRevenueCategoryRequest extends FormRequest
             |--------------------------------------------------------------------------
             |
             | Include soft-deleted records because the service supports
-            | restoring previously deleted revenue codes.
+            | restoring previously deleted codes within this category.
             |
             */
 
@@ -232,8 +232,7 @@ class UpdateRevenueCategoryRequest extends FormRequest
             | Prevent Overlapping Category Ranges
             |--------------------------------------------------------------------------
             |
-            | Soft-deleted categories are automatically excluded by
-            | RevenueCategory's SoftDeletes global scope.
+            | Soft-deleted categories are excluded automatically.
             |
             */
 
@@ -307,44 +306,88 @@ class UpdateRevenueCategoryRequest extends FormRequest
                     continue;
                 }
 
+                $codeValue = trim((string) $code['code']);
+
                 /*
                 |--------------------------------------------------------------------------
-                | Prevent Duplicate Active Revenue Codes
+                | Existing Revenue Code
                 |--------------------------------------------------------------------------
-                |
-                | RevenueCode uses SoftDeletes, so this query automatically
-                | ignores soft-deleted revenue codes.
-                |
-                | Exclude the current code when updating.
-                |
                 */
 
-                $exists = RevenueCode::query()
+                if (!empty($code['id'])) {
 
-                    ->where('code', $code['code'])
+                    $existingCode = $category
+                        ->codes()
+                        ->withTrashed()
+                        ->where('id', $code['id'])
+                        ->first();
 
-                    ->when(
-                        !empty($code['id']),
-                        function ($query) use ($code) {
+                    if (!$existingCode) {
+                        continue;
+                    }
 
-                            $query->where(
-                                'id',
-                                '!=',
-                                $code['id']
+                    /*
+                     * The existing code value has not changed.
+                     * Do not reject its own code.
+                     */
+                    if ($existingCode->code !== $codeValue) {
+
+                        $exists = RevenueCode::query()
+
+                            ->where('code', $codeValue)
+
+                            ->where('id', '!=', $existingCode->id)
+
+                            ->exists();
+
+                        if ($exists) {
+
+                            $validator->errors()->add(
+                                "codes.$index.code",
+                                'This revenue code already exists.'
                             );
 
                         }
-                    )
+                    }
 
-                    ->exists();
+                } else {
 
-                if ($exists) {
+                    /*
+                    |--------------------------------------------------------------------------
+                    | New Revenue Code
+                    |--------------------------------------------------------------------------
+                    |
+                    | If a deleted code exists in this same category,
+                    | the service can restore that record.
+                    |
+                    */
 
-                    $validator->errors()->add(
-                        "codes.$index.code",
-                        'This revenue code already exists.'
-                    );
+                    $deletedInSameCategory = $category
+                        ->codes()
+                        ->onlyTrashed()
+                        ->where('code', $codeValue)
+                        ->exists();
 
+                    if (!$deletedInSameCategory) {
+
+                        /*
+                         * Reject codes belonging to another active
+                         * revenue code anywhere in the database.
+                         */
+
+                        $exists = RevenueCode::query()
+                            ->where('code', $codeValue)
+                            ->exists();
+
+                        if ($exists) {
+
+                            $validator->errors()->add(
+                                "codes.$index.code",
+                                'This revenue code already exists.'
+                            );
+
+                        }
+                    }
                 }
 
                 /*
@@ -356,10 +399,10 @@ class UpdateRevenueCategoryRequest extends FormRequest
                 if (
                     $startCode !== null &&
                     $endCode !== null &&
-                    is_numeric($code['code'])
+                    is_numeric($codeValue)
                 ) {
 
-                    $number = (int) $code['code'];
+                    $number = (int) $codeValue;
 
                     if (
                         $number < $startCode ||
@@ -424,11 +467,15 @@ class UpdateRevenueCategoryRequest extends FormRequest
         |--------------------------------------------------------------------------
         */
 
-        if ($this->has('codes')) {
+        if ($this->has('codes') && is_array($this->input('codes'))) {
 
-            $data['codes'] = collect($this->input('codes', []))
+            $data['codes'] = collect($this->input('codes'))
 
                 ->map(function ($code) {
+
+                    if (!is_array($code)) {
+                        return $code;
+                    }
 
                     return [
 
@@ -482,6 +529,12 @@ class UpdateRevenueCategoryRequest extends FormRequest
 
             'sort_order.unique' =>
                 'This display order is already assigned within the selected revenue domain.',
+
+            'codes.array' =>
+                'Revenue codes must be provided as an array.',
+
+            'codes.*.array' =>
+                'Each revenue code must be a valid object.',
 
             'codes.*.code.required' =>
                 'Revenue code is required.',

@@ -6,6 +6,7 @@ use App\Models\RevenueCategory;
 use App\Models\RevenueCode;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Validation\ValidationException;
 
 class RevenueCategoryService
 {
@@ -100,10 +101,6 @@ class RevenueCategoryService
 
     /**
      * Create category with revenue codes.
-     *
-     * Soft-deleted codes from another category are not
-     * automatically moved because they may have historical
-     * financial relationships.
      */
     public function create(array $data): RevenueCategory
     {
@@ -127,17 +124,23 @@ class RevenueCategoryService
             |--------------------------------------------------------------------------
             */
 
-            foreach ($codes as $code) {
+            foreach ($codes as $codeData) {
+
+                $this->assertCodeAvailable(
+                    $codeData['code']
+                );
 
                 $category->codes()->create([
 
-                    'code' => $code['code'],
+                    'code' => $codeData['code'],
 
-                    'name' => $code['name'],
+                    'name' => $codeData['name'],
 
-                    'description' => $code['description'] ?? null,
+                    'description' =>
+                        $codeData['description'] ?? null,
 
-                    'is_active' => $code['is_active'] ?? true,
+                    'is_active' =>
+                        $codeData['is_active'] ?? true,
 
                 ]);
 
@@ -161,6 +164,16 @@ class RevenueCategoryService
             $data
         ) {
 
+            /*
+            |--------------------------------------------------------------------------
+            | Lock Category
+            |--------------------------------------------------------------------------
+            */
+
+            $category = RevenueCategory::query()
+                ->lockForUpdate()
+                ->findOrFail($category->id);
+
             $codes = $data['codes'] ?? null;
 
             unset($data['codes']);
@@ -175,7 +188,7 @@ class RevenueCategoryService
 
             /*
             |--------------------------------------------------------------------------
-            | Sync Revenue Codes
+            | Synchronize Revenue Codes
             |--------------------------------------------------------------------------
             */
 
@@ -185,9 +198,13 @@ class RevenueCategoryService
 
                 foreach ($codes as $codeData) {
 
+                    $codeValue = trim(
+                        (string) $codeData['code']
+                    );
+
                     /*
                     |--------------------------------------------------------------------------
-                    | Update Existing Revenue Code
+                    | Existing Revenue Code
                     |--------------------------------------------------------------------------
                     */
 
@@ -196,11 +213,31 @@ class RevenueCategoryService
                         $existingCode = $category
                             ->codes()
                             ->withTrashed()
+                            ->lockForUpdate()
                             ->findOrFail($codeData['id']);
 
-                        /*
-                        | Restore if previously soft deleted.
-                        */
+                        $codeChanged = $existingCode->code !== $codeValue;
+
+                        if ($codeChanged) {
+
+                            $this->assertCodeAvailable(
+                                $codeValue,
+                                $existingCode->id
+                            );
+
+                        } elseif ($existingCode->trashed()) {
+
+                            /*
+                             * Before restoring, ensure no other active
+                             * record has claimed this code.
+                             */
+
+                            $this->assertCodeAvailable(
+                                $codeValue,
+                                $existingCode->id
+                            );
+
+                        }
 
                         if ($existingCode->trashed()) {
                             $existingCode->restore();
@@ -208,7 +245,7 @@ class RevenueCategoryService
 
                         $existingCode->update([
 
-                            'code' => $codeData['code'],
+                            'code' => $codeValue,
 
                             'name' => $codeData['name'],
 
@@ -235,19 +272,27 @@ class RevenueCategoryService
                     |
                     */
 
-                    $existingDeletedCode = $category
+                    $existingCode = $category
                         ->codes()
                         ->withTrashed()
-                        ->where('code', $codeData['code'])
+                        ->where('code', $codeValue)
+                        ->lockForUpdate()
                         ->first();
 
-                    if ($existingDeletedCode) {
+                    if ($existingCode) {
 
-                        if ($existingDeletedCode->trashed()) {
-                            $existingDeletedCode->restore();
+                        if ($existingCode->trashed()) {
+
+                            $this->assertCodeAvailable(
+                                $codeValue,
+                                $existingCode->id
+                            );
+
+                            $existingCode->restore();
+
                         }
 
-                        $existingDeletedCode->update([
+                        $existingCode->update([
 
                             'name' => $codeData['name'],
 
@@ -259,7 +304,7 @@ class RevenueCategoryService
 
                         ]);
 
-                        $newCode = $existingDeletedCode;
+                        $newCode = $existingCode;
 
                     } else {
 
@@ -269,11 +314,13 @@ class RevenueCategoryService
                         |--------------------------------------------------------------------------
                         */
 
+                        $this->assertCodeAvailable($codeValue);
+
                         $newCode = $category
                             ->codes()
                             ->create([
 
-                                'code' => $codeData['code'],
+                                'code' => $codeValue,
 
                                 'name' => $codeData['name'],
 
@@ -295,10 +342,6 @@ class RevenueCategoryService
                 |--------------------------------------------------------------------------
                 | Soft Delete Removed Codes
                 |--------------------------------------------------------------------------
-                |
-                | Codes removed from the submitted list are soft deleted.
-                | Historical records remain in the database.
-                |
                 */
 
                 $category
@@ -318,7 +361,7 @@ class RevenueCategoryService
                 ->fresh()
                 ->load('codes');
 
-        });
+        }, 3);
     }
 
     /**
@@ -330,15 +373,19 @@ class RevenueCategoryService
 
         return DB::transaction(function () use ($category) {
 
+            $category = RevenueCategory::query()
+                ->lockForUpdate()
+                ->findOrFail($category->id);
+
             /*
-            | Soft delete active revenue codes first.
-            */
+             * Soft delete active revenue codes first.
+             */
 
             $category->codes()->delete();
 
             /*
-            | Soft delete category.
-            */
+             * Soft delete category.
+             */
 
             return (bool) $category->delete();
 
@@ -370,9 +417,8 @@ class RevenueCategoryService
     }
 
     /**
-     * Check whether an active revenue code exists.
+     * Check whether an active revenue code exists globally.
      *
-     * Checks globally, not just within one category.
      * Soft-deleted revenue codes are excluded.
      */
     public function codeExists(
@@ -383,5 +429,51 @@ class RevenueCategoryService
         return RevenueCode::query()
             ->where('code', $code)
             ->exists();
+    }
+
+    /**
+     * --------------------------------------------------------------------------
+     * Ensure Revenue Code Is Available
+     * --------------------------------------------------------------------------
+     *
+     * Active revenue codes must be globally unique.
+     *
+     * Soft-deleted records are ignored by RevenueCode's
+     * SoftDeletes global scope.
+     *
+     * When updating or restoring an existing record,
+     * its own ID is excluded.
+     */
+    private function assertCodeAvailable(
+        string $code,
+        ?string $ignoreId = null
+    ): void {
+
+        $exists = RevenueCode::query()
+
+            ->where('code', $code)
+
+            ->when(
+                $ignoreId !== null,
+                fn ($query) => $query->where(
+                    'id',
+                    '!=',
+                    $ignoreId
+                )
+            )
+
+            ->exists();
+
+        if ($exists) {
+
+            throw ValidationException::withMessages([
+
+                'codes' => [
+                    "Revenue code {$code} already exists.",
+                ],
+
+            ]);
+
+        }
     }
 }
