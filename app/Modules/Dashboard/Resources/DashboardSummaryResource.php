@@ -89,6 +89,7 @@ final class DashboardSummaryResource extends JsonResource
                 ],
             ],
 
+           
             'systemStatistics' => [
                 'totalUsers' => (int) (
                     $statistics['totalUsers'] ?? 0
@@ -113,7 +114,20 @@ final class DashboardSummaryResource extends JsonResource
                 'totalDirectCollectionInvoices' => (int) (
                     $statistics['totalDirectCollectionInvoices'] ?? 0
                 ),
+
+                'totalActiveRevenueCategories' => (int) (
+                    $statistics['totalActiveRevenueCategories'] ?? 0
+                ),
+
+                'totalRevenueCodes' => (int) (
+                    $statistics['totalRevenueCodes'] ?? 0
+                ),
+
+                'totalActiveRevenueServices' => (int) (
+                    $statistics['totalActiveRevenueServices'] ?? 0
+                ),
             ],
+
 
             'workQueue' => $this->normalizeWorkQueue($workQueue),
 

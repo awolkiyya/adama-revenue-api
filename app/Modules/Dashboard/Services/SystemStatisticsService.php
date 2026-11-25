@@ -7,6 +7,9 @@ namespace App\Modules\Dashboard\Services;
 use App\Models\Assessment;
 use App\Models\Citizen;
 use App\Models\Invoice;
+use App\Models\RevenueCategory;
+use App\Models\RevenueCode;
+use App\Models\RevenueService;
 use App\Models\User;
 use App\Services\Authorization\AdministrativeScopeService;
 use Illuminate\Database\Eloquent\Builder;
@@ -29,11 +32,17 @@ final class SystemStatisticsService
     ) {}
 
     /**
-     * Return record counts restricted to the user's accessible
-     * administrative units.
+     * Return system statistics.
+     *
+     * User-related records and financial records are restricted
+     * to the user's accessible administrative units.
      *
      * System administrators retain global access through
      * AdministrativeScopeService.
+     *
+     * Revenue catalog statistics are global.
+     *
+     * Soft-deleted records are automatically excluded by Eloquent.
      *
      * @return array{
      *     totalUsers: int,
@@ -41,7 +50,10 @@ final class SystemStatisticsService
      *     totalAgents: int,
      *     totalAssessments: int,
      *     totalAssessmentInvoices: int,
-     *     totalDirectCollectionInvoices: int
+     *     totalDirectCollectionInvoices: int,
+     *     totalActiveRevenueCategories: int,
+     *     totalRevenueCodes: int,
+     *     totalActiveRevenueServices: int
      * }
      */
     public function summarize(User $user): array
@@ -64,6 +76,12 @@ final class SystemStatisticsService
                 user: $user,
                 sourceType: 'DIRECT_COLLECTION',
             ),
+
+            'totalActiveRevenueCategories' => $this->countActiveRevenueCategories(),
+
+            'totalRevenueCodes' => $this->countRevenueCodes(),
+
+            'totalActiveRevenueServices' => $this->countActiveRevenueServices(),
         ];
     }
 
@@ -164,5 +182,40 @@ final class SystemStatisticsService
         );
 
         return $query->count();
+    }
+
+    /**
+     * Count active revenue categories.
+     *
+     * Excludes soft-deleted categories.
+     */
+    private function countActiveRevenueCategories(): int
+    {
+        return RevenueCategory::query()
+            ->where('is_active', true)
+            ->count();
+    }
+
+    /**
+     * Count all revenue codes, including active and inactive codes.
+     *
+     * Excludes soft-deleted codes.
+     */
+    private function countRevenueCodes(): int
+    {
+        return RevenueCode::query()->count();
+    }
+
+    /**
+     * Count active revenue services.
+     *
+     * Uses the RevenueService active query scope.
+     * Excludes soft-deleted services.
+     */
+    private function countActiveRevenueServices(): int
+    {
+        return RevenueService::query()
+            ->active()
+            ->count();
     }
 }
