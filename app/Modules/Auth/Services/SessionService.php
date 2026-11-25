@@ -100,6 +100,7 @@ class SessionService
     {
         $relations = [
             'administrativeUnit.parent.parent',
+            'sector',
             'avatar',
         ];
 

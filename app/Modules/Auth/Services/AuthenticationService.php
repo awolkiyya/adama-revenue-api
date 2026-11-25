@@ -36,7 +36,6 @@ class AuthenticationService
      */
     private const MAX_LOCK_DURATION_MINUTES = 120;
 
-
     /*
     |--------------------------------------------------------------------------
     | Rate Limiting Configuration
@@ -54,6 +53,24 @@ class AuthenticationService
      */
     private const RATE_LIMIT_DECAY_SECONDS = 60;
 
+    /*
+    |--------------------------------------------------------------------------
+    | User Relationships
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Relationships required by AuthUserResource.
+     *
+     * Includes employee and citizen profile relationships.
+     */
+    private const USER_RELATIONS = [
+        'administrativeUnit.parent.parent',
+        'sector',
+        'avatar',
+        'roles.permissions',
+        'citizenAccount.citizen.avatar',
+    ];
 
     /**
      * Validate user credentials for web login.
@@ -126,11 +143,7 @@ class AuthenticationService
 
         $user = User::query()
             ->where('email', $email)
-            ->with([
-                'administrativeUnit.parent.parent',
-                'avatar',
-                'roles.permissions',
-            ])
+            ->with(self::USER_RELATIONS)
             ->first();
 
         /*
@@ -301,9 +314,28 @@ class AuthenticationService
             'last_login_at' => now(),
         ]);
 
-        return $user->fresh();
-    }
+        /*
+        |--------------------------------------------------------------------------
+        | Refresh User With Required Relationships
+        |--------------------------------------------------------------------------
+        |
+        | fresh() retrieves a new model instance.
+        |
+        | Without explicitly loading relationships again,
+        | previously loaded relationships are not retained.
+        |
+        | These relationships are required by AuthUserResource:
+        |
+        | - administrativeUnit.parent.parent
+        | - sector
+        | - avatar
+        | - roles.permissions
+        | - citizenAccount.citizen.avatar
+        |
+        */
 
+        return $user->fresh(self::USER_RELATIONS);
+    }
 
     /**
      * Build the rate-limit key.
@@ -324,7 +356,6 @@ class AuthenticationService
             strtolower($email) . '|' . ($ip ?? 'unknown')
         );
     }
-
 
     /**
      * Record a failed login attempt.
@@ -397,7 +428,6 @@ class AuthenticationService
         ]);
     }
 
-
     /**
      * Throw locked-account exception.
      *
@@ -411,7 +441,7 @@ class AuthenticationService
     {
         $remainingSeconds = max(
             0,
-            now()->diffInSeconds($user->locked_until)
+            (int) now()->diffInSeconds($user->locked_until)
         );
 
         throw new AccountLockedException(
@@ -420,7 +450,6 @@ class AuthenticationService
             lockedUntil: $user->locked_until,
         );
     }
-
 
     /**
      * Generate human-readable lock message.

@@ -68,6 +68,8 @@ class TariffVersion extends Model
 
     /**
      * Active tariff versions.
+     *
+     * These are the versions selected for revenue assessments.
      */
     public function scopeActive($query)
     {
@@ -84,10 +86,12 @@ class TariffVersion extends Model
 
     /**
      * Currently effective tariff versions.
+     *
+     * The effective_to date is inclusive.
      */
     public function scopeEffective($query)
     {
-        $today = now()->toDateString();
+        $today = now('Africa/Addis_Ababa')->toDateString();
 
         return $query
             ->whereDate('effective_from', '<=', $today)
@@ -114,17 +118,22 @@ class TariffVersion extends Model
     }
 
     /**
-     * Whether this tariff version is currently effective.
+     * Whether this tariff version is currently within its effective period.
+     *
+     * This is independent of is_active.
      */
     public function getIsCurrentlyEffectiveAttribute(): bool
     {
-        $today = now()->startOfDay();
+        $today = now('Africa/Addis_Ababa')->toDateString();
 
-        if ($this->effective_from->gt($today)) {
+        $effectiveFrom = $this->effective_from?->toDateString();
+        $effectiveTo = $this->effective_to?->toDateString();
+
+        if (!$effectiveFrom || $effectiveFrom > $today) {
             return false;
         }
 
-        if ($this->effective_to && $this->effective_to->lt($today)) {
+        if ($effectiveTo !== null && $effectiveTo < $today) {
             return false;
         }
 

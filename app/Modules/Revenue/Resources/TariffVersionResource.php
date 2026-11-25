@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Modules\Revenue\Resources;
 
 use Illuminate\Http\Request;
@@ -13,7 +15,6 @@ class TariffVersionResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-
             /*
             |--------------------------------------------------------------------------
             | Identity
@@ -22,21 +23,19 @@ class TariffVersionResource extends JsonResource
 
             'id' => $this->id,
 
-
             /*
             |--------------------------------------------------------------------------
             | Tariff Information
             |--------------------------------------------------------------------------
             */
 
-            'year' => $this->year,
+            'year' => (int) $this->year,
 
-            'version' => $this->version,
+            'version' => (int) $this->version,
 
             'name' => $this->name,
 
             'description' => $this->description,
-
 
             /*
             |--------------------------------------------------------------------------
@@ -44,14 +43,9 @@ class TariffVersionResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'effectiveFrom' =>
-                $this->effective_from?->format('Y-m-d'),
+            'effectiveFrom' => $this->effective_from?->toDateString(),
 
-
-            'effectiveTo' =>
-                $this->effective_to?->format('Y-m-d'),
-
-
+            'effectiveTo' => $this->effective_to?->toDateString(),
 
             /*
             |--------------------------------------------------------------------------
@@ -59,13 +53,16 @@ class TariffVersionResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'isActive' => $this->is_active,
+            /**
+             * Whether this tariff version is selected for new assessments.
+             */
+            'isActive' => (bool) $this->is_active,
 
-
-            'isCurrentlyEffective' =>
-                $this->is_currently_effective,
-
-
+            /**
+             * Whether today's date falls within the effective date range.
+             * Independent of isActive.
+             */
+            'isCurrentlyEffective' => (bool) $this->is_currently_effective,
 
             /*
             |--------------------------------------------------------------------------
@@ -73,10 +70,7 @@ class TariffVersionResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'displayName' =>
-                $this->display_name,
-
-
+            'displayName' => $this->display_name,
 
             /*
             |--------------------------------------------------------------------------
@@ -84,16 +78,7 @@ class TariffVersionResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'tariffRulesCount' =>
-                $this->whenCounted('tariffRules'),
-
-
-            // 'tariff_rules' =>
-            //     TariffRuleResource::collection(
-            //         $this->whenLoaded('tariffRules')
-            //     ),
-
-
+            'tariffRulesCount' => $this->whenCounted('tariffRules'),
 
             /*
             |--------------------------------------------------------------------------
@@ -101,13 +86,9 @@ class TariffVersionResource extends JsonResource
             |--------------------------------------------------------------------------
             */
 
-            'createdAt' =>
-                $this->created_at?->format('Y-m-d H:i:s'),
+            'createdAt' => $this->created_at?->format('Y-m-d H:i:s'),
 
-
-            'updatedAt' =>
-                $this->updated_at?->format('Y-m-d H:i:s'),
-
+            'updatedAt' => $this->updated_at?->format('Y-m-d H:i:s'),
         ];
     }
 }

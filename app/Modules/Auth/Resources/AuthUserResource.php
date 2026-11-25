@@ -164,6 +164,40 @@ class AuthUserResource extends JsonResource
                     }
                 ),
 
+
+                /*
+                |--------------------------------------------------------------------------
+                | Employee Sector Assignment
+                |--------------------------------------------------------------------------
+                |
+                | Employee's assigned municipal sector.
+                |
+                | The relationship must be eager-loaded by the controller.
+                |
+                */
+
+                'sector' => $this->when(
+                    $this->user_type === 'employee',
+                    function () {
+
+                        if (!$this->relationLoaded('sector')) {
+                            return null;
+                        }
+
+                        $sector = $this->sector;
+
+                        if (!$sector) {
+                            return null;
+                        }
+
+                        return [
+                            'id' => $sector->id,
+                            'name' => $sector->name,
+                            'code' => $sector->code,
+                        ];
+                    }
+                ),
+
                 /*
                 |--------------------------------------------------------------------------
                 | Account Status
@@ -258,8 +292,6 @@ class AuthUserResource extends JsonResource
                 | Employee Permissions
                 |--------------------------------------------------------------------------
                 |
-                | IMPORTANT:
-                |
                 | Frontend expects:
                 |
                 | [
@@ -280,6 +312,7 @@ class AuthUserResource extends JsonResource
                 'permissions' => $this->when(
                     $this->user_type === 'employee',
                     function () {
+
                         return $this->formatPermissions();
                     }
                 ),
@@ -350,13 +383,6 @@ class AuthUserResource extends JsonResource
             |--------------------------------------------------------------------------
             | Permission name
             |--------------------------------------------------------------------------
-            |
-            | Example:
-            |
-            | users.view
-            | users.create
-            | revenue.view
-            |
             */
 
             $parts = explode(
@@ -376,6 +402,7 @@ class AuthUserResource extends JsonResource
             */
 
             if (!isset($grouped[$resource])) {
+
                 $grouped[$resource] = [
                     'resource' => $resource,
                     'actions' => [],
@@ -395,6 +422,7 @@ class AuthUserResource extends JsonResource
                     true
                 )
             ) {
+
                 $grouped[$resource]['actions'][] = $action;
             }
         }
@@ -403,11 +431,6 @@ class AuthUserResource extends JsonResource
         |--------------------------------------------------------------------------
         | Convert associative object to indexed array
         |--------------------------------------------------------------------------
-        |
-        | Frontend requires:
-        |
-        | permissions.some(...)
-        |
         */
 
         return array_values($grouped);
